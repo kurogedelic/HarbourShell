@@ -87,7 +87,8 @@ pub fn decode_entities(s: &str) -> String {
     while let Some(i) = rest.find('&') {
         out.push_str(&rest[..i]);
         rest = &rest[i..];
-        let end = rest[..rest.len().min(12)].find(';');
+        // Byte search: a `;` within 12 bytes (a str slice there could cut a CJK character).
+        let end = rest.as_bytes()[..rest.len().min(12)].iter().position(|&b| b == b';');
         let decoded = end.and_then(|e| {
             let name = &rest[1..e];
             let ch = match name {
@@ -372,6 +373,18 @@ mod tests {
             let _ = decode_entities(s);
         }
         assert!(parse_news("<html><body>Not a feed</body></html>").items.is_empty());
+    }
+
+    #[test]
+    fn cjk_after_an_ampersand_never_panics() {
+        // Every offset of a 3-byte character relative to the 12-byte window.
+        for pad in 0..4 {
+            let s = format!("&{}日本語のニュース &amp;記事 & テスト", "a".repeat(pad));
+            let _ = decode_entities(&s);
+        }
+        assert_eq!(decode_entities("&amp;日本語"), "&日本語");
+        assert_eq!(decode_entities("A&B 東京都の天気"), "A&B 東京都の天気");
+        assert_eq!(decode_entities("&#26085;本"), "日本");
     }
 
     #[test]
