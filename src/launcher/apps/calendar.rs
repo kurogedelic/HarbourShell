@@ -86,6 +86,18 @@ fn arrow_rect(next: bool) -> Rect {
 }
 
 impl LauncherApp for Calendar {
+    fn help(&self) -> Vec<(String, String)> {
+        let k = |a: &str, b: &str| (a.to_string(), b.to_string());
+        vec![
+            k("Left / Right", "Previous / next day"),
+            k("Up / Down", "Previous / next week"),
+            k("PageUp / PageDown", "Previous / next month"),
+            k("Wheel", "Previous / next month"),
+            k("T", "Go to today"),
+            k("Double click", "Go to today"),
+        ]
+    }
+
     fn title(&self) -> String {
         crate::launcher::i18n::tr_s("Calendar")
     }
@@ -165,7 +177,7 @@ impl LauncherApp for Calendar {
         let (tm, fs) = (ctx.tm, ctx.fs);
         let ink = tm.get_color("foreground");
         let paper = tm.get_color("widget_face_active");
-        let faint = tm.get_color("text_faint");
+        let faint = crate::launcher::widgets::secondary_ink(tm);
         let line = tm.get_color("line");
         let alt = tm.get_color("surface_alt");
         let soft = tm.get_color("accent_soft");
@@ -350,5 +362,10 @@ mod tests {
         assert_eq!(c.sel, Some(month_grid(2026, 3)[0]));
         c.menu_action("next", &ctx);
         assert_eq!(c.sel.unwrap().month(), 4);
+    }
+
+    #[test]
+    fn help_rows_are_filled_in() {
+        crate::launcher::help::check_app_rows("Calendar", &Calendar { sel: None, hover: None }.help());
     }
 }

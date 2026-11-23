@@ -19,6 +19,8 @@ pub struct AppEntry {
     pub terminal: bool,
     pub sysplause: bool,
     pub mtime: Option<SystemTime>,
+    /// From the user's own app folder ([`user_app_dir`]): removable without root.
+    pub user: bool,
 }
 
 /// Product app order used by the official launcher (labels, normalised).
@@ -62,6 +64,7 @@ fn from_entry(id: String, e: DesktopEntry, base: &Path, mtime: Option<SystemTime
         terminal: e.terminal,
         sysplause: e.sysplause,
         mtime,
+        user: false,
     }
 }
 
@@ -99,11 +102,39 @@ pub fn parse_preinstalled(contents: &str, base: &Path) -> Vec<AppEntry> {
     out
 }
 
-/// Scan `app_dir`. Unreadable or invalid files are skipped.
-pub fn scan(app_dir: &Path) -> Vec<AppEntry> {
-    let base = app_dir.parent().unwrap_or(Path::new("/")).to_path_buf();
+/// Harbour's own folder for apps the user adds, no root needed: `.desktop` files dropped here show
+/// on Home like installed apps (an icon path is relative to this folder) and Settings > Apps can
+/// remove them. `HARBOUR_USER_APP_DIR` overrides it; otherwise `$XDG_DATA_HOME/harbour/apps`
+/// (`~/.local/share/harbour/apps`).
+pub fn user_app_dir() -> Option<PathBuf> {
+    if let Some(d) = std::env::var_os("HARBOUR_USER_APP_DIR") {
+        return Some(PathBuf::from(d));
+    }
+    let data = std::env::var_os("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share")))?;
+    Some(data.join("harbour/apps"))
+}
+
+/// The system apps (`app_dir`), then the user's own (`user_dir`), which win on the same id.
+pub fn scan_with_user(app_dir: &Path, user_dir: Option<&Path>) -> Vec<AppEntry> {
+    let mut apps = scan(app_dir);
+    if let Some(u) = user_dir {
+        for mut e in scan_dir(u, u) {
+            e.user = true;
+            apps.retain(|a| a.id != e.id);
+            apps.push(e);
+        }
+        sort_official(&mut apps);
+    }
+    apps
+}
+
+/// The valid `.desktop` files in `dir`, icons relative to `base`.
+fn scan_dir(dir: &Path, base: &Path) -> Vec<AppEntry> {
     let mut apps: Vec<AppEntry> = Vec::new();
-    if let Ok(rd) = std::fs::read_dir(app_dir) {
+    if let Ok(rd) = std::fs::read_dir(dir) {
         for ent in rd.flatten() {
             let Some(name) = ent.file_name().to_str().map(str::to_string) else {
                 continue;
@@ -119,9 +150,16 @@ pub fn scan(app_dir: &Path) -> Vec<AppEntry> {
                 continue;
             };
             let mtime = ent.metadata().and_then(|m| m.modified()).ok();
-            apps.push(from_entry(name, entry, &base, mtime));
+            apps.push(from_entry(name, entry, base, mtime));
         }
     }
+    apps
+}
+
+/// Scan `app_dir`. Unreadable or invalid files are skipped.
+pub fn scan(app_dir: &Path) -> Vec<AppEntry> {
+    let base = app_dir.parent().unwrap_or(Path::new("/")).to_path_buf();
+    let mut apps = scan_dir(app_dir, &base);
     if let Ok(text) = std::fs::read_to_string(base.join("preinstalled-desktop-apps.tsv")) {
         for e in parse_preinstalled(&text, &base) {
             if !apps.iter().any(|a| a.id == e.id) {
@@ -191,6 +229,7 @@ mod tests {
             terminal: false,
             sysplause: true,
             mtime: secs.map(|s| SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(s)),
+            user: false,
         }
     }
 
@@ -229,5 +268,28 @@ mod tests {
         assert_eq!(v.len(), 1);
         assert_eq!(v[0].name, "ZClaw");
         assert!(!v[0].terminal && v[0].sysplause);
+    }
+
+    #[test]
+    fn the_users_own_folder_adds_apps_and_wins_on_the_same_id() {
+        let root = std::env::temp_dir().join(format!("harbour-userapps-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let sys = root.join("APPLaunch/applications");
+        let user = root.join("harbour/apps");
+        std::fs::create_dir_all(&sys).unwrap();
+        std::fs::create_dir_all(&user).unwrap();
+        let entry = |name: &str| format!("[Desktop Entry]\nType=Application\nName={name}\nExec=/bin/true\n");
+        std::fs::write(sys.join("a.desktop"), entry("Alpha")).unwrap();
+        std::fs::write(sys.join("b.desktop"), entry("Beta")).unwrap();
+        std::fs::write(user.join("b.desktop"), entry("Beta (mine)")).unwrap();
+        std::fs::write(user.join("c.desktop"), entry("Gamma")).unwrap();
+        let apps = scan_with_user(&sys, Some(&user));
+        let find = |id: &str| apps.iter().find(|a| a.id == id).unwrap();
+        assert_eq!(apps.len(), 3);
+        assert!(!find("a.desktop").user);
+        assert_eq!(find("b.desktop").name, "Beta (mine)");
+        assert!(find("b.desktop").user && find("c.desktop").user);
+        assert_eq!(scan_with_user(&sys, None).len(), 2);
+        let _ = std::fs::remove_dir_all(root);
     }
 }

@@ -33,7 +33,7 @@ use crate::launcher::app::{AppAction, Ctx, LauncherApp};
 use crate::launcher::feed::{self, NewsItem};
 use crate::launcher::i18n::{tr, tr_s};
 use crate::launcher::lineedit::LineEdit;
-use crate::launcher::widgets::{self, MenuItem, PointerEvent};
+use crate::launcher::widgets::{self, MenuItem, PointerEvent, SbPart, ScrollBar};
 use crate::platform::keys::arrow_alias;
 use crate::ui;
 
@@ -55,6 +55,8 @@ const LIST_Y: i32 = widgets::FOLDER_BODY_Y;
 const LIST_ROWS: usize = ((crate::grid::APP_FRAME_BOTTOM + 1 - LIST_Y) / ROW) as usize;
 const LEFT: i32 = 6;
 const RIGHT: i32 = 312;
+/// Right edge of list text: clear of the scroll bar column.
+const LIST_RIGHT: i32 = crate::grid::SCROLL_X - 4;
 /// Refresh on opening when the cached list is older than this (seconds).
 const STALE: i64 = 30 * 60;
 /// Page slide: as long as Settings' (same ease, same directions).
@@ -212,6 +214,8 @@ pub struct Infoscope {
     /// The page last shown (`None` before the first frame) and the slide away from the one before.
     shown: Option<PageKey>,
     slide: Option<Slide>,
+    /// The list's scroll bar thumb is being dragged.
+    sb_drag: bool,
 }
 
 pub fn make() -> Box<dyn LauncherApp> {
@@ -264,6 +268,7 @@ impl Infoscope {
             art_scroll: 0,
             shown: None,
             slide: None,
+            sb_drag: false,
         }
     }
 
@@ -450,7 +455,7 @@ impl Infoscope {
         self.cache.items.iter().find(|i| i.link == rd.link)
     }
 
-    /// Lay the open article out in rows `RIGHT - LEFT` wide (kept until its text changes).
+    /// Lay the open article out in rows `LIST_RIGHT - LEFT` wide (kept until its text changes).
     fn layout_article(&mut self, fs: &FontSystem) {
         self.layout_article_with(&|t: &str| fs.measure_text(t));
     }
@@ -462,7 +467,7 @@ impl Infoscope {
         }
         let Some(rd) = self.reading.clone() else { return };
         let m = Metrics::fixed(6, 12);
-        let w = RIGHT - LEFT;
+        let w = LIST_RIGHT - LEFT;
         let mut out = Vec::new();
         let (title, meta) = match self.reading_item() {
             Some(it) => {
@@ -504,6 +509,36 @@ impl Infoscope {
 
     fn scroll_article(&mut self, d: isize) {
         self.art_scroll = (self.art_scroll as isize + d).clamp(0, self.art_max() as isize) as usize;
+    }
+
+    /// The scroll bar of the list on screen (None when the page has no list or it fits).
+    fn scrollbar(&self) -> Option<ScrollBar> {
+        let (scroll, len, rows, first) = match (self.channel, self.view) {
+            (NEWS, NewsView::Items) => (self.items.scroll, self.cache.items.len(), LIST_ROWS, 0),
+            (NEWS, NewsView::Article) => (self.art_scroll, self.art_len(), LIST_ROWS, 0),
+            (NEWS, NewsView::Feeds) => (self.feeds.scroll, self.subs.feeds.len() + 1, LIST_ROWS, 0),
+            (SEARCH, _) if !self.query.is_empty() => (self.found.scroll, self.hits.len(), LIST_ROWS - 1, 1),
+            _ => return None,
+        };
+        (len > rows).then(|| ScrollBar::new(bar_rect(first, rows), len, rows, scroll))
+    }
+
+    /// Scroll the list on screen to `to` (from the scroll bar); the selection is pulled into view.
+    fn set_scroll(&mut self, to: usize) {
+        let pull = |p: &mut Pos, rows: usize| {
+            p.scroll = to;
+            p.cursor = p.cursor.clamp(to, to + rows - 1);
+        };
+        match (self.channel, self.view) {
+            (NEWS, NewsView::Items) => pull(&mut self.items, LIST_ROWS),
+            (NEWS, NewsView::Article) => self.art_scroll = to.min(self.art_max()),
+            (NEWS, NewsView::Feeds) => {
+                self.confirm = None;
+                pull(&mut self.feeds, LIST_ROWS)
+            }
+            (SEARCH, _) => pull(&mut self.found, LIST_ROWS - 1),
+            _ => {}
+        }
     }
 
     // ----------------------------------------------------------- search
@@ -743,29 +778,36 @@ fn text_y(r: Rect) -> i32 {
     widgets::text_origin(r.y(), r.height() as i32)
 }
 
-/// A list row: the selected one on an ink plate (1 px in from the top and bottom, so it never
-/// touches the tab strip's rule or the next row), the rest with a rule.
-fn draw_row(c: &mut Canvas<Window>, p: &Paint, i: usize, selected: bool) -> Color {
+/// A list row: the selected one on the selection plate (1 px in from the top, so it never touches
+/// the tab strip's rule; the plate keeps clear of the scroll bar column), the rest with a rule.
+/// Returns the row's text colour.
+fn draw_row(c: &mut Canvas<Window>, tm: &ThemeManager, p: &Paint, i: usize, selected: bool) -> Color {
     let r = p.row(i);
+    let w = (crate::grid::SCROLL_X + p.ox - 2 - (r.x() + 2)) as u32;
     if selected {
-        ui::fill_rect(c, Rect::new(r.x() + 2, r.y() + 1, r.width() - 4, r.height() - 2), p.ink);
-        p.face
+        widgets::draw_row_plate_on(c, tm, Rect::new(r.x() + 2, r.y() + 1, w, r.height() - 1), p.face).fg
     } else {
-        ui::fill_rect(c, Rect::new(r.x() + 2, r.bottom() - 1, r.width() - 4, 1), p.muted);
+        ui::fill_rect(c, Rect::new(r.x() + 2, r.bottom() - 1, w, 1), p.muted);
         p.ink
     }
 }
 
-/// A 2 px scroll thumb at the right edge of the list.
-fn draw_thumb(c: &mut Canvas<Window>, p: &Paint, pos: Pos, len: usize, rows: usize, first_row: usize) {
+/// Where the scroll bar of a list of `rows` rows from row `first_row` goes (1 px clear of the
+/// tab strip's rule and the bottom row's rule).
+fn bar_rect(first_row: usize, rows: usize) -> Rect {
+    let top = LIST_Y + first_row as i32 * ROW;
+    Rect::new(crate::grid::SCROLL_X, top + 1, crate::grid::SCROLL_W as u32, (rows as i32 * ROW - 2) as u32)
+}
+
+/// The shared scroll bar at the right edge of the list, on Infoscope's face; only when the list
+/// scrolls.
+fn draw_bar(c: &mut Canvas<Window>, tm: &ThemeManager, p: &Paint, scroll: usize, len: usize, rows: usize, first_row: usize, dragging: bool) {
     if len <= rows {
         return;
     }
-    let top = LIST_Y + first_row as i32 * ROW;
-    let h = rows as i32 * ROW - 2;
-    let th = (h * rows as i32 / len as i32).max(6);
-    let y = top + 1 + (h - th) * pos.scroll as i32 / (len - rows).max(1) as i32;
-    ui::fill_rect(c, Rect::new(316 + p.ox, y, 2, th as u32), p.ink);
+    let r = bar_rect(first_row, rows);
+    let sb = ScrollBar::new(Rect::new(r.x() + p.ox, r.y(), r.width(), r.height()), len, rows, scroll);
+    sb.draw_on(c, tm, dragging.then_some(SbPart::Thumb), p.face);
 }
 
 fn centered(c: &mut Canvas<Window>, fs: &FontSystem, p: &Paint, y: i32, text: &str, col: Color) {
@@ -805,7 +847,7 @@ impl Infoscope {
     }
 
     fn draw_items(&self, c: &mut Canvas<Window>, p: &Paint, ctx: &Ctx) {
-        let (left, right) = (LEFT + p.ox, RIGHT + p.ox);
+        let (left, right) = (LEFT + p.ox, LIST_RIGHT + p.ox);
         let fs = ctx.fs;
         if self.cache.items.is_empty() {
             centered(c, fs, p, text_y(p.row(3)), tr(self.empty_note()), p.muted);
@@ -814,7 +856,7 @@ impl Infoscope {
         for (row, i) in (self.items.scroll..self.cache.items.len()).take(LIST_ROWS).enumerate() {
             let it = &self.cache.items[i];
             let sel = i == self.items.cursor;
-            let col = draw_row(c, p, row, sel);
+            let col = draw_row(c, ctx.tm, p, row, sel);
             let r = p.row(row);
             let date = it.date.map(|d| short_date(d, ctx.now)).unwrap_or_default();
             let dw = fs.measure_text("00/00");
@@ -824,11 +866,11 @@ impl Infoscope {
             fs.draw_text(c, sx, text_y(r), &src, if sel { col } else { p.muted });
             fs.draw_text(c, left, text_y(r), &fit(fs, &it.title, sx - left - 6), col);
         }
-        draw_thumb(c, p, self.items, self.cache.items.len(), LIST_ROWS, 0);
+        draw_bar(c, ctx.tm, p, self.items.scroll, self.cache.items.len(), LIST_ROWS, 0, self.sb_drag);
     }
 
     fn draw_article(&self, c: &mut Canvas<Window>, p: &Paint, ctx: &Ctx) {
-        let (left, right) = (LEFT + p.ox, RIGHT + p.ox);
+        let (left, right) = (LEFT + p.ox, LIST_RIGHT + p.ox);
         let fs = ctx.fs;
         let Some(lines) = &self.lines else { return };
         for (row, line) in lines.iter().skip(self.art_scroll).take(LIST_ROWS).enumerate() {
@@ -846,16 +888,16 @@ impl Infoscope {
                 Line::Note(n) => centered(c, fs, p, y, tr(n), p.muted),
             }
         }
-        draw_thumb(c, p, Pos { cursor: 0, scroll: self.art_scroll }, lines.len(), LIST_ROWS, 0);
+        draw_bar(c, ctx.tm, p, self.art_scroll, lines.len(), LIST_ROWS, 0, self.sb_drag);
     }
 
     fn draw_feeds(&self, c: &mut Canvas<Window>, p: &Paint, ctx: &Ctx) {
-        let (left, right) = (LEFT + p.ox, RIGHT + p.ox);
+        let (left, right) = (LEFT + p.ox, LIST_RIGHT + p.ox);
         let fs = ctx.fs;
         let n = self.subs.feeds.len() + 1;
         for (row, i) in (self.feeds.scroll..n).take(LIST_ROWS).enumerate() {
             let sel = i == self.feeds.cursor;
-            let col = draw_row(c, p, row, sel);
+            let col = draw_row(c, ctx.tm, p, row, sel);
             let r = p.row(row);
             match self.subs.feeds.get(i) {
                 Some(f) => {
@@ -875,29 +917,16 @@ impl Infoscope {
                 }
             }
         }
-        draw_thumb(c, p, self.feeds, n, LIST_ROWS, 0);
+        draw_bar(c, ctx.tm, p, self.feeds.scroll, n, LIST_ROWS, 0, self.sb_drag);
     }
 
     /// A one-line text field with a frame 1 px inside its row.
     fn draw_field(c: &mut Canvas<Window>, p: &Paint, ctx: &Ctx, row: usize, x: i32, e: &LineEdit) {
-        let fs = ctx.fs;
         let (x, right) = (x + p.ox, RIGHT + p.ox);
         let r = p.row(row);
-        let frame = Rect::new(x, r.y() + 1, (right - x + 2) as u32, 14);
-        ui::fill_rect(c, frame, p.face);
-        ui::draw_rect(c, frame, p.ink);
-        let room = right - x - 8;
-        // Keep the caret in view: show the tail when the text is longer than the field.
-        let before: String = e.text.chars().take(e.caret).collect();
-        let mut start = 0;
-        while fs.measure_text(&before.chars().skip(start).collect::<String>()) > room {
-            start += 1;
-        }
-        let shown: String = e.text.chars().skip(start).collect();
-        let shown = if fs.measure_text(&shown) > room { fit(fs, &shown, room) } else { shown };
-        fs.draw_text(c, x + 3, text_y(r), &shown, p.ink);
-        let cx = x + 3 + fs.measure_text(&before.chars().skip(start).collect::<String>());
-        ui::fill_rect(c, Rect::new(cx, text_y(r) + widgets::CAP_TOP - 1, 1, 11), p.ink);
+        // The shared text field, in the face's own colours, one whole row high.
+        let frame = Rect::new(x, r.y(), (right - x + 2) as u32, widgets::FIELD_H as u32);
+        widgets::draw_field(c, ctx.fs, ctx.tm, frame, &widgets::Field { text: &e.text, caret: Some(e.caret), fill: Some(p.face), ink: Some(p.ink), ..Default::default() });
     }
 
     fn draw_add(&self, c: &mut Canvas<Window>, p: &Paint, ctx: &Ctx) {
@@ -907,12 +936,12 @@ impl Infoscope {
     }
 
     fn draw_search(&self, c: &mut Canvas<Window>, p: &Paint, ctx: &Ctx) {
-        let (left, right) = (LEFT + p.ox, RIGHT + p.ox);
+        let (left, right) = (LEFT + p.ox, LIST_RIGHT + p.ox);
         let fs = ctx.fs;
         let label = tr("Find");
         let r = p.row(0);
         let lw = fs.measure_display_text(label);
-        ui::fill_rect(c, Rect::new(4 + p.ox, r.y() + 1, (lw + 8) as u32, 14), p.ink);
+        ui::fill_rect(c, Rect::new(4 + p.ox, r.y(), (lw + 8) as u32, widgets::FIELD_H as u32), p.ink);
         fs.draw_display_text(c, 8 + p.ox, text_y(r), label, p.face);
         Self::draw_field(c, p, ctx, 0, lw + 14, &self.query);
         if self.query.is_empty() {
@@ -928,7 +957,7 @@ impl Infoscope {
         }
         for (row, i) in (self.found.scroll..self.hits.len()).take(LIST_ROWS - 1).enumerate() {
             let sel = i == self.found.cursor;
-            let col = draw_row(c, p, row + 1, sel);
+            let col = draw_row(c, ctx.tm, p, row + 1, sel);
             let r = p.row(row + 1);
             match &self.hits[i] {
                 Hit::File(e) => {
@@ -946,7 +975,7 @@ impl Infoscope {
                 }
             }
         }
-        draw_thumb(c, p, self.found, self.hits.len(), LIST_ROWS - 1, 1);
+        draw_bar(c, ctx.tm, p, self.found.scroll, self.hits.len(), LIST_ROWS - 1, 1, self.sb_drag);
     }
 
     fn draw_not_yet(c: &mut Canvas<Window>, p: &Paint, ctx: &Ctx, lines: &[&'static str]) {
@@ -963,6 +992,23 @@ impl Infoscope {
 }
 
 impl LauncherApp for Infoscope {
+    fn help(&self) -> Vec<(String, String)> {
+        let k = |a: &str, b: &str| (a.to_string(), b.to_string());
+        let mut v = vec![k("Tab / Shift+Tab", "Next / previous tab"), k("Ctrl+F", "Search")];
+        if !self.typing() {
+            v.push(k("1 - 4", "News, Search, Nearby, Inbox"));
+        }
+        v.extend(match (self.channel, self.view) {
+            (NEWS, NewsView::Items) => vec![k("Up / Down", "Choose a row"), k("Return", "Read the article"), k("R", "Refresh news")],
+            (NEWS, NewsView::Article) => vec![k("Up / Down", "Scroll"), k("Space", "Next page")],
+            (NEWS, NewsView::Feeds) => vec![k("Up / Down", "Choose a row"), k("Return", "Add feed..."), k("Backspace", "Remove feed")],
+            (NEWS, NewsView::AddFeed) => vec![k("Return", "Add feed...")],
+            (SEARCH, _) => vec![k("Letters", "Type to search"), k("Up / Down", "Choose a row"), k("Return", "Open")],
+            _ => vec![],
+        });
+        v
+    }
+
     fn title(&self) -> String {
         crate::launcher::i18n::app_name("infoscope")
     }
@@ -1096,6 +1142,18 @@ impl LauncherApp for Infoscope {
                     }
                     return AppAction::None;
                 }
+                // The scroll bar (a press a pixel or two left of it counts): arrows step, the
+                // track pages, the thumb drags.
+                if let Some(sb) = self.scrollbar().filter(|_| x >= crate::grid::SCROLL_X - 2) {
+                    if let Some((to, thumb)) = sb.press(x.clamp(sb.rect.x(), sb.rect.right() - 1), y) {
+                        if thumb {
+                            self.sb_drag = true;
+                        } else {
+                            self.set_scroll(to);
+                        }
+                        return AppAction::None;
+                    }
+                }
                 let row = ((y - LIST_Y) / ROW) as usize;
                 let (pos, len, first) = match (self.channel, self.view) {
                     (NEWS, NewsView::Items) => (&mut self.items, self.cache.items.len(), 0),
@@ -1116,6 +1174,16 @@ impl LauncherApp for Infoscope {
                         return self.activate();
                     }
                 }
+            }
+            PointerEvent::Drag { y, .. } if self.sb_drag => {
+                if let Some(sb) = self.scrollbar() {
+                    self.set_scroll(sb.offset_for_y(y));
+                }
+                self.dirty = true;
+            }
+            PointerEvent::Up { .. } if self.sb_drag => {
+                self.sb_drag = false;
+                self.dirty = true;
             }
             _ => {}
         }
@@ -1475,11 +1543,49 @@ mod tests {
     }
 
     #[test]
+    fn the_scroll_bar_shows_only_when_the_list_scrolls_and_pulls_the_selection() {
+        let mut a = app("scrollbar");
+        a.start_refresh(None);
+        wait(&mut a);
+        assert!(a.scrollbar().is_none(), "eight headlines fit");
+        let more = a.cache.items.clone();
+        a.cache.items.extend(more.iter().cloned());
+        a.cache.items.extend(more);
+        let sb = a.scrollbar().expect("24 headlines scroll");
+        assert_eq!(sb.rect, Rect::new(crate::grid::SCROLL_X, LIST_Y + 1, 4, (LIST_ROWS as i32 * ROW - 2) as u32));
+        // Below the thumb: a page down; the selection comes along.
+        let (to, thumb) = sb.press(sb.rect.x(), sb.rect.bottom() - 8).unwrap();
+        assert!(!thumb);
+        a.set_scroll(to);
+        assert_eq!(a.items.scroll, LIST_ROWS);
+        assert_eq!(a.items.cursor, LIST_ROWS);
+        // Dragging the thumb to the end.
+        let sb = a.scrollbar().unwrap();
+        assert_eq!(sb.press(sb.rect.x(), sb.thumb().y() + 1), Some((LIST_ROWS, true)));
+        a.set_scroll(sb.offset_for_y(1000));
+        assert_eq!(a.items.scroll, 24 - LIST_ROWS);
+        assert!(a.items.cursor >= a.items.scroll);
+    }
+
+    #[test]
     fn the_page_uses_the_screen_down_to_its_bottom() {
         assert_eq!(LIST_ROWS, 8);
         let last = row_rect(LIST_ROWS - 1);
         assert_eq!(last.bottom(), 164, "rows end at y 163");
         assert!(crate::grid::APP_FRAME_BOTTOM + 1 - last.bottom() < ROW, "no whole empty row is left");
         assert_eq!(crate::grid::APP_FRAME_BOTTOM, 168, "y 169 stays clear");
+    }
+
+    #[test]
+    fn help_rows_are_filled_in() {
+        let mut a = app("help");
+        for view in [NewsView::Items, NewsView::Article, NewsView::Feeds, NewsView::AddFeed] {
+            a.view = view;
+            crate::launcher::help::check_app_rows("Infoscope News", &a.help());
+        }
+        for ch in [SEARCH, NEARBY, INBOX] {
+            a.set_channel(ch);
+            crate::launcher::help::check_app_rows("Infoscope", &a.help());
+        }
     }
 }

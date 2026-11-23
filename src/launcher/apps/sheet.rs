@@ -414,7 +414,7 @@ enum Next {
 }
 
 pub fn default_path() -> PathBuf {
-    std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(".")).join("Documents/sheet.csv")
+    fileops::user_dir(fileops::UserDir::Documents).join("sheet.csv")
 }
 
 pub fn make() -> Box<dyn LauncherApp> {
@@ -627,6 +627,18 @@ impl SheetApp {
 }
 
 impl LauncherApp for SheetApp {
+    fn help(&self) -> Vec<(String, String)> {
+        let k = |a: &str, b: &str| (a.to_string(), b.to_string());
+        vec![
+            k("Arrows", "Move between cells"),
+            k("Return / F2", "Edit cell"),
+            k("0-9 = + -", "Start a number or formula"),
+            k("Return (editing)", "Enter and go down"),
+            k("Backspace", "Clear cell"),
+            k("Ctrl+N / O / S", "New, Open, Save"),
+        ]
+    }
+
     fn title(&self) -> String {
         let name = self.file_name();
         if self.dirty { format!("{name} *") } else { name }
@@ -798,7 +810,7 @@ impl LauncherApp for SheetApp {
         let (tm, fs) = (ctx.tm, ctx.fs);
         let ink = tm.get_color("foreground");
         let paper = tm.get_color("widget_face_active");
-        let faint = tm.get_color("text_faint");
+        let faint = crate::launcher::widgets::secondary_ink(tm);
         let line = tm.get_color("line");
         let alt = tm.get_color("surface_alt");
         let soft = tm.get_color("accent_soft");
@@ -806,23 +818,13 @@ impl LauncherApp for SheetApp {
         let right = grid::SCROLL_X + grid::SCROLL_W;
 
         // Input line: reference, then the raw contents (or the edit in progress).
-        let bar = Rect::new(X0, BAR_Y, (right - X0 - grid::MARGIN) as u32, grid::ROW_H as u32);
-        ui::fill_rect(c, bar, if self.edit.is_some() { paper } else { alt });
-        ui::draw_rect(c, bar, if self.edit.is_some() { ink } else { line });
+        let bar = Rect::new(X0, BAR_Y, (right - X0 - grid::MARGIN) as u32, widgets::FIELD_H as u32);
         let name = cell_name(self.col, self.row);
-        fs.draw_text(c, bar.x() + 4, bar.y() + 1, &name, faint);
-        let tx = bar.x() + 4 + 32;
-        match &self.edit {
-            Some(e) => {
-                let shown = chrome::fit_text(fs, &e.text, bar.right() - tx - 4);
-                fs.draw_text(c, tx, widgets::text_origin(bar.y(), bar.height() as i32), &shown, ink);
-                e.draw_caret(c, fs, tm, tx, bar);
-            }
-            None => {
-                let raw = &self.sheet.cells[self.idx()];
-                fs.draw_text(c, tx, bar.y() + 1, &chrome::fit_text(fs, raw, bar.right() - tx - 4), ink);
-            }
-        }
+        let field = match &self.edit {
+            Some(e) => widgets::Field { text: &e.text, caret: Some(e.caret), ..Default::default() },
+            None => widgets::Field::new(&self.sheet.cells[self.idx()]),
+        };
+        widgets::draw_field(c, fs, tm, bar, &widgets::Field { prefix: &name, prefix_w: 32, ..field });
 
         // Column headers and row numbers.
         let hdr = Rect::new(X0, HEAD_Y, (ROW_HEAD_W + VIS_COLS as i32 * CELL_W) as u32, grid::ROW_H as u32);
@@ -1143,5 +1145,10 @@ mod tests {
         assert_eq!(a.title(), "日本語.csv");
         assert!(a.open_path(&d.join("nope.csv")).is_err());
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn help_rows_are_filled_in() {
+        crate::launcher::help::check_app_rows("Sheet", &SheetApp::open(std::env::temp_dir().join("sheet-help-test-none.csv")).help());
     }
 }

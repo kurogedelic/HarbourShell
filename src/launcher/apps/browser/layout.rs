@@ -949,7 +949,7 @@ impl<'a> L<'a> {
         }
         let w = match kind {
             FieldKind::Hidden => return,
-            FieldKind::Text | FieldKind::Password => (size as i32 * self.m.latin + 6).min(self.avail()).max(40),
+            FieldKind::Text | FieldKind::Password => (size as i32 * self.m.latin + 10).min(self.avail()).max(40),
             FieldKind::Submit => self.m.width(&self.p.fields[fi].label) + 12,
             FieldKind::Check | FieldKind::Radio => 12,
             FieldKind::Select => (self.p.fields[fi].options.iter().map(|o| self.m.width(&o.0)).max().unwrap_or(24) + 22).min(self.avail()),

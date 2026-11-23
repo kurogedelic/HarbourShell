@@ -15,7 +15,6 @@ use sdl2::video::Window;
 
 use crate::assets::AssetStore;
 use crate::chrome;
-use crate::dither::{self, Pattern};
 use crate::grid;
 use crate::launcher::app::{AppAction, Ctx, LauncherApp};
 use crate::launcher::sevenseg;
@@ -252,6 +251,19 @@ impl LauncherApp for TimerApp {
         crate::launcher::i18n::tr_s("Timer")
     }
 
+    fn help(&self) -> Vec<(String, String)> {
+        let k = |a: &str, b: &str| (a.to_string(), b.to_string());
+        vec![
+            k("Tab", "Stopwatch / Timer"),
+            k("Return", "Start / pause"),
+            k("L", "Lap (Stopwatch)"),
+            k("R", "Reset"),
+            k("Up / Down", "+/- 1 min (Timer, stopped)"),
+            k("Shift + Up / Down", "+/- 10 s"),
+            k("Click the digits", "+/- (upper / lower half)"),
+        ]
+    }
+
     fn describe(&self) -> String {
         let now = Instant::now();
         match self.mode {
@@ -346,8 +358,7 @@ impl LauncherApp for TimerApp {
         let (tm, fs) = (ctx.tm, ctx.fs);
         let now = Instant::now();
         let ink = tm.get_color("foreground");
-        let faint = tm.get_color("text_faint");
-        let line = tm.get_color("line");
+        let faint = crate::launcher::widgets::secondary_ink(tm);
         let sunk = tm.get_color("surface_sunken");
         let alt = tm.get_color("surface_alt");
         ui::fill_rect(c, chrome::app_rect(), tm.get_color("home_bg"));
@@ -380,17 +391,10 @@ impl LauncherApp for TimerApp {
             fs.draw_text(c, tx, DIGIT_Y, &format!("{h}h"), faint);
         }
 
-        // Progress bar (timer) or status line (stopwatch).
-        let bar = Rect::new(X0 + 4, DIGIT_Y + dh + 12, 172, 8);
-        dither::fill_two_tone(c, bar, sunk, line, Pattern::Half);
-        ui::draw_rect(c, bar, ink);
-        if self.mode == Mode::Timer && !self.cd_total.is_zero() {
-            let frac = self.remaining(now).as_secs_f32() / self.cd_total.as_secs_f32();
-            let w = ((bar.width() as i32 - 2) as f32 * frac).round() as u32;
-            if w > 0 {
-                ui::fill_rect(c, Rect::new(bar.x() + 1, bar.y() + 1, w, bar.height() - 2), ink);
-            }
-        }
+        // The shared progress bar: the time left (timer), empty for the stopwatch. Its outline sits
+        // 1 px inside the rectangle (a light ring around it), at X0 + 4, 172 x 8.
+        let frac = if self.mode == Mode::Timer && !self.cd_total.is_zero() { self.remaining(now).as_secs_f32() / self.cd_total.as_secs_f32() } else { 0.0 };
+        widgets::ProgressBar::new(Rect::new(X0 + 3, DIGIT_Y + dh + 11, 174, 10), Some(frac), 0).draw(c, tm);
 
         // Buttons.
         for (r, a, label) in self.buttons(now) {
@@ -413,9 +417,6 @@ impl LauncherApp for TimerApp {
         match self.mode {
             Mode::Stopwatch => {
                 fs.draw_text(c, well.x() + 6, well.y() + 1, crate::launcher::i18n::tr("Laps"), faint);
-                if self.laps.is_empty() {
-                    fs.draw_text(c, well.x() + 6, well.y() + 1 + grid::ROW_H, crate::launcher::i18n::tr("L = lap"), faint);
-                }
                 for (k, (i, (tot, sp))) in self.laps.iter().enumerate().rev().take(rows - 1).enumerate() {
                     let y = well.y() + 1 + (k as i32 + 1) * grid::ROW_H;
                     fs.draw_text(c, well.x() + 6, y + 1, &format!("{}", i + 1), faint);
@@ -425,8 +426,14 @@ impl LauncherApp for TimerApp {
                 }
             }
             Mode::Timer => {
-                for (i, l) in ["Up/Dn  +/-1 min", "Shift  +/-10 s", "Enter  Go/Pause", "R      Reset", "Click the digits: +/-"].into_iter().enumerate() {
-                    fs.draw_text(c, well.x() + 6, well.y() + 1 + i as i32 * grid::ROW_H, &crate::launcher::i18n::tr_s(l), faint);
+                // When it rings (wall clock), while it counts down or waits paused.
+                let left = self.remaining(now);
+                if !left.is_zero() && !self.cd.untouched() {
+                    let at = ctx.now + chrono::Duration::from_std(left).unwrap_or_default();
+                    let label = if self.cd.running() { "Rings at" } else { "Would ring at" };
+                    fs.draw_text(c, well.x() + 6, well.y() + 1, crate::launcher::i18n::tr(label), faint);
+                    let t = at.format("%H:%M:%S").to_string();
+                    fs.draw_text(c, well.x() + 6, well.y() + 1 + grid::ROW_H, &t, ink);
                 }
             }
         }

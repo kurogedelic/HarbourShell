@@ -19,7 +19,7 @@ use sdl2::video::Window;
 
 use crate::chrome;
 use crate::dither::{self, Pattern};
-use crate::launcher::widgets::{self, BtnState, Dropdown};
+use crate::launcher::widgets::{self, BtnState, Dropdown, SbPart, ScrollBar};
 use crate::grid::SCROLL_W;
 use crate::font::FontSystem;
 use crate::launcher::agent::{config as agent_config, history as agent_history};
@@ -100,6 +100,8 @@ enum Page {
     ExtPort,
     System,
     Apps,
+    /// One app from the Apps list: show on Home, what it is, uninstall.
+    AppInfo(usize),
     About,
     Agent,
     AgentConnect,
@@ -119,6 +121,8 @@ enum Confirm {
     Reboot,
     Poweroff,
     Official,
+    /// Move app `i`'s `.desktop` file (the user's own folder) to the Trash.
+    RemoveApp(usize),
 }
 
 /// What the main loop must do after a key press.
@@ -138,6 +142,8 @@ pub enum Event {
     ThemeChanged,
     /// The Agent was switched on / off or its provider changed: the host drops its open chat.
     AgentChanged,
+    /// Install something (the Japanese dictionary): the host shows its install card.
+    Install(crate::launcher::installer::InstallReq),
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -182,6 +188,28 @@ pub struct AppRef {
     pub id: String,
     pub name: String,
     pub exec: String,
+    /// The `.desktop` file of an installed app (None for the built-in ones).
+    pub desktop: Option<PathBuf>,
+    /// From the user's own app folder (`registry::user_app_dir`): removed without root.
+    pub user: bool,
+}
+
+/// `dpkg-query -S <file>` output -> the package that owns the file (`pkg:arch: /path` -> `pkg`).
+pub fn parse_dpkg_owner(text: &str) -> Option<String> {
+    let line = text.lines().find(|l| !l.starts_with("diversion"))?;
+    let (pkgs, _) = line.split_once(": ")?;
+    let first = pkgs.split(',').next()?.trim();
+    let name = first.split(':').next()?.trim();
+    (!name.is_empty()).then(|| name.to_string())
+}
+
+/// The package an installed app came from (None when no package owns its file).
+fn owning_package(desktop: &std::path::Path) -> Option<String> {
+    if matches!(std::env::var("HARBOUR_MOCK").as_deref(), Ok("1" | "true" | "yes" | "on")) {
+        return desktop.file_stem().map(|s| s.to_string_lossy().to_lowercase());
+    }
+    let out = std::process::Command::new("dpkg-query").arg("-S").arg(desktop).stderr(std::process::Stdio::null()).output().ok()?;
+    out.status.success().then(|| parse_dpkg_owner(&String::from_utf8_lossy(&out.stdout))).flatten()
 }
 
 pub struct Settings {
@@ -189,6 +217,8 @@ pub struct Settings {
     cfg: Arc<Mutex<Config>>,
     order_path: PathBuf,
     apps: Vec<AppRef>,
+    /// The package of the app whose page is open (Apps > app).
+    app_pkg: Option<String>,
     page: Page,
     stack: Vec<(Page, usize, usize)>,
     cursor: usize,
@@ -236,6 +266,7 @@ impl Settings {
             cfg,
             order_path,
             apps,
+            app_pkg: None,
             page: Page::Root,
             stack: Vec::new(),
             cursor: 0,
@@ -331,6 +362,23 @@ impl Settings {
 
     pub fn set_apps(&mut self, apps: Vec<AppRef>) {
         self.apps = apps;
+        // An uninstalled app leaves its page: back to the list.
+        if let Page::AppInfo(i) = self.page {
+            if i >= self.apps.len() || self.app_pkg.is_some() && self.apps[i].desktop.as_deref().and_then(owning_package) != self.app_pkg {
+                self.page = Page::Apps;
+                self.cursor = i.min(self.apps.len().saturating_sub(1));
+            }
+        }
+    }
+
+    /// Show / hide app `i` on Home (the official launcher's config key).
+    fn toggle_app(&mut self, i: usize) -> Event {
+        let Some(a) = self.apps.get(i).cloned() else { return Event::None };
+        let key = desktop_config_key(&a.id);
+        let v = if self.visible(&a.id) { 0 } else { 1 };
+        self.cfg_set(&key, v);
+        self.flush_cfg();
+        Event::AppsChanged
     }
 
     fn note(&mut self, text: impl Into<String>) {
@@ -569,12 +617,14 @@ impl Settings {
             Page::ExtPort => "Settings: Devices".into(),
             Page::System => "Settings: System".into(),
             Page::Apps => "Settings: Apps".into(),
+            Page::AppInfo(i) => self.apps.get(*i).map_or_else(|| "Settings: Apps".into(), |a| a.name.clone()),
             Page::About => "About Harbour".into(),
             Page::Agent => "Settings: Agent".into(),
             Page::AgentConnect => "Agent: Connect".into(),
             Page::Confirm(Confirm::Reboot) => "Restart".into(),
             Page::Confirm(Confirm::Poweroff) => "Power Off".into(),
             Page::Confirm(Confirm::Official) => "Official Launcher".into(),
+            Page::Confirm(Confirm::RemoveApp(i)) => self.apps.get(*i).map_or_else(|| "Settings: Apps".into(), |a| a.name.clone()),
         }
     }
 
@@ -641,6 +691,7 @@ impl Settings {
                     row("Language", Val::Text(i18n::LANG_NAMES[self.cfg_int("harbour_lang", 0).clamp(0, 1) as usize].to_string())),
                     row("Brightness", Val::Slider(self.brightness_pct())),
                     row("Screen off", Val::Text(dark_label(dark))),
+                    row("Japanese dictionary", Val::Text(if ime_dict_installed() { "Installed" } else { "Not installed" }.into())),
                 ]
             }
             Page::Theme => vec![
@@ -742,6 +793,20 @@ impl Settings {
                 .iter()
                 .map(|a| row(&a.name, Val::Check(self.visible(&a.id))))
                 .collect(),
+            Page::AppInfo(i) => match self.apps.get(*i) {
+                Some(a) => {
+                    let mut v = vec![
+                        row("Show on Home", Val::Toggle(self.visible(&a.id))),
+                        row("Kind", Val::Text(if a.user { "Your app" } else if a.desktop.is_some() { "Installed" } else { "Built-in" }.into())),
+                        row("Package", Val::Text(self.app_pkg.clone().unwrap_or_else(|| "-".into()))),
+                    ];
+                    if a.user || a.desktop.is_some() && self.app_pkg.is_some() {
+                        v.push(row("Uninstall...", Val::Arrow));
+                    }
+                    v
+                }
+                None => Vec::new(),
+            },
             Page::About => {
                 let s = self.sys.sysinfo();
                 let b = self.sys.battery();
@@ -855,6 +920,8 @@ impl Settings {
             }
             Keycode::Right if self.page == Page::Root => return self.activate(),
             Keycode::Right => return self.adjust(1),
+            // Space ticks an app's box in the Apps list; Return opens its page.
+            Keycode::Space if self.page == Page::Apps => return self.toggle_app(self.cursor),
             Keycode::Return | Keycode::KpEnter | Keycode::Space => return self.activate(),
             Keycode::LeftBracket if self.page == Page::Apps => return self.move_app(-1),
             Keycode::RightBracket if self.page == Page::Apps => return self.move_app(1),
@@ -978,6 +1045,27 @@ impl Settings {
                     self.spawn("Switching", |sys| Done::Official(sys.switch_to_official_launcher()));
                     return Event::Exit;
                 }
+                Confirm::RemoveApp(i) => {
+                    let path = self.apps.get(i).and_then(|a| a.desktop.clone());
+                    let res = match (path, crate::launcher::fileops::trash_dir()) {
+                        (Some(p), Some(t)) => crate::launcher::fileops::trash(&p, &t).map(|_| ()),
+                        _ => Err("No Trash folder".into()),
+                    };
+                    match res {
+                        Ok(()) => {
+                            self.note("Moved to the Trash");
+                            // Back past the app's page to the list.
+                            self.pop();
+                            self.pop();
+                            self.cursor = i.saturating_sub(1);
+                            return Event::AppsChanged;
+                        }
+                        Err(e) => {
+                            self.note(e);
+                            self.pop();
+                        }
+                    }
+                }
             },
             _ => {}
         }
@@ -1064,6 +1152,11 @@ impl Settings {
                 }
             }
             (page, row) if choice_spec(&page, row).is_some() => self.open_popup(),
+            (Page::Display, 3) => {
+                if !ime_dict_installed() {
+                    return Event::Install(crate::launcher::installer::InstallReq::ime_dict());
+                }
+            }
             (Page::Theme, 1) => {
                 let on = self.cfg_int("harbour_theme_invert", 0) == 1;
                 self.cfg_set("harbour_theme_invert", (!on) as i64);
@@ -1141,11 +1234,16 @@ impl Settings {
             (Page::System, 13) => self.push(Page::Confirm(Confirm::Poweroff)),
             (Page::Apps, i) => {
                 if let Some(a) = self.apps.get(i).cloned() {
-                    let key = desktop_config_key(&a.id);
-                    let v = if self.visible(&a.id) { 0 } else { 1 };
-                    self.cfg_set(&key, v);
-                    self.flush_cfg();
-                    return Event::AppsChanged;
+                    self.app_pkg = a.desktop.as_deref().and_then(owning_package);
+                    self.push(Page::AppInfo(i));
+                }
+            }
+            (Page::AppInfo(i), 0) => return self.toggle_app(i),
+            (Page::AppInfo(i), 3) if self.apps.get(i).map_or(false, |a| a.user) => self.push(Page::Confirm(Confirm::RemoveApp(i))),
+            (Page::AppInfo(i), 3) => {
+                if let (Some(a), Some(pkg)) = (self.apps.get(i), self.app_pkg.clone()) {
+                    let why = format!("{} and its files leave this device.", a.name);
+                    return Event::Install(crate::launcher::installer::InstallReq::apt_remove(&[pkg.as_str()], &why));
                 }
             }
             (Page::System, 7) => {
@@ -1220,6 +1318,7 @@ impl Settings {
             in_root,
             password: self.password.clone(),
             show_password: self.show_password,
+            sb_drag: self.sb_drag.is_some(),
             popup: self.popup.and_then(|(row, hi)| self.choice_items(row).map(|(items, cur)| (row, items.iter().map(|i| i18n::tr_s(i)).collect(), cur, hi))),
         }
     }
@@ -1393,14 +1492,16 @@ impl Settings {
             Some(Hit::PopupItem(_)) => Event::None,
             Some(Hit::Scroll { total, visible }) => {
                 self.drag_x0 = None;
-                if let Some((track, _)) = self.hits.iter().find(|(_, h)| matches!(h, Hit::Scroll { .. })).cloned() {
-                    let (ty, th) = sb_thumb(track, total, visible, self.scroll);
-                    if y >= ty && y < ty + th as i32 {
-                        self.sb_drag = Some((track, total, visible));
-                    } else {
-                        let max = total.saturating_sub(visible);
-                        let to = if y < ty { self.scroll.saturating_sub(visible) } else { (self.scroll + visible).min(max) };
-                        self.scroll_to(to, visible);
+                if let Some((hit, _)) = self.hits.iter().find(|(_, h)| matches!(h, Hit::Scroll { .. })).cloned() {
+                    let sb = ScrollBar::new(sb_rect(hit), total, visible, self.scroll);
+                    // The hit area is a pixel wider than the bar on both sides.
+                    let x = x.clamp(sb.rect.x(), sb.rect.right() - 1);
+                    if let Some((to, thumb)) = sb.press(x, y) {
+                        if thumb {
+                            self.sb_drag = Some((sb.rect, total, visible));
+                        } else {
+                            self.scroll_to(to, visible);
+                        }
                     }
                 }
                 Event::None
@@ -1424,7 +1525,7 @@ impl Settings {
     /// Pointer moved with the button held: drags a slider thumb.
     pub fn drag(&mut self, x: i32, y: i32) {
         if let Some((track, total, visible)) = self.sb_drag {
-            let to = sb_offset_for_y(track, total, visible, y);
+            let to = ScrollBar::new(track, total, visible, self.scroll).offset_for_y(y);
             self.scroll_to(to, visible);
             return;
         }
@@ -1495,16 +1596,6 @@ impl Settings {
         )
     }
 
-    #[allow(dead_code)]
-    fn hint(&self) -> &'static str {
-        match self.page {
-            Page::Root => "Enter Open  Esc Close",
-            Page::Display | Page::Theme | Page::Lock | Page::Audio => "Left/Right Adjust  Esc Back",
-            Page::Apps => "Enter Show/Hide  [ ] Move  Esc Back",
-            Page::WifiList | Page::BtList => "Enter Connect  Esc Back",
-            _ => "Enter Select  Esc Back",
-        }
-    }
 }
 
 type Col = sdl2::pixels::Color;
@@ -1521,6 +1612,8 @@ struct View {
     in_root: bool,
     password: String,
     show_password: bool,
+    /// The scroll bar thumb is being dragged (drawn pressed).
+    sb_drag: bool,
     /// (row, items, current item, highlighted item) of the open pop-up.
     popup: Option<(usize, Vec<String>, usize, usize)>,
 }
@@ -1644,7 +1737,7 @@ fn draw_panel_slider(c: &mut Canvas<Window>, tm: &ThemeManager, r: Rect, v: u32,
 fn draw_panel_row(c: &mut Canvas<Window>, fs: &FontSystem, tm: &ThemeManager, r: &Row, idx: usize, area: Rect, selected: bool, choice: bool, pressed: bool, reg: &mut Vec<(Rect, Hit)>) {
     let ink = tm.get_color("foreground");
     let paper = tm.get_color("widget_face_active");
-    let faint = tm.get_color("text_faint");
+    let faint = crate::launcher::widgets::secondary_ink(tm);
     let sunken = tm.get_color("surface_sunken");
     let (left, right) = (area.x() + 8, area.x() + area.width() as i32 - 8);
     let mid = area.y() + area.height() as i32 / 2;
@@ -1759,7 +1852,7 @@ fn draw_view(c: &mut Canvas<Window>, fs: &FontSystem, tm: &ThemeManager, region:
     let base = Rect::new(region.x() + ox, region.y(), region.width(), region.height());
     let ink = tm.get_color("foreground");
     let paper = tm.get_color("widget_face_active");
-    let muted = tm.get_color("muted");
+    let muted = widgets::secondary_ink(tm);
     let mut none = Vec::new();
     let reg: &mut Vec<(Rect, Hit)> = match hits {
         Some(h) => h,
@@ -1773,18 +1866,8 @@ fn draw_view(c: &mut Canvas<Window>, fs: &FontSystem, tm: &ThemeManager, region:
             let net = chrome::fit_text(fs, ssid, base.width() as i32 - 20);
             fs.draw_text(c, base.x() + 12, base.y() + 12, i18n::tr("Password for"), muted);
             fs.draw_text(c, base.x() + 12, base.y() + 28, &net, ink);
-            let field = Rect::new(base.x() + 12, base.y() + 48, base.width() - 24, 20);
-            ui::fill_rect(c, field, tm.get_color("surface_sunken"));
-            ui::draw_rect(c, field, ink);
-            let shown: String = if v.show_password { v.password.clone() } else { "*".repeat(v.password.chars().count()) };
-            let mut text = format!("{shown}_");
-            if fs.measure_text(&text) > field.width() as i32 - 10 {
-                let mut s: String = shown.chars().rev().take(24).collect::<Vec<_>>().into_iter().rev().collect();
-                s.push('_');
-                text = s;
-            }
-            fs.draw_text(c, field.x() + 5, field.y() + 4, &text, ink);
-            fs.draw_text(c, base.x() + 12, base.y() + 74, i18n::tr("Tab: show / hide"), tm.get_color("text_faint"));
+            let field = Rect::new(base.x() + 12, base.y() + 48, base.width() - 24, widgets::FIELD_H as u32);
+            widgets::draw_field(c, fs, tm, field, &widgets::Field { text: &v.password, caret: Some(v.password.chars().count()), masked: !v.show_password, ..Default::default() });
             dialog_buttons(c, fs, tm, &base, "Cancel", "Connect", on_screen.then_some(&mut *reg));
             return;
         }
@@ -1793,13 +1876,15 @@ fn draw_view(c: &mut Canvas<Window>, fs: &FontSystem, tm: &ThemeManager, region:
                 Confirm::Reboot => ("Restart the Cardputer?", "Unsaved work in apps is lost."),
                 Confirm::Poweroff => ("Power off the Cardputer?", "Press the power button to start."),
                 Confirm::Official => ("Switch to the official launcher?", "Harbour will close."),
+                Confirm::RemoveApp(_) => ("Remove this app from Harbour?", "Its .desktop file goes to the Trash."),
             };
             fs.draw_text(c, base.x() + 12, base.y() + 24, i18n::tr(l1), ink);
-            fs.draw_text(c, base.x() + 12, base.y() + 40, i18n::tr(l2), tm.get_color("text_faint"));
+            fs.draw_text(c, base.x() + 12, base.y() + 40, i18n::tr(l2), crate::launcher::widgets::secondary_ink(tm));
             let ok = match kind {
                 Confirm::Reboot => "Restart",
                 Confirm::Poweroff => "Power Off",
                 Confirm::Official => "Switch",
+                Confirm::RemoveApp(_) => "Remove",
             };
             dialog_buttons(c, fs, tm, &base, "Cancel", ok, on_screen.then_some(&mut *reg));
             return;
@@ -1829,7 +1914,7 @@ fn draw_view(c: &mut Canvas<Window>, fs: &FontSystem, tm: &ThemeManager, region:
     let mut local = Vec::new();
 
     if v.rows.is_empty() {
-        fs.draw_text(c, pane.x() + 12, top + 2, i18n::tr("Nothing here"), tm.get_color("text_faint"));
+        fs.draw_text(c, pane.x() + 12, top + 2, i18n::tr("Nothing here"), crate::launcher::widgets::secondary_ink(tm));
     }
     for (n, r) in v.rows.iter().skip(v.scroll).take(visible).enumerate() {
         let idx = v.scroll + n;
@@ -1848,11 +1933,9 @@ fn draw_view(c: &mut Canvas<Window>, fs: &FontSystem, tm: &ThemeManager, region:
         // The column runs on below the last row, down to y 166 (1 px clear of the bottom line).
         let bottom = pane.y() + pane.height() as i32 - 1;
         let track = Rect::new(x, top, SCROLL_W as u32, (bottom - top).max(visible as i32 * rh) as u32);
-        ui::fill_rect(c, track, tm.get_color("surface_sunken"));
-        dither::fill(c, track, tm.get_color("line"), Pattern::Bars);
-        let (ty, thumb) = sb_thumb(track, v.rows.len(), visible, v.scroll);
-        ui::fill_rect(c, Rect::new(x, ty, SCROLL_W as u32, thumb), ink);
-        if on_screen && !v.in_root && v.rows.len() > visible {
+        let sb = ScrollBar::new(track, v.rows.len(), visible, v.scroll);
+        sb.draw(c, tm, v.sb_drag.then_some(SbPart::Thumb));
+        if on_screen && !v.in_root && sb.needed() {
             local.push((Rect::new(x - 1, top, SCROLL_W as u32 + 2, track.height()), Hit::Scroll { total: v.rows.len(), visible }));
         }
     }
@@ -1893,22 +1976,9 @@ fn fill_in_frame(c: &mut Canvas<Window>, r: Rect, color: Col) {
     }
 }
 
-/// Thumb of the scroll bar column: (top y, height). Full height when everything fits.
-fn sb_thumb(track: Rect, total: usize, visible: usize, scroll: usize) -> (i32, u32) {
-    let len = total.max(1);
-    let h = if len <= visible { track.height() } else { ((track.height() as usize * visible) / len).max(6) as u32 };
-    let max_scroll = len.saturating_sub(visible).max(1);
-    let ty = track.y() + ((track.height() - h) as usize * scroll.min(max_scroll) / max_scroll) as i32;
-    (ty, h)
-}
-
-/// First row that puts the thumb's centre at screen y (dragging the thumb).
-fn sb_offset_for_y(track: Rect, total: usize, visible: usize, y: i32) -> usize {
-    let (_, h) = sb_thumb(track, total, visible, 0);
-    let span = (track.height() as i32 - h as i32).max(1);
-    let pos = (y - track.y() - h as i32 / 2).clamp(0, span);
-    let max = total.saturating_sub(visible);
-    (pos as usize * max + span as usize / 2) / span as usize
+/// The scroll bar under a `Hit::Scroll` area (the area is one pixel wider on both sides).
+fn sb_rect(hit: Rect) -> Rect {
+    Rect::new(hit.x() + 1, hit.y(), hit.width().saturating_sub(2), hit.height())
 }
 
 const ICONS: [[&str; 12]; 10] = [
@@ -2070,6 +2140,11 @@ fn dark_label(secs: i64) -> String {
     }
 }
 
+/// The optional Japanese input dictionary is in place (see `installer::Job::ImeDict`).
+fn ime_dict_installed() -> bool {
+    crate::launcher::ime_glue::data_dir().join(crate::ime::DICT_FILE).is_file()
+}
+
 fn uptime_label(s: u64) -> String {
     let (d, h, m) = (s / 86400, (s % 86400) / 3600, (s % 3600) / 60);
     if d > 0 {
@@ -2106,8 +2181,8 @@ mod tests {
         mock.delay = Duration::from_millis(5);
         let mock = Arc::new(mock);
         let apps = vec![
-            AppRef { id: "a.desktop".into(), name: "Alpha".into(), exec: "/bin/a".into() },
-            AppRef { id: "b.desktop".into(), name: "Beta".into(), exec: "/bin/b".into() },
+            AppRef { id: "a.desktop".into(), name: "Alpha".into(), exec: "/bin/a".into(), desktop: Some("/apps/alpha.desktop".into()), user: false },
+            AppRef { id: "b.desktop".into(), name: "Beta".into(), exec: "/bin/b".into(), desktop: None, user: false },
         ];
         let mut s = Settings::new(mock.clone(), cfg, dir.join("order.txt"), apps);
         s.set_agent_paths(dir.join("agent-data"), dir.join("agent.yaml"));
@@ -2400,7 +2475,7 @@ mod tests {
         let (mut s, _, dir) = settings();
         goto(&mut s, Page::Apps);
         assert_eq!(s.rows()[0].val, Val::Check(true));
-        assert_eq!(press(&mut s, Keycode::Return), Event::AppsChanged);
+        assert_eq!(press(&mut s, Keycode::Space), Event::AppsChanged);
         assert_eq!(s.rows()[0].val, Val::Check(false));
         let saved = Config::load(dir.join("config.json"));
         assert_eq!(saved.get_int(&desktop_config_key("a.desktop"), 1), 0);
@@ -2408,6 +2483,58 @@ mod tests {
         assert_eq!(press(&mut s, Keycode::RightBracket), Event::AppsChanged);
         assert_eq!(s.rows()[1].label, "Alpha");
         assert_eq!(registry::load_order(&dir.join("order.txt")), ["b.desktop", "a.desktop"]);
+    }
+
+    #[test]
+    fn a_users_own_app_is_removed_after_a_confirmation() {
+        let (mut s, _, _) = settings();
+        s.apps[0].user = true;
+        goto(&mut s, Page::Apps);
+        press(&mut s, Keycode::Return);
+        assert_eq!(s.rows()[1].val, Val::Text("Your app".into()));
+        assert_eq!(s.rows().len(), 4, "a user's app can always be removed");
+        s.cursor = 3;
+        press(&mut s, Keycode::Return);
+        assert!(matches!(s.page, Page::Confirm(Confirm::RemoveApp(0))));
+        // Cancel goes back to the app's page.
+        press(&mut s, Keycode::Escape);
+        assert_eq!(s.page, Page::AppInfo(0));
+    }
+
+    #[test]
+    fn dpkg_owner_is_read() {
+        assert_eq!(parse_dpkg_owner("zclaw: /usr/share/APPLaunch/applications/zclaw.desktop\n"), Some("zclaw".into()));
+        assert_eq!(parse_dpkg_owner("libfoo1:arm64: /usr/lib/x\n"), Some("libfoo1".into()));
+        assert_eq!(parse_dpkg_owner("a, b: /etc/x\n"), Some("a".into()));
+        assert_eq!(parse_dpkg_owner("diversion by x from: /y\nreal: /y\n"), Some("real".into()));
+        assert_eq!(parse_dpkg_owner(""), None);
+    }
+
+    #[test]
+    fn an_app_page_shows_hides_and_offers_uninstall_for_installed_apps() {
+        let (mut s, _, _) = settings();
+        goto(&mut s, Page::Apps);
+        // Return opens Alpha's page (an installed app).
+        assert_eq!(press(&mut s, Keycode::Return), Event::None);
+        assert_eq!(s.page, Page::AppInfo(0));
+        let labels: Vec<String> = s.rows().into_iter().map(|r| r.label).collect();
+        assert_eq!(&labels[..3], ["Show on Home", "Kind", "Package"]);
+        assert_eq!(press(&mut s, Keycode::Return), Event::AppsChanged, "row 0 toggles");
+        assert_eq!(s.rows()[0].val, Val::Toggle(false));
+        if s.rows().len() == 4 {
+            s.cursor = 3;
+            match press(&mut s, Keycode::Return) {
+                Event::Install(r) => assert!(r.removes()),
+                e => panic!("{e:?}"),
+            }
+        }
+        // A built-in app has no Uninstall row.
+        press(&mut s, Keycode::Escape);
+        s.cursor = 1;
+        press(&mut s, Keycode::Return);
+        assert_eq!(s.page, Page::AppInfo(1));
+        assert_eq!(s.rows().len(), 3);
+        assert_eq!(s.rows()[1].val, Val::Text("Built-in".into()));
     }
 
     #[test]
@@ -2506,18 +2633,6 @@ mod tests {
     }
 
     #[test]
-    fn scroll_bar_thumb_math() {
-        let track = Rect::new(300, 20, 4, 120);
-        assert_eq!(sb_thumb(track, 4, 6, 0), (20, 120), "everything fits: a full-height thumb");
-        let (y0, h) = sb_thumb(track, 12, 6, 0);
-        assert_eq!((y0, h), (20, 60));
-        assert_eq!(sb_thumb(track, 12, 6, 6).0, 80, "at the end the thumb touches the bottom");
-        assert_eq!(sb_offset_for_y(track, 12, 6, 0), 0);
-        assert_eq!(sb_offset_for_y(track, 12, 6, 200), 6);
-        assert_eq!(sb_offset_for_y(track, 12, 6, 80), 3, "the middle");
-    }
-
-    #[test]
     fn scroll_bar_click_page_and_thumb_drag() {
         let (mut s, _, _) = settings();
         goto(&mut s, Page::System);
@@ -2526,7 +2641,8 @@ mod tests {
         let n = s.rows().len();
         let visible = 6;
         assert!(n > visible);
-        let track = Rect::new(300, 20, 4, 96);
+        // The hit area is a pixel wider than the 4 px bar on both sides.
+        let track = Rect::new(299, 20, 6, 96);
         s.hits = vec![(track, Hit::Scroll { total: n, visible })];
         s.cursor = 0;
         // Below the thumb: a page down; the selection is pulled into the window.
@@ -2535,11 +2651,18 @@ mod tests {
         assert!(s.cursor >= s.scroll && s.cursor < s.scroll + visible);
         // Above the thumb: back up a page.
         s.release(0, 0);
+        s.click(299, 26, 1);
+        assert_eq!(s.scroll, 0);
+        // The arrow boxes step one row.
+        s.release(0, 0);
+        s.click(301, 114, 1);
+        assert_eq!(s.scroll, 1);
+        s.release(0, 0);
         s.click(301, 21, 1);
         assert_eq!(s.scroll, 0);
         // On the thumb: dragging follows the pointer; releasing ends it.
         s.release(0, 0);
-        let (ty, _) = sb_thumb(track, n, visible, s.scroll);
+        let ty = ScrollBar::new(sb_rect(track), n, visible, s.scroll).thumb().y();
         s.click(301, ty + 2, 1);
         assert!(s.sb_drag.is_some());
         s.drag(301, 1000);
@@ -2731,7 +2854,7 @@ mod tests {
         let (mut s, _, _) = settings();
         let labels = |s: &Settings| s.rows().into_iter().map(|r| r.label).collect::<Vec<_>>();
         goto(&mut s, Page::Display);
-        assert_eq!(labels(&s), ["Language", "Brightness", "Screen off"]);
+        assert_eq!(labels(&s), ["Language", "Brightness", "Screen off", "Japanese dictionary"]);
         press(&mut s, Keycode::Escape);
         goto(&mut s, Page::Theme);
         assert_eq!(labels(&s), ["Theme", "Invert", "Status bar"]);

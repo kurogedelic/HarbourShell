@@ -1129,7 +1129,7 @@ impl Calc {
             big = format!("{small}_");
             small.clear();
         }
-        fs.draw_text(c, disp.x() + 5, disp.y() + 3, &self.mode_tags(), muted);
+        fs.draw_text(c, disp.x() + 5, disp.y() + 3, &self.mode_tags(), crate::launcher::widgets::secondary_ink(tm));
         let max_small = disp.width() as i32 - 70;
         let shown_small = {
             let chars: Vec<char> = small.chars().collect();
@@ -1142,7 +1142,7 @@ impl Calc {
             format!("{}{}", if start > 0 { ".." } else { "" }, chars[start..].iter().collect::<String>())
         };
         let sw = fs.measure_display_text(&shown_small);
-        fs.draw_display_text(c, disp.x() + disp.width() as i32 - sw - 6, disp.y() + 1, &shown_small, muted);
+        fs.draw_display_text(c, disp.x() + disp.width() as i32 - sw - 6, disp.y() + 1, &shown_small, crate::launcher::widgets::secondary_ink(tm));
         let big = if big.is_empty() { "_".to_string() } else { big };
         let room = disp.width() as i32 - 12;
         let big = {
@@ -1220,8 +1220,6 @@ impl Calc {
             let vw = fs.measure_text(value);
             fs.draw_text(c, plate.x() + plate.width() as i32 - vw - 5, ry + 1, value, fg);
         }
-        let up = if crate::launcher::i18n::get() == crate::launcher::i18n::Lang::Ja { 3 } else { 0 };
-        fs.draw_text(c, r.x() + 8, r.y() + r.height() as i32 - 15 - up, crate::launcher::i18n::tr("Left/Right change   Tab/Esc close"), muted);
     }
 }
 

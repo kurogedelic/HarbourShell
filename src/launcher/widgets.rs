@@ -5,7 +5,7 @@
 //!
 //! Colour roles (see docs/DESIGN.md): `widget_face_active` = surface,
 //! `surface_alt` = alternate / hover, `surface_sunken` = wells, `line` = soft
-//! rules, `text_faint` = disabled text, `accent_soft` = hover background.
+//! rules, `text_faint` = disabled text only (secondary text uses `secondary_ink`), `accent_soft` = hover background.
 
 use std::time::{Duration, Instant};
 
@@ -171,10 +171,41 @@ pub fn row_ink(tm: &ThemeManager, selected: bool, ink: Color) -> Color {
     if selected { selection(tm).fg } else { ink }
 }
 
+/// The selection on a page of colour `page` that is not `home_bg` (Infoscope's face is the
+/// theme's white, which on the light themes is `select_bg` itself): the theme's selection, unless
+/// its plate would melt into the page; then a plate in [`rule_ink`] with page-coloured text.
+pub fn selection_on(tm: &ThemeManager, page: Color) -> Selection {
+    let s = selection(tm);
+    if stands_out(tm, s.bg, page) {
+        s
+    } else {
+        Selection { bg: rule_ink(tm, page), fg: page }
+    }
+}
+
+/// True when `a` is at least a third of the theme's full tonal range away from `b`.
+fn stands_out(tm: &ThemeManager, a: Color, b: Color) -> bool {
+    let lum = |c: Color| c.r as i32 * 3 + c.g as i32 * 6 + c.b as i32;
+    let t = tones(tm);
+    (lum(a) - lum(b)).abs() * 3 >= (lum(t.light) - lum(t.dark)).abs()
+}
+
 /// Full-width selection plate for a row: one pixel shorter than the row so neighbouring plates
 /// never touch. Pair it with [`draw_row_text`] (same row rectangle).
 pub fn draw_row_plate(c: &mut Canvas<Window>, tm: &ThemeManager, row: Rect) {
-    ui::fill_rect(c, Rect::new(row.x(), row.y(), row.width(), row.height().saturating_sub(1)), selection(tm).bg);
+    plate(c, row, selection(tm).bg);
+}
+
+/// [`draw_row_plate`] on a page of colour `page` (see [`selection_on`]); returns the selection, whose
+/// `fg` is the row's text colour.
+pub fn draw_row_plate_on(c: &mut Canvas<Window>, tm: &ThemeManager, row: Rect, page: Color) -> Selection {
+    let s = selection_on(tm, page);
+    plate(c, row, s.bg);
+    s
+}
+
+fn plate(c: &mut Canvas<Window>, row: Rect, bg: Color) {
+    ui::fill_rect(c, Rect::new(row.x(), row.y(), row.width(), row.height().saturating_sub(1)), bg);
 }
 
 /// The 1 px `line` rule on the last pixel row of a 16 px list row, across the row's full width.
@@ -235,9 +266,9 @@ pub struct Tabs<'a> {
     pub idle_ink: Color,
     pub outlined: bool,
     pub display: bool,
-    /// Folder tabs: chamfered top corners (2 px stair-step), the active one raised and open at the
-    /// bottom so that it joins the page, the others lower with a rule under the whole strip. The
-    /// strip stays one `h` px row; the rule is its last pixel row. Wins over `outlined`.
+    /// Folder tabs: chamfered top corners (2 px stair-step), all the same size with a rule under
+    /// the whole strip; the active one wears the selection colours. The strip stays one `h` px
+    /// row; the rule is its last pixel row. Wins over `outlined`.
     pub folder: bool,
     /// Per-tab widths instead of `tab_w` (the first `labels.len()` entries count), for a folder
     /// strip whose longest label would not fit in equal tabs (see `Tabs::folder_fit`).
@@ -251,10 +282,9 @@ pub struct Tabs<'a> {
 /// (almost) the page's own tone (a light face on an Invert theme); then the theme tone furthest
 /// from the page, so the rule always reads as a line of its own.
 pub fn rule_ink(tm: &ThemeManager, page: Color) -> Color {
-    let lum = |c: Color| (c.r as i32 * 3 + c.g as i32 * 6 + c.b as i32);
+    let lum = |c: Color| c.r as i32 * 3 + c.g as i32 * 6 + c.b as i32;
     let ink = tm.get_color("foreground");
-    let t = tones(tm);
-    if (lum(ink) - lum(page)).abs() * 3 >= (lum(t.light) - lum(t.dark)).abs() {
+    if stands_out(tm, ink, page) {
         return ink;
     }
     ["foreground", "widget_face_active", "widget_highlight", "widget_shadow", "muted", "home_bg"]
@@ -371,6 +401,140 @@ impl<'a> Tabs<'a> {
     }
 }
 
+/// The narrow tab at each end of a [`FolderScroll`] strip, holding a 1-bit arrow.
+pub const FOLDER_ARROW_W: i32 = 15;
+
+/// Where a press on a [`FolderScroll`] strip landed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FolderHit {
+    Tab(usize),
+    Prev,
+    Next,
+}
+
+/// A folder strip with more tabs than fit: a window of whole tabs between two narrow arrow tabs
+/// (the "feed" tabs). The window follows the active tab (see [`FolderScroll::follow`]); when every
+/// tab fits, it is the plain strip without arrows.
+pub struct FolderScroll<'a> {
+    pub labels: &'a [&'a str],
+    pub active: usize,
+    /// Index of the first tab shown.
+    pub first: usize,
+    /// Room for the strip from `FOLDER_X` (normally `FOLDER_ROOM`; less leaves a gap at the right).
+    pub room: i32,
+    pub min_tab_w: i32,
+}
+
+impl<'a> FolderScroll<'a> {
+    pub fn new(labels: &'a [&'a str], active: usize, first: usize, room: i32) -> Self {
+        Self { labels, active, first, room, min_tab_w: FOLDER_MIN_TAB_W }
+    }
+
+    fn overflow(&self) -> bool {
+        self.labels.len() as i32 * self.min_tab_w > self.room - 1
+    }
+
+    /// How many tabs are shown at once.
+    pub fn shown(&self) -> usize {
+        let n = self.labels.len();
+        if !self.overflow() {
+            return n;
+        }
+        (((self.room - 1 - 2 * FOLDER_ARROW_W) / self.min_tab_w).max(1) as usize).min(n)
+    }
+
+    /// The tab width that fills the room between the arrows.
+    fn tab_w(&self) -> i32 {
+        let k = self.shown().max(1) as i32;
+        if self.overflow() {
+            (self.room - 1 - 2 * FOLDER_ARROW_W) / k
+        } else {
+            self.min_tab_w
+        }
+    }
+
+    /// The first tab to show so that `active` is in the window, moving it as little as possible.
+    pub fn follow(labels: &[&str], active: usize, first: usize, room: i32) -> usize {
+        let s = FolderScroll::new(labels, active, first, room);
+        let (n, k) = (labels.len(), s.shown());
+        follow_scroll(active.min(n.saturating_sub(1)), first, k, n)
+    }
+
+    fn first(&self) -> usize {
+        self.first.min(self.labels.len().saturating_sub(self.shown()))
+    }
+
+    fn strip_x(&self) -> i32 {
+        FOLDER_X + if self.overflow() { FOLDER_ARROW_W } else { 0 }
+    }
+
+    fn strip(&self, tm: &ThemeManager) -> Tabs<'a> {
+        let f = self.first();
+        let end = (f + self.shown()).min(self.labels.len());
+        let active = if (f..end).contains(&self.active) { self.active - f } else { usize::MAX };
+        let mut t = Tabs::folder_strip(&self.labels[f..end], active, self.tab_w(), tm);
+        t.origin.0 = self.strip_x();
+        t
+    }
+
+    fn arrow_rects(&self) -> (Rect, Rect) {
+        let y = grid::BAR_H;
+        let right_x = self.strip_x() + self.shown() as i32 * self.tab_w() - 1;
+        let right_w = FOLDER_X + self.room - 1 - right_x;
+        (Rect::new(FOLDER_X, y, (FOLDER_ARROW_W + 1) as u32, FOLDER_TABS_H as u32), Rect::new(right_x, y, right_w.max(1) as u32, FOLDER_TABS_H as u32))
+    }
+
+    pub fn hit(&self, x: i32, y: i32, tm: &ThemeManager) -> Option<FolderHit> {
+        if let Some(i) = self.strip(tm).hit(x, y) {
+            return Some(FolderHit::Tab(self.first() + i));
+        }
+        if !self.overflow() {
+            return None;
+        }
+        let (l, r) = self.arrow_rects();
+        if contains(l, x, y) {
+            Some(FolderHit::Prev)
+        } else if contains(r, x, y) {
+            Some(FolderHit::Next)
+        } else {
+            None
+        }
+    }
+
+    /// The `home_bg` band, the window of tabs, the rule and the two arrow tabs.
+    pub fn draw_strip(&self, c: &mut Canvas<Window>, fs: &FontSystem, tm: &ThemeManager) {
+        let y0 = grid::BAR_H;
+        ui::fill_rect(c, Rect::new(0, y0, grid::SCREEN_W as u32, FOLDER_TABS_H as u32), tm.get_color("home_bg"));
+        let strip = self.strip(tm);
+        strip.draw(c, fs, tm);
+        if !self.overflow() {
+            return;
+        }
+        let ink = tm.get_color("foreground");
+        let last = y0 + FOLDER_TABS_H - 1;
+        let (l, r) = self.arrow_rects();
+        // The rule under the arrows (the strip draws its own under the tabs).
+        ui::fill_rect(c, Rect::new(FOLDER_X, last, (strip.origin.0 - FOLDER_X) as u32, 1), ink);
+        ui::fill_rect(c, Rect::new(r.x(), last, r.width(), 1), ink);
+        let f = self.first();
+        let more_left = f > 0;
+        let more_right = f + self.shown() < self.labels.len();
+        let fill = tm.get_color("surface_alt");
+        let dim = secondary_ink(tm);
+        for (rect, left, more) in [(l, true, more_left), (r, false, more_right)] {
+            chamfered(c, rect.x(), y0 + 4, rect.width() as i32, last - 1, ink, fill);
+            // A 4 px wide, 7 px tall solid triangle, centred in the lowered tab.
+            let cx = rect.x() + rect.width() as i32 / 2;
+            let cy = y0 + 4 + (last - 1 - (y0 + 4)) / 2 + 1;
+            let col = if more { ink } else { dim };
+            for i in 0..4 {
+                let x = if left { cx - 2 + i } else { cx + 1 - i };
+                ui::fill_rect(c, Rect::new(x, cy - i, 1, (2 * i + 1) as u32), col);
+            }
+        }
+    }
+}
+
 impl Tabs<'_> {
     fn w_of(&self, i: usize) -> i32 {
         match &self.widths {
@@ -408,30 +572,25 @@ impl Tabs<'_> {
         let (x0, y0) = self.origin;
         let n = self.labels.len() as i32;
         let last = y0 + self.h - 1;
-        // Inactive tabs sit 3 px lower than the raised active one; neighbours share their edge (each is drawn one px wider).
-        for (i, label) in self.labels.iter().enumerate().filter(|(i, _)| *i != self.active) {
+        // Every tab is the same size; the active one differs only in colour (the theme's
+        // selection). Neighbours share their edge (each is drawn one px wider).
+        for (i, label) in self.labels.iter().enumerate() {
             let r = self.tab_rect(i);
             let w = r.width() as i32 + if (i as i32) < n - 1 { 1 } else { 0 };
-            chamfered(c, r.x(), y0 + 4, w, last - 1, ink, self.idle_fill);
+            let active = i == self.active;
+            let (fill, ink_t) = if active { (sel.bg, sel.fg) } else { (self.idle_fill, self.idle_ink) };
+            chamfered(c, r.x(), y0 + 4, w, last - 1, ink, fill);
             // Under the stair-stepped corners, 1 px clear of the rule: a 12 px Japanese glyph ends on
             // y0 + 17 (the rule is y0 + 19); the display face sits 1 px higher so that its
             // descenders (g, p, y) end there too.
             let lift = if self.display && fs.has_display_face(label) { 1 } else { 0 };
-            self.label(c, fs, r.x(), r.width() as i32, folder_idle_text_y(y0, last) - lift, label, self.idle_ink);
+            self.label(c, fs, r.x(), r.width() as i32, folder_idle_text_y(y0, last) - lift, label, ink_t);
         }
         // The rule under the whole strip: full width (the same margin on the right as on the left,
-        // or to the last tab if that reaches further), then the raised, open active tab over it.
+        // or to the last tab if that reaches further).
         let right = (grid::SCREEN_W - x0).max(self.x_of(n as usize) + 1);
         let rule = self.page.map(|pg| rule_ink(tm, pg)).unwrap_or(ink);
         ui::fill_rect(c, Rect::new(x0, last, (right - x0) as u32, 1), rule);
-        if let Some(label) = self.labels.get(self.active) {
-            let r = self.tab_rect(self.active);
-            let w = r.width() as i32 + 1;
-            chamfered(c, r.x(), y0 + 1, w, last, ink, sel.bg);
-            // Open bottom: the inside of the last row joins the page below, only the side edges stay.
-            ui::fill_rect(c, Rect::new(r.x() + 1, last, (w - 2) as u32, 1), sel.bg);
-            self.label(c, fs, r.x(), r.width() as i32, text_origin(y0 + 3, last - (y0 + 3)), label, sel.fg);
-        }
     }
 
     pub fn draw(&self, c: &mut Canvas<Window>, fs: &FontSystem, tm: &ThemeManager) {
@@ -621,6 +780,91 @@ pub fn rounded_frame(c: &mut Canvas<Window>, r: Rect, color: Color) {
     for (x, y) in [(x0 + 1, y0 + 1), (x1 - 1, y0 + 1), (x0 + 1, y1 - 1), (x1 - 1, y1 - 1)] {
         let _ = c.draw_point((x, y));
     }
+}
+
+// -------------------------------------------------------------- text field
+
+/// Height of every one-line text field: one grid row.
+pub const FIELD_H: i32 = 16;
+
+/// What a one-line text field shows. Every text entry in Harbour draws through [`draw_field`]:
+/// a 16 px well (sunken fill, 1 px ink frame), body-font text 4 px in, a 1 px caret at the
+/// capitals' height, the text scrolled so the caret stays in view.
+#[derive(Clone, Copy, Default)]
+pub struct Field<'a> {
+    pub text: &'a str,
+    /// Caret column in characters; `None` = the field is not being typed in (no caret).
+    pub caret: Option<usize>,
+    /// The whole text is selected (the first key replaces it): drawn inverted.
+    pub select_all: bool,
+    /// Show one `*` per character (passwords).
+    pub masked: bool,
+    /// Faint text shown while the field is empty.
+    pub placeholder: &'a str,
+    /// Fixed faint text at the start (a prompt `>`, a cell name), `prefix_w` px wide (0 = its width).
+    pub prefix: &'a str,
+    pub prefix_w: i32,
+    /// Colours for a field on a page that is not the usual one (Infoscope's face).
+    pub fill: Option<Color>,
+    pub ink: Option<Color>,
+}
+
+impl<'a> Field<'a> {
+    pub fn new(text: &'a str) -> Self {
+        Self { text, ..Default::default() }
+    }
+    /// Being typed in, caret at the end.
+    pub fn editing(text: &'a str) -> Self {
+        Self { text, caret: Some(text.chars().count()), ..Default::default() }
+    }
+}
+
+pub fn draw_field(c: &mut Canvas<Window>, fs: &FontSystem, tm: &ThemeManager, r: Rect, f: &Field) {
+    let ink = f.ink.unwrap_or_else(|| tm.get_color("foreground"));
+    let fill = f.fill.unwrap_or_else(|| tm.get_color("surface_sunken"));
+    let faint = if f.ink.is_some() { ink } else { secondary_ink(tm) };
+    ui::fill_rect(c, r, fill);
+    ui::draw_rect(c, r, ink);
+    let ty = text_origin(r.y(), r.height() as i32);
+    let mut x0 = r.x() + 4;
+    if !f.prefix.is_empty() {
+        fs.draw_text(c, x0, ty, f.prefix, faint);
+        x0 += if f.prefix_w > 0 { f.prefix_w } else { fs.measure_text(f.prefix) + 4 };
+    }
+    let room = r.right() - 4 - x0;
+    if room <= 0 {
+        return;
+    }
+    let shown: String = if f.masked { "*".repeat(f.text.chars().count()) } else { f.text.to_string() };
+    let col = f.caret.map(|k| k.min(shown.chars().count()));
+    let before_w = col.map_or(0, |k| fs.measure_text(&shown.chars().take(k).collect::<String>()));
+    let shift = (before_w - (room - 2)).max(0);
+    // Clip the text to the field, inside whatever clip the caller has (a scrolled page).
+    let prev = c.clip_rect();
+    let inner = Rect::new(x0 - 1, r.y() + 1, (room + 2) as u32, r.height().saturating_sub(2));
+    match prev {
+        sdl2::render::ClippingRect::Some(p) => match p.intersection(inner) {
+            Some(q) => c.set_clip_rect(q),
+            None => return,
+        },
+        sdl2::render::ClippingRect::Zero => return,
+        sdl2::render::ClippingRect::None => c.set_clip_rect(inner),
+    }
+    if shown.is_empty() {
+        if !f.placeholder.is_empty() {
+            fs.draw_text(c, x0, ty, &i18n::tr_s(f.placeholder), faint);
+        }
+    } else if f.select_all {
+        let tw = fs.measure_text(&shown).min(room);
+        ui::fill_rect(c, Rect::new(x0 - 1, r.y() + 2, (tw + 2) as u32, r.height().saturating_sub(4)), ink);
+        fs.draw_text(c, x0, ty, &shown, fill);
+    } else {
+        fs.draw_text(c, x0 - shift, ty, &shown, ink);
+    }
+    if let (Some(_), false) = (col, f.select_all && !shown.is_empty()) {
+        ui::fill_rect(c, Rect::new(x0 - shift + before_w, ty + CAP_TOP - 1, 1, 11), ink);
+    }
+    c.set_clip_rect(prev);
 }
 
 // -------------------------------------------------------- check box / radio
@@ -825,10 +1069,20 @@ impl ScrollBar {
     /// Always drawn (the thumb fills the track when everything fits), so a screen keeps the same
     /// layout whether or not it scrolls; only `hit` ignores a bar that is not needed.
     pub fn draw(&self, c: &mut Canvas<Window>, tm: &ThemeManager, active: Option<SbPart>) {
-        let ink = tm.get_color("foreground");
+        self.paint(c, tm.get_color("foreground"), tm.get_color("widget_face_active"), tm.get_color("surface_sunken"), tm.get_color("line"), active);
+    }
+
+    /// [`ScrollBar::draw`] on a page of colour `page` that is not `home_bg` (Infoscope's face):
+    /// boxes and track in the page's colour, outlined in [`rule_ink`], so the bar reads on every
+    /// theme (the plain ink is the face's own tone on the Invert themes).
+    pub fn draw_on(&self, c: &mut Canvas<Window>, tm: &ThemeManager, active: Option<SbPart>, page: Color) {
+        let ink = rule_ink(tm, page);
         let line = tm.get_color("line");
-        let surface = tm.get_color("widget_face_active");
-        let well = tm.get_color("surface_sunken");
+        let line = if stands_out(tm, line, page) { line } else { ink };
+        self.paint(c, ink, page, page, line, active);
+    }
+
+    fn paint(&self, c: &mut Canvas<Window>, ink: Color, surface: Color, well: Color, line: Color, active: Option<SbPart>) {
         let t = self.track();
         dither::fill_two_tone(c, t, well, line, Pattern::Half);
         let a = self.arrow_h();

@@ -14,7 +14,9 @@ use std::path::PathBuf;
 use crate::assets::{AssetStore, IconPalette};
 use crate::chrome::{self, SCREEN_W};
 use crate::font::FontSystem;
+use crate::grid;
 use crate::launcher::folders::{Dest, Folders};
+use crate::launcher::widgets::{SbPart, ScrollBar};
 use crate::theme::ThemeManager;
 use crate::ui;
 
@@ -546,6 +548,11 @@ impl Home {
         if in_folder {
             v.push(("hf_out", "Remove from Folder"));
         }
+        // Any app but Settings can leave Home (Settings > Apps brings it back).
+        let hideable = self.items.get(self.selected).map_or(false, |i| i.kind == Kind::App && i.target != Target::Builtin(Builtin::Settings));
+        if hideable {
+            v.push(("hf_hide", "Hide from Home"));
+        }
         match self.selected_kind() {
             Some(Kind::App) | Some(Kind::Folder(_)) => v.extend(self.menu_entries()),
             _ => {}
@@ -568,11 +575,7 @@ impl Home {
     pub fn drag_move(&mut self, x: i32, y: i32) -> bool {
         if self.sb_drag {
             if let Some(track) = self.sb_track() {
-                let (_, h) = self.sb_thumb(track);
-                let span = (track.height() as i32 - h as i32).max(1);
-                let pos = (y - track.y() - h as i32 / 2).clamp(0, span);
-                let max = self.rows() - self.vrows();
-                self.scroll_row = (pos as usize * max + span as usize / 2) / span as usize;
+                self.scroll_row = self.scrollbar(track).offset_for_y(y);
                 self.keep_selection_visible();
             }
             return false;
@@ -759,34 +762,28 @@ impl Home {
             View::Grid => (GRID_Y, BOTTOM - GRID_Y),
             View::List => (LIST_Y, BOTTOM - LIST_Y),
         };
-        Some(Rect::new(312, y, 4, full as u32))
+        Some(Rect::new(grid::SCROLL_X, y, grid::SCROLL_W as u32, full as u32))
     }
 
-    /// (top y, height) of the thumb on `track`.
-    fn sb_thumb(&self, track: Rect) -> (i32, u32) {
-        let (rows, vrows) = (self.rows(), self.vrows());
-        let h = ((track.height() as usize * vrows) / rows).max(6) as u32;
-        let span = track.height() - h;
-        let max_scroll = (rows - vrows).max(1);
-        (track.y() + (span as usize * self.scroll_row / max_scroll) as i32, h)
+    /// The shared scroll bar on `track`.
+    fn scrollbar(&self, track: Rect) -> ScrollBar {
+        ScrollBar::new(track, self.rows(), self.vrows(), self.scroll_row)
     }
 
     /// Press on the scroll bar column (a few pixels wider than it is drawn). The thumb starts a
-    /// drag, the track above / below it pages. True when the press was on the bar.
+    /// drag, the arrows step a row, the track above / below the thumb pages. True when the press
+    /// was on the bar.
     pub fn sb_press(&mut self, x: i32, y: i32) -> bool {
         let Some(track) = self.sb_track() else { return false };
-        if x < track.x() - 4 || x >= SCREEN_W_I || y < track.y() || y >= track.y() + track.height() as i32 {
+        if x < track.x() - 4 || x >= SCREEN_W_I {
             return false;
         }
-        let (ty, th) = self.sb_thumb(track);
-        let (rows, vrows) = (self.rows(), self.vrows());
-        let max = rows - vrows;
-        if y >= ty && y < ty + th as i32 {
+        let x = x.clamp(track.x(), track.right() - 1);
+        let Some((to, thumb)) = self.scrollbar(track).press(x, y) else { return false };
+        if thumb {
             self.sb_drag = true;
-        } else if y < ty {
-            self.scroll_row = self.scroll_row.saturating_sub(vrows);
         } else {
-            self.scroll_row = (self.scroll_row + vrows).min(max);
+            self.scroll_row = to;
         }
         self.keep_selection_visible();
         true
@@ -879,8 +876,7 @@ impl Home {
         let body = Rect::new(0, chrome::BAR_H, SCREEN_W, crate::chrome::SCREEN_H - chrome::BAR_H as u32);
         crate::dither::fill_two_tone(c, body, tm.get_color("home_bg"), tm.get_color("home_bg_alt"), crate::dither::Pattern::Quarter);
         let tile_fill = tm.get_color("surface_sunken");
-        let line = tm.get_color("line");
-        let _faint = tm.get_color("text_faint");
+        let _faint = crate::launcher::widgets::secondary_ink(tm);
 
         // While dragging, the folder tile under the pointer is the drop target.
         let drop = self.drag.filter(|d| d.active).and_then(|d| match self.drop_target(d.pos.0, d.pos.1) {
@@ -958,9 +954,7 @@ impl Home {
 
         // Scroll bar.
         if let Some(track) = self.sb_track() {
-            let (ty, th) = self.sb_thumb(track);
-            ui::fill_rect(c, Rect::new(track.x() + 1, track.y(), 2, track.height()), line);
-            ui::fill_rect(c, Rect::new(track.x(), ty, 4, th), ink);
+            self.scrollbar(track).draw(c, tm, self.sb_drag.then_some(SbPart::Thumb));
         }
 
         // The dragged tile follows the pointer with a dither shadow.
@@ -1260,15 +1254,21 @@ mod tests {
         assert!(h.sb_track().is_some() && home(4).sb_track().is_none());
         let max = h.rows() - h.vrows();
         // Track below the thumb: a page down (never past the end); the selection comes along.
-        assert!(h.sb_press(track.x() + 1, track.y() + track.height() as i32 - 2));
+        assert!(h.sb_press(track.x() + 1, track.y() + track.height() as i32 - 6));
         assert_eq!(h.scroll_row, h.vrows().min(max));
         assert!(h.selected / h.cols() >= h.scroll_row);
         // A press next to the bar (a little wider than drawn) counts, one far left does not.
-        assert!(h.sb_press(track.x() - 3, track.y() + 1));
+        assert!(h.sb_press(track.x() - 3, track.y() + 5));
         assert_eq!(h.scroll_row, 0);
         assert!(!h.sb_press(track.x() - 30, track.y() + 1));
-        // Thumb: starts a drag, moving follows the pointer, release ends it without a drop.
+        // The arrow boxes step one row.
+        assert!(h.sb_press(track.x() + 1, track.y() + track.height() as i32 - 1));
+        assert_eq!(h.scroll_row, 1);
         assert!(h.sb_press(track.x() + 1, track.y() + 1));
+        assert_eq!(h.scroll_row, 0);
+        // Thumb: starts a drag, moving follows the pointer, release ends it without a drop.
+        let thumb = ScrollBar::new(track, h.rows(), h.vrows(), h.scroll_row).thumb();
+        assert!(h.sb_press(track.x() + 1, thumb.y() + 1));
         assert!(h.sb_dragging());
         assert!(!h.drag_move(track.x(), track.y() + track.height() as i32 + 50));
         assert_eq!(h.scroll_row, max);

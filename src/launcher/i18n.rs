@@ -156,7 +156,6 @@ pub const JA: &[(&str, &str)] = &[
     ("Harbour will close.", "Harbourは終了します。"),
     ("Switch", "切替"),
     ("Password for", "パスワード:"),
-    ("Tab: show / hide", "Tab: 表示/非表示"),
     // Progress / notes
     ("Checking network", "ネットワーク確認中"),
     ("Scanning", "検索中"),
@@ -177,7 +176,6 @@ pub const JA: &[(&str, &str)] = &[
     ("Switching...", "切替中..."),
     ("Save changes to", "変更を保存しますか:"),
     ("Your changes are lost if you don't save.", "保存しないと変更は失われます。"),
-    ("Right: open  Left: up", "→開く  ←上へ"),
     ("It is removed for good.", "完全に削除されます。"),
     ("Get it back from Go to Trash.", "「ゴミ箱へ移動」で戻せます。"),
     ("Get it back from Files > Go to Trash.", "Files の「ゴミ箱へ移動」で戻せます。"),
@@ -320,6 +318,12 @@ fn pattern(english: &str) -> Option<String> {
 fn table() -> &'static HashMap<&'static str, &'static str> {
     static T: OnceLock<HashMap<&'static str, &'static str>> = OnceLock::new();
     T.get_or_init(|| all_ja().copied().collect())
+}
+
+/// Whether `english` has a Japanese entry (tests: Help rows must be translated).
+#[cfg(test)]
+pub fn has_ja(english: &str) -> bool {
+    table().contains_key(english)
 }
 
 /// `english` in language `lang`; the English text itself when there is no entry.

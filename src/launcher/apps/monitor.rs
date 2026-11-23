@@ -630,7 +630,11 @@ impl Monitor {
             let right = format!("RX {}  TX {}", fmt_rate(n.rx_rate), fmt_rate(n.tx_rate));
             band(c, ctx, p, y0, &left, &right);
             let max = nice_ceil(n.rx.iter().chain(n.tx.iter()).fold(1024.0f32, f32::max));
-            let g = Rect::new(X0, y0 + ROW + 2, GRAPH_W as u32, (NET_BLOCK - ROW - 4) as u32);
+            // The block at the foot of the page gives its graph the rows left under it (as the CPU
+            // and Memory graphs do), so the graph's bottom line is on y 168.
+            let foot = y0 + NET_BLOCK == BODY_Y + BODY_ROWS * ROW;
+            let gh = if foot { BOTTOM + 1 - (y0 + ROW + 2) } else { NET_BLOCK - ROW - 4 };
+            let g = Rect::new(X0, y0 + ROW + 2, GRAPH_W as u32, gh as u32);
             graph(c, p, g, &[(&n.tx, Style::Half), (&n.rx, Style::Solid)], 0.0, max);
             // The scale (full height of the graph) in its top-left corner, as on the Power page.
             text_l(c, ctx, X0 + 4, g.y(), &fmt_rate(max as f64), p.faint);
@@ -671,6 +675,20 @@ impl Monitor {
 }
 
 impl LauncherApp for Monitor {
+    fn help(&self) -> Vec<(String, String)> {
+        let k = |a: &str, b: &str| (a.to_string(), b.to_string());
+        let mut v = vec![
+            k("Tab / Shift+Tab", "Next / previous tab"),
+            k("Left / Right", "Next / previous tab"),
+            k("1 - 6", "Jump to a tab"),
+            k("Space / P", "Pause / resume"),
+        ];
+        if self.page == P_NET {
+            v.push(k("Up / Down", "Scroll"));
+        }
+        v
+    }
+
     fn title(&self) -> String {
         crate::launcher::i18n::app_name("monitor")
     }
@@ -890,5 +908,15 @@ mod tests {
         assert_eq!(m.page, 0);
         m.scroll_net(5);
         assert_eq!(m.net_scroll, 0, "no interfaces, nothing to scroll");
+    }
+
+    #[test]
+    fn help_rows_are_filled_in() {
+        let mut m = Monitor::new();
+        crate::launcher::help::check_app_rows("Monitor", &m.help());
+        m.set_page(P_NET);
+        let net = m.help();
+        crate::launcher::help::check_app_rows("Monitor Net", &net);
+        assert!(net.iter().any(|(k, _)| k == "Up / Down"), "the Net page scrolls");
     }
 }

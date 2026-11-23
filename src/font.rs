@@ -284,7 +284,7 @@ impl FontSystem {
     }
 
     pub fn draw_text(&self, c: &mut Canvas<Window>, x: i32, y: i32, text: &str, color: Color) {
-        let mut cursor_x = x;
+        let cursor_x = x;
         // ASCII from Shinonome 6x12 with proportional spacing and kerning, everything else
         // through the Japanese / M+ fallback.
         if self.body_latin.is_some() {

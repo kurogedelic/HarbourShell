@@ -204,7 +204,7 @@ pub fn pictures_dir() -> PathBuf {
     if scratch_mode() {
         return std::env::temp_dir().join("harbour-paint-mock");
     }
-    std::env::var_os("HOME").map(|h| PathBuf::from(h).join("Pictures")).unwrap_or_else(|| PathBuf::from("Pictures"))
+    crate::launcher::fileops::user_dir(crate::launcher::fileops::UserDir::Pictures)
 }
 
 pub fn make() -> Box<dyn LauncherApp> {
@@ -667,7 +667,7 @@ impl Paint {
     fn do_open(&mut self) {
         let files = crate::launcher::apps::imageviewer::scan(&self.dir);
         if files.is_empty() {
-            self.modal = Some(Modal::Error(Alert::new(AlertIcon::Note, "No pictures", "There are no pictures in ~/Pictures to open.", &["OK"])));
+            self.modal = Some(Modal::Error(Alert::new(AlertIcon::Note, "No pictures", &format!("There are no pictures in {} to open.", crate::launcher::fileops::tilde(&self.dir)), &["OK"])));
             return;
         }
         let rows = files.iter().map(|p| p.strip_prefix(&self.dir).unwrap_or(p).to_string_lossy().into_owned()).collect();
@@ -984,6 +984,21 @@ impl Paint {
 }
 
 impl LauncherApp for Paint {
+    fn help(&self) -> Vec<(String, String)> {
+        let k = |a: &str, b: &str| (a.to_string(), b.to_string());
+        vec![
+            k("Arrows", "Move the cursor (Shift: 8 px)"),
+            k("Space", "Pen down / up"),
+            k("P / B / E / Y", "Pencil / brush / eraser / spray"),
+            k("L / R / Q / O", "Line / rectangle / rounded / ellipse"),
+            k("F / T / M / H", "Bucket / text / select / hand"),
+            k("G", "Pattern"),
+            k("[ / ]", "Brush size"),
+            k("1 / 2 / 4", "Zoom 1x / 2x / 4x"),
+            k("Ctrl+Z / Ctrl+Y", "Undo / redo"),
+        ]
+    }
+
     fn title(&self) -> String {
         crate::launcher::i18n::app_name("paint")
     }
@@ -1833,5 +1848,10 @@ mod tests {
             assert!(p.filled);
             assert!(p.describe().contains("Ellipse"));
         });
+    }
+
+    #[test]
+    fn help_rows_are_filled_in() {
+        crate::launcher::help::check_app_rows("Paint", &Paint::new(std::env::temp_dir()).help());
     }
 }

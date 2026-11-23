@@ -21,7 +21,7 @@ use crate::grid;
 use crate::launcher::alert::AlertIcon;
 use crate::launcher::i18n;
 use crate::launcher::sysicon;
-use crate::launcher::widgets::{contains, draw_button, draw_panel, BtnState};
+use crate::launcher::widgets::{self, contains, draw_button, draw_field, draw_panel, BtnState, Field};
 use crate::theme::ThemeManager;
 use crate::ui;
 
@@ -122,7 +122,7 @@ impl UnsavedCard {
         let name = chrome::fit_display_text(fs, &self.name, room - 8);
         fs.draw_display_text(c, tx, r.y() + 8, &chrome::fit_display_text(fs, i18n::tr("Save changes to"), room), ink);
         fs.draw_display_text(c, tx, r.y() + 22, &format!("{name}?"), ink);
-        fs.draw_text(c, tx, r.y() + 38, &chrome::fit_text(fs, i18n::tr("Your changes are lost if you don't save."), room), tm.get_color("text_faint"));
+        fs.draw_text(c, tx, r.y() + 38, &chrome::fit_text(fs, i18n::tr("Your changes are lost if you don't save."), room), crate::launcher::widgets::secondary_ink(tm));
         for (i, b) in Self::button_rects().iter().enumerate() {
             let st = BtnState { default: i == 2, pressed: false, hover: i == self.sel && i != 2, disabled: false };
             draw_button(c, fs, tm, *b, CARD_BUTTONS[i].0, st);
@@ -149,8 +149,10 @@ pub struct Entry {
     pub is_dir: bool,
 }
 
-const ROWS: usize = 5;
-const ROW_H: i32 = 14;
+/// The file list: whole 16 px rows like every other list (four of them, so the panel still fits
+/// between the status bar and the bottom of the screen).
+const ROWS: usize = 4;
+const ROW_H: i32 = grid::ROW_H;
 const NAME_MAX: usize = 48;
 
 pub struct SavePanel {
@@ -397,11 +399,11 @@ impl SavePanel {
 
     // ---- geometry (also used for clicks)
     fn panel_rect() -> Rect {
-        let (w, h) = (292u32, 148u32);
+        let (w, h) = (292u32, 142u32);
         Rect::new((grid::SCREEN_W as i32 - w as i32) / 2, grid::BAR_H + (grid::SCREEN_H - grid::BAR_H - h as i32) / 2, w, h)
     }
     fn name_rect(p: Rect) -> Rect {
-        Rect::new(p.x() + 66, p.y() + 8, p.width() - 66 - 10, 16)
+        Rect::new(p.x() + 66, p.y() + 8, p.width() - 66 - 10, crate::launcher::widgets::FIELD_H as u32)
     }
     fn list_rect(p: Rect) -> Rect {
         Rect::new(p.x() + 10, p.y() + 46, p.width() - 20 - 4, ROWS as u32 * ROW_H as u32 + 2)
@@ -454,7 +456,7 @@ impl SavePanel {
 
     pub fn draw(&self, c: &mut Canvas<Window>, fs: &FontSystem, tm: &ThemeManager) {
         let ink = tm.get_color("foreground");
-        let faint = tm.get_color("text_faint");
+        let faint = crate::launcher::widgets::secondary_ink(tm);
         let sunken = tm.get_color("surface_sunken");
         dim_backdrop(c, tm);
         let p = Self::panel_rect();
@@ -463,20 +465,8 @@ impl SavePanel {
         // Name field.
         fs.draw_display_text(c, p.x() + 10, p.y() + 9, &chrome::fit_display_text(fs, &i18n::tr_s(&self.title), 54), ink);
         let nr = Self::name_rect(p);
-        ui::fill_rect(c, nr, sunken);
-        ui::draw_rect(c, nr, ink);
-        let shown = chrome::fit_display_text(fs, &self.name, nr.width() as i32 - 12);
-        let tw = fs.measure_display_text(&shown);
-        if self.replace_on_type && !shown.is_empty() {
-            // Selected: inverted, as on the Mac.
-            ui::fill_rect(c, Rect::new(nr.x() + 2, nr.y() + 2, (tw + 4) as u32, nr.height() - 4), ink);
-            fs.draw_display_text(c, nr.x() + 4, nr.y() + 1, &shown, tm.get_color("widget_face_active"));
-        } else {
-            fs.draw_display_text(c, nr.x() + 4, nr.y() + 1, &shown, ink);
-            if !self.open_mode {
-                ui::fill_rect(c, Rect::new(nr.x() + 4 + tw + 1, nr.y() + 3, 2, (nr.height() - 6) as u32), ink);
-            }
-        }
+        let field = Field { text: &self.name, caret: (!self.open_mode).then(|| self.name.chars().count()), select_all: self.replace_on_type, ..Default::default() };
+        draw_field(c, fs, tm, nr, &field);
 
         // Folder line.
         let home = std::env::var("HOME").unwrap_or_default();
@@ -501,8 +491,8 @@ impl SavePanel {
                 ui::fill_rect(c, row, ink);
             }
             let fg = if hi { tm.get_color("widget_face_active") } else if e.is_dir { ink } else { faint };
-            // Folder glyph: a small tab-and-body box; files get a page.
-            let (gx, gy) = (row.x() + 3, row.y() + 3);
+            // Folder glyph: a small tab-and-body box; files get a page (8 px, centred in the row).
+            let (gx, gy) = (row.x() + 3, row.y() + (ROW_H - 8) / 2);
             c.set_draw_color(fg);
             if e.is_dir {
                 let _ = c.fill_rect(Rect::new(gx, gy, 4, 2));
@@ -511,7 +501,7 @@ impl SavePanel {
                 let _ = c.draw_rect(Rect::new(gx + 1, gy, 6, 8));
             }
             let label = chrome::fit_display_text(fs, &e.name, row.width() as i32 - 24);
-            fs.draw_text(c, row.x() + 15, row.y() + 1, &label, fg);
+            fs.draw_text(c, row.x() + 15, widgets::text_origin(row.y(), ROW_H), &label, fg);
         }
         if self.entries.len() > ROWS {
             let track = Rect::new(l.x() + l.width() as i32 + 1, l.y(), 3, l.height());
@@ -527,8 +517,6 @@ impl SavePanel {
         if let Some(m) = &self.message {
             let m = chrome::fit_display_text(fs, &i18n::tr_s(m), cancel.x() - p.x() - 18);
             fs.draw_text(c, p.x() + 10, cancel.y() + 4, &m, ink);
-        } else {
-            fs.draw_text(c, p.x() + 10, cancel.y() + 4, i18n::tr("Right: open  Left: up"), faint);
         }
         draw_button(c, fs, tm, cancel, "Cancel", BtnState::default());
         draw_button(c, fs, tm, save, &self.button, BtnState { default: true, ..Default::default() });
@@ -592,7 +580,7 @@ impl NamePrompt {
     }
 
     fn field_rect(r: Rect) -> Rect {
-        Rect::new(r.x() + 12, r.y() + 26, r.width() - 24, 16)
+        Rect::new(r.x() + 12, r.y() + 26, r.width() - 24, crate::launcher::widgets::FIELD_H as u32)
     }
 
     fn button_rects(r: Rect) -> [Rect; 2] {
@@ -618,17 +606,7 @@ impl NamePrompt {
         frame(c, tm, r);
         fs.draw_display_text(c, r.x() + 12, r.y() + 7, &chrome::fit_display_text(fs, &i18n::tr_s(&self.title), r.width() as i32 - 24), ink);
         let nr = Self::field_rect(r);
-        ui::fill_rect(c, nr, tm.get_color("surface_sunken"));
-        ui::draw_rect(c, nr, ink);
-        let shown = chrome::fit_display_text(fs, &self.name, nr.width() as i32 - 12);
-        let tw = fs.measure_display_text(&shown);
-        if self.replace_on_type && !shown.is_empty() {
-            ui::fill_rect(c, Rect::new(nr.x() + 2, nr.y() + 2, (tw + 4) as u32, nr.height() - 4), ink);
-            fs.draw_display_text(c, nr.x() + 4, nr.y() + 1, &shown, tm.get_color("widget_face_active"));
-        } else {
-            fs.draw_display_text(c, nr.x() + 4, nr.y() + 1, &shown, ink);
-            ui::fill_rect(c, Rect::new(nr.x() + 4 + tw + 1, nr.y() + 3, 2, (nr.height() - 6) as u32), ink);
-        }
+        draw_field(c, fs, tm, nr, &Field { text: &self.name, caret: Some(self.name.chars().count()), select_all: self.replace_on_type, ..Default::default() });
         let [cancel, ok] = Self::button_rects(r);
         draw_button(c, fs, tm, cancel, "Cancel", BtnState::default());
         draw_button(c, fs, tm, ok, "OK", BtnState { default: true, ..Default::default() });
@@ -711,7 +689,7 @@ impl ConfirmAlert {
             if i == 0 {
                 fs.draw_display_text(c, tx, r.y() + 8, &chrome::fit_display_text(fs, &i18n::tr_s(l), w), ink);
             } else {
-                fs.draw_text(c, tx, r.y() + 24 + (i as i32 - 1) * 14, &chrome::fit_text(fs, &i18n::tr_s(l), w), tm.get_color("text_faint"));
+                fs.draw_text(c, tx, r.y() + 24 + (i as i32 - 1) * 14, &chrome::fit_text(fs, &i18n::tr_s(l), w), crate::launcher::widgets::secondary_ink(tm));
             }
         }
         let [cancel, ok] = self.button_rects();
@@ -986,6 +964,18 @@ impl<T> Dialog<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_save_panel_has_16_px_rows_and_fits_on_the_screen() {
+        let p = SavePanel::panel_rect();
+        assert!(p.y() >= grid::BAR_H, "clear of the status bar");
+        assert!(p.bottom() + 1 <= grid::SCREEN_H, "panel and its 1 px shadow fit");
+        let l = SavePanel::list_rect(p);
+        assert_eq!(l.height() as i32, ROWS as i32 * 16 + 2);
+        let [cancel, _] = SavePanel::button_rects(p);
+        assert!(l.bottom() < cancel.y(), "the list ends above the buttons");
+        assert!(SavePanel::name_rect(p).bottom() < l.y());
+    }
 
     fn temp(tag: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("harbour-dialogs-{tag}-{}", std::process::id()));

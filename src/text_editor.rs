@@ -73,22 +73,6 @@ impl TextEditor {
         }
     }
 
-    /// ウェルカムメッセージで初期化。
-    pub fn with_welcome() -> Self {
-        let mut ed = Self::new();
-        ed.lines = vec![
-            "# Harbour TextEditor".to_string(),
-            "".to_string(),
-            "Type to begin. Enter = new line, Backspace = delete.".to_string(),
-            "Ctrl+S saves. Arrows move. Esc quits.".to_string(),
-            "".to_string(),
-        ];
-        // 最後の行（空行）の先頭にカーソル
-        ed.row = ed.lines.len() - 1;
-        ed.col = 0;
-        ed
-    }
-
     /// 既存テキストから生成（ファイルを開く時）。
     pub fn from_text(content: &str) -> Self {
         let lines: Vec<String> = if content.is_empty() {

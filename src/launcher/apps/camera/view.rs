@@ -27,7 +27,6 @@ impl Camera {
         let face = if lum(white) * 2 >= lum(t.light) + lum(t.dark) { white } else { t.light };
         let land = t.dark;
         let rule = tm.get_color("line");
-        let muted = tm.get_color("muted");
         let flash = self.flash_until.is_some();
 
         // --- the picture: a framed print, 1 px of ink around the face ---
@@ -37,7 +36,7 @@ impl Camera {
         if self.bits.is_empty() {
             let msg = &i18n::tr_s("Starting camera...");
             let w = fs.measure_text(msg);
-            fs.draw_text(c, fr.x() + (fr.width() as i32 - w) / 2, fr.y() + (fr.height() as i32 - 12) / 2, msg, if flash { face } else { muted });
+            fs.draw_text(c, fr.x() + (fr.width() as i32 - w) / 2, fr.y() + (fr.height() as i32 - 12) / 2, msg, if flash { face } else { crate::launcher::widgets::secondary_ink(tm) });
         } else if !flash {
             let ox = fr.x() + 1 + (PREVIEW_INNER.0 as i32 - self.pw as i32) / 2;
             let oy = fr.y() + 1 + (PREVIEW_INNER.1 as i32 - self.ph as i32) / 2;
@@ -87,7 +86,7 @@ impl Camera {
         let dev = self.device().map(|d| d.name.clone()).unwrap_or_default();
         text(c, 40, &dev, land);
         if let Some(i) = &self.info {
-            text(c, 52, &format!("{}x{} {}", i.w, i.h, i.fmt), muted);
+            text(c, 52, &format!("{}x{} {}", i.w, i.h, i.fmt), crate::launcher::widgets::secondary_ink(tm));
         }
 
         // The photo count in 7-segment digits between two rules.
@@ -98,7 +97,7 @@ impl Camera {
             seg::draw_atlas_digit(c, assets, seg::BIG_KEY, 14, 20, d, x, 69, land);
             x += 17;
         }
-        text_at(c, fs, x + 3, 77, &i18n::tr_s("Photos"), muted, x0 + w);
+        text_at(c, fs, x + 3, 77, &i18n::tr_s("Photos"), crate::launcher::widgets::secondary_ink(tm), x0 + w);
         ui::fill_rect(c, Rect::new(x0, 92, w as u32, 1), rule);
 
         // Brightness and contrast meters (only what the camera has).

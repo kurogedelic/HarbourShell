@@ -22,7 +22,7 @@ use sdl2::render::Canvas;
 use sdl2::video::Window;
 
 use super::config::{self, AgentConfig};
-use super::history::{self, Chat, State, SEND_WINDOW};
+use super::history::{self, Chat, SEND_WINDOW};
 use super::input::InputSource;
 use super::muse::{self, RemoteCall};
 use super::provider::{self, Provider};
@@ -1346,34 +1346,10 @@ impl LauncherApp for AgentApp {
             }
         }
 
-        // Input line: a ">" prompt, the text, a blinking block cursor, and the white Send button.
-        let field = Rect::new(TEXT_X, INPUT_Y, FIELD_W as u32, grid::BTN_H_SM as u32);
-        ui::fill_rect(c, field, paper);
-        ui::draw_rect(c, field, ink);
-        let inner = Rect::new(field.x() + 3, field.y() + 1, field.width() - 6, field.height() - 2);
-        let trow = Rect::new(inner.x(), field.y(), inner.width(), field.height());
-        widgets::draw_row_text(c, fs, tm, trow, inner.x(), ">", false, ink);
-        let tx0 = inner.x() + MARK_W;
-        let text_w = inner.width() as i32 - MARK_W;
-        let caret_x = self.input.caret_x(fs);
-        let shift = (caret_x - (text_w - 8)).max(0);
-        c.set_clip_rect(Rect::new(tx0, inner.y(), text_w as u32, inner.height()));
-        if self.input.is_empty() {
-            widgets::draw_row_text(c, fs, tm, trow, tx0, "type here", false, faint);
-        } else {
-            widgets::draw_row_text(c, fs, tm, trow, tx0 - shift, &self.input.text, false, ink);
-        }
-        if !busy && self.blink == 0 {
-            let under = self.input.text.chars().nth(self.input.caret).map(|ch| ch.to_string());
-            let cw = under.as_deref().map_or(6, |u| fs.measure_text(u).max(4));
-            let cx = tx0 - shift + caret_x;
-            let by = widgets::text_origin(field.y(), field.height() as i32) + widgets::CAP_TOP - 1;
-            ui::fill_rect(c, Rect::new(cx, by, cw as u32, 11), ink);
-            if let Some(u) = under {
-                fs.draw_text(c, cx, widgets::text_origin(field.y(), field.height() as i32), &u, paper);
-            }
-        }
-        c.set_clip_rect(None);
+        // Input line: the shared text field with a ">" prompt, then the Send button.
+        let field = Rect::new(TEXT_X, INPUT_Y, FIELD_W as u32, widgets::FIELD_H as u32);
+        let typing = (!busy).then_some(self.input.caret);
+        widgets::draw_field(c, fs, tm, field, &widgets::Field { text: &self.input.text, caret: typing, placeholder: "type here", prefix: ">", ..Default::default() });
         let st = BtnState { hover: self.send_hover, pressed: false, default: false, disabled: self.input.text.trim().is_empty() || busy };
         draw_button(c, fs, tm, Self::send_rect(), "Send", st);
 

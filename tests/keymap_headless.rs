@@ -53,7 +53,7 @@ fn agent_panel_opens_with_tab_tab_and_closes_with_esc_or_the_same_gesture() {
          Escape,wait:100,expect:agent=0,\
          Tab,Tab,wait:100,expect:agent=1,Tab,Tab,wait:100,expect:agent=0,\
          alt+Tab,expect:agent=1,alt+Tab,expect:agent=0,\
-         menu,Left,Down,Down,Return,wait:100,expect:agent=1&menu=0,\
+         menu,Left,Down,Down,Down,Return,wait:100,expect:agent=1&menu=0,\
          menu,Escape,expect:menu=0&agent=1,Escape,expect:agent=0,\
          alt+Tab,hold:Escape:1100,wait:100,expect:agent=0&screen=home",
     );

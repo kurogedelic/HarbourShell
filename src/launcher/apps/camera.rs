@@ -31,7 +31,6 @@ use std::time::{Duration, Instant};
 
 use sdl2::image::{InitFlag, Sdl2ImageContext};
 use sdl2::keyboard::{Keycode, Mod};
-use sdl2::pixels::Color;
 use sdl2::rect::{Point, Rect};
 use sdl2::render::Canvas;
 use sdl2::video::Window;
@@ -45,7 +44,6 @@ use crate::launcher::alert::{Alert, AlertIcon};
 use crate::launcher::widgets::{self, contains, BtnState, MenuItem, PointerEvent};
 use crate::platform::keys::arrow_alias;
 use crate::system::config::{self, Config};
-use crate::ui;
 
 use backend::{Backend, Ctrl, CtrlRange, Device, Probe};
 use convert::Still;
@@ -73,7 +71,7 @@ const RESCAN: Duration = Duration::from_secs(2);
 // ---------------------------------------------------------------- photos
 
 pub fn pictures_dir() -> PathBuf {
-    std::env::var_os("HOME").map(|h| PathBuf::from(h).join("Pictures")).unwrap_or_else(|| PathBuf::from("Pictures"))
+    crate::launcher::fileops::user_dir(crate::launcher::fileops::UserDir::Pictures)
 }
 
 /// How many pictures the Images app would list in `dir` (hidden files and other types skipped).
@@ -628,6 +626,17 @@ impl Camera {
 }
 
 impl LauncherApp for Camera {
+    fn help(&self) -> Vec<(String, String)> {
+        let k = |a: &str, b: &str| (a.to_string(), b.to_string());
+        vec![
+            k("Return / Space", "Capture"),
+            k("M", "Dither / grey"),
+            k("Left / Right", "Switch camera"),
+            k("Up / Down", "Brightness"),
+            k("Shift + Up / Down", "Contrast"),
+        ]
+    }
+
     fn title(&self) -> String {
         crate::launcher::i18n::app_name("camera")
     }
@@ -1084,5 +1093,10 @@ mod tests {
         cam.probed_at = Instant::now() - RESCAN * 2;
         cam.poll_rescan();
         assert!(!cam.unplugged && cam.error.is_none());
+    }
+
+    #[test]
+    fn help_rows_are_filled_in() {
+        crate::launcher::help::check_app_rows("Camera", &Camera::new(Arc::new(Fake(vec![])), std::env::temp_dir()).help());
     }
 }

@@ -7,7 +7,7 @@
 use chrono::{DateTime, Datelike, Local, NaiveDate, Offset, Timelike, Utc};
 use chrono_tz::Tz;
 use sdl2::keyboard::Keycode;
-use sdl2::rect::{Point, Rect};
+use sdl2::rect::Rect;
 use sdl2::render::Canvas;
 use sdl2::video::Window;
 
@@ -332,11 +332,9 @@ impl WorldClock {
                 let _ = c.fill_rect(Rect::new(MAP_X + sx, MAP_Y + y, 1, 1));
             }
         }
-        // International date line: a solid vertical line at 180 degrees.
-        let dl = MAP_X + map::lon_to_x(180.0, self.pan).round() as i32;
-        if dl >= MAP_X && dl < MAP_X + mw {
-            ui::line(c, dl, MAP_Y, dl, MAP_Y + mh - 1, land);
-        }
+        // International date line, as it really runs: around Chukotka and the Aleutians, out east
+        // around Kiribati, between Samoa / Tonga and American Samoa / Niue, east of the Chathams.
+        draw_date_line(c, self.pan, mw, mh, land);
 
         // The sun, over the point where it is at the zenith.
         let (sx, sy) = (MAP_X + map::lon_to_x(self.sun.1, self.pan).round() as i32, MAP_Y + map::lat_to_y(self.sun.0).round() as i32);
@@ -428,8 +426,73 @@ impl WorldClock {
     }
 }
 
+/// Corners of the international date line (latitude, longitude), north to south. A simplified
+/// version of the line in use since 1995 (Kiribati moved east of it) and 2011 (Samoa and Tokelau).
+pub const DATE_LINE: [(f32, f32); 15] = [
+    (90.0, 180.0),
+    (75.0, 180.0),
+    (68.25, -169.0),  // Bering Strait: Russia west, Alaska east
+    (65.5, -169.0),
+    (53.0, 170.0),    // west of the Aleutians (US, east of the line)
+    (47.5, 180.0),
+    (5.0, 180.0),
+    (5.0, -150.0),    // around Kiribati's Phoenix and Line Islands (UTC+13 / +14)
+    (-11.0, -150.0),
+    (-11.0, -171.3),  // Tokelau and Samoa west, American Samoa east
+    (-15.0, -171.3),
+    (-22.0, -172.5),  // Tonga west, Niue east
+    (-51.2, -172.5),  // the Chatham Islands (New Zealand) west
+    (-51.2, 180.0),
+    (-90.0, 180.0),
+];
+
+/// Draw [`DATE_LINE`] on the map panned to `pan`, 1 px in `col`, clipped to the map; the line
+/// crosses the map's wrap-around seam continuously (a copy is drawn one map width to each side).
+fn draw_date_line(c: &mut Canvas<Window>, pan: f32, mw: i32, mh: i32, col: sdl2::pixels::Color) {
+    let px_per_deg = map::W as f32 / 360.0;
+    // Screen x of each corner, unwrapped along the line so no segment jumps across the map.
+    let mut pts: Vec<(f32, f32)> = Vec::with_capacity(DATE_LINE.len());
+    for (i, &(lat, lon)) in DATE_LINE.iter().enumerate() {
+        let x = if i == 0 {
+            map::lon_to_x(lon, pan)
+        } else {
+            let (_, plon) = DATE_LINE[i - 1];
+            pts[i - 1].0 + map::wrap_lon(lon - plon) * px_per_deg
+        };
+        pts.push((x, map::lat_to_y(lat)));
+    }
+    c.set_draw_color(col);
+    for shift in [-(mw as f32), 0.0, mw as f32] {
+        for w in pts.windows(2) {
+            let ((x0, y0), (x1, y1)) = (w[0], w[1]);
+            let steps = ((x1 - x0).abs().max((y1 - y0).abs()).ceil() as i32).max(1);
+            for k in 0..=steps {
+                let t = k as f32 / steps as f32;
+                let x = (x0 + (x1 - x0) * t + shift).round() as i32;
+                let y = (y0 + (y1 - y0) * t).round() as i32;
+                if x >= 0 && x < mw && y >= 0 && y < mh {
+                    let _ = c.draw_point((MAP_X + x, MAP_Y + y));
+                }
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_date_line_runs_pole_to_pole_and_leaves_180_only_around_islands() {
+        let dl = super::DATE_LINE;
+        assert_eq!(dl.first().unwrap().0, 90.0);
+        assert_eq!(dl.last().unwrap().0, -90.0);
+        assert!(dl.windows(2).all(|w| w[0].0 >= w[1].0), "north to south");
+        // Kiribati's Line Islands (Kiritimati, 157.4 W) are west of the line: the bulge reaches 150 W.
+        assert!(dl.iter().any(|&(lat, lon)| lon == -150.0 && lat <= 2.0));
+        // Samoa (171.8 W) is west of the line, American Samoa (170.7 W) east of it.
+        let samoa = dl.iter().find(|&&(lat, _)| lat == -11.0 && true).map(|_| -171.3).unwrap();
+        assert!(samoa > -171.8 && samoa < -170.7);
+    }
+
     use super::*;
     use chrono::TimeZone;
 

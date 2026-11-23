@@ -1,6 +1,7 @@
-//! Interceptor: a signal-interceptor dashboard. Six pages (Left/Right or Z/C):
-//! Ethernet, Bluetooth (paired devices), BLE (advertisement scan), IR receiver,
-//! USB host and a MIDI monitor.
+//! Interceptor: a signal-interceptor dashboard. One page per thing the machine can hear or touch
+//! (Left/Right, Tab or the arrow tabs at both ends of the strip): Ethernet, Wi-Fi, Bluetooth
+//! (paired devices), BLE (advertisement scan), IR receiver, the Grove port, USB host, serial
+//! ports, I2C, GPIO, 1-Wire, OSC, MIDI and the Device tree. The wired buses live in `ports.rs`.
 //!
 //! Hardware access is split from drawing:
 //! * pure parsers (`/proc/net/dev`, `bluetoothctl`, sysfs USB, `aseqdump`, a MIDI
@@ -45,8 +46,14 @@ use crate::ui;
 
 // ===================================================================== layout
 
-const TABS: [&str; 7] = ["ETH", "BT", "BLE", "OSC", "IR", "Device", "MIDI"];
-const TAB_W: i32 = 44;
+mod ports;
+use ports::*;
+
+const TABS: [&str; 14] = ["ETH", "Wi-Fi", "BT", "BLE", "IR", "Grove", "USB", "Serial", "I2C", "GPIO", "1-Wire", "OSC", "MIDI", "Device"];
+/// Pages (one per tab).
+const NP: usize = TABS.len();
+/// The strip leaves 8 px at the right end for the pause mark.
+const TABS_ROOM: i32 = widgets::FOLDER_ROOM - 8;
 // One grid rule for every page: the tab strip is row 0 (y 16..32), the body is exactly
 // 8 rows of 16 px (y 36..164). A two-line item is 2 rows. The 5 px left under the last row
 // (y 164..168) belong to the body's frame, whose bottom line sits at y 168 like the framed
@@ -65,12 +72,19 @@ const LIST_W: i32 = grid::SCROLL_X - 4 - LIST_X;
 const HIST_LEN: usize = 72;
 const LOG_CAP: usize = 300;
 const PAGE_ETH: usize = 0;
-const PAGE_BT: usize = 1;
-const PAGE_BLE: usize = 2;
-const PAGE_OSC: usize = 3;
+const PAGE_WIFI: usize = 1;
+const PAGE_BT: usize = 2;
+const PAGE_BLE: usize = 3;
 const PAGE_IR: usize = 4;
-const PAGE_DEV: usize = 5;
-const PAGE_MIDI: usize = 6;
+const PAGE_GROVE: usize = 5;
+const PAGE_USB: usize = 6;
+const PAGE_SER: usize = 7;
+const PAGE_I2C: usize = 8;
+const PAGE_GPIO: usize = 9;
+const PAGE_W1: usize = 10;
+const PAGE_OSC: usize = 11;
+const PAGE_MIDI: usize = 12;
+const PAGE_DEV: usize = 13;
 const OSC_PORTS: [u16; 8] = [7000, 8000, 9000, 9001, 10111, 57120, 57110, 12000];
 const OSC_LOG_CAP: usize = 500;
 
@@ -740,8 +754,8 @@ fn body_scrollbar_rect() -> Rect {
     Rect::new(grid::SCROLL_X, BODY_Y + 1, grid::SCROLL_W as u32, (BODY_END - BODY_Y - 1) as u32)
 }
 
-fn tabs_strip(active: usize, tm: &crate::theme::ThemeManager) -> widgets::Tabs<'static> {
-    widgets::Tabs::folder_strip(&TABS, active, TAB_W, tm)
+fn tabs_strip(active: usize, first: usize) -> widgets::FolderScroll<'static> {
+    widgets::FolderScroll::new(&TABS, active, first, TABS_ROOM)
 }
 
 fn dev_tree_rect() -> Rect {
@@ -1289,6 +1303,8 @@ enum Ev {
     OscErr(String),
     OscPkt { src: String, msgs: Vec<(String, String)> },
     OscBad,
+    /// Wi-Fi, serial, I2C, GPIO and 1-Wire (see `ports.rs`).
+    Port(PortEv),
 }
 
 struct Worker {
@@ -1731,10 +1747,14 @@ pub struct Interceptor {
     page: usize,
     paused: bool,
     t0: Instant,
-    scroll: [usize; 7],
+    scroll: [usize; NP],
     /// Cursor row of each list page (absolute index); log pages follow the newest row while `follow` is set.
-    cur: [usize; 7],
-    follow: [bool; 7],
+    cur: [usize; NP],
+    follow: [bool; NP],
+    /// The first tab shown in the scrolling strip.
+    tab_first: usize,
+    /// The wired buses and Wi-Fi.
+    ports: Ports,
     /// The scroll bar thumb is being dragged.
     sb_drag: bool,
     /// BLE rows re-sort by RSSI, so the cursor sticks to an address.
@@ -1780,9 +1800,11 @@ impl Interceptor {
             page: 0,
             paused: false,
             t0: now,
-            scroll: [0; 7],
-            cur: [0; 7],
-            follow: [true; 7],
+            scroll: [0; NP],
+            cur: [0; NP],
+            follow: [true; NP],
+            tab_first: 0,
+            ports: Ports::new(mock),
             sb_drag: false,
             ble_sel: None,
             mask: true,
@@ -1887,6 +1909,7 @@ impl Interceptor {
                 Some((PAGE_OSC, start_osc(tx, self.osc.port())))
             }
             PAGE_MIDI => Some((PAGE_MIDI, start_midi(tx))),
+            PAGE_WIFI | PAGE_SER | PAGE_I2C | PAGE_GPIO | PAGE_W1 | PAGE_GROVE => self.ports.start(self.page, tx).map(|w| (self.page, w)),
             PAGE_IR => {
                 self.ir_hw = detect_ir();
                 match &self.ir_hw {
@@ -1899,7 +1922,13 @@ impl Interceptor {
     }
 
     fn set_page(&mut self, p: usize) {
-        self.page = p % TABS.len();
+        let p = p % NP;
+        if p != self.page {
+            // A port is only open while its page is in front.
+            self.ports.leave(self.page);
+        }
+        self.page = p;
+        self.tab_first = widgets::FolderScroll::follow(&TABS, p, self.tab_first, TABS_ROOM);
         self.last_page_started = None;
         if self.worker.is_some() {
             self.worker = None;
@@ -1955,6 +1984,7 @@ impl Interceptor {
                 }
             }
             Ev::OscBad => self.osc.table.bad(),
+            Ev::Port(e) => self.ports.apply(e, now_ms),
         }
     }
 
@@ -1963,7 +1993,7 @@ impl Interceptor {
     }
 
     fn log_page(&self) -> bool {
-        (self.page == PAGE_IR && matches!(self.ir_hw, IrHw::Rx(_))) || self.page == PAGE_MIDI || (self.page == PAGE_OSC && !self.osc.table_view)
+        (self.page == PAGE_IR && matches!(self.ir_hw, IrHw::Rx(_))) || self.page == PAGE_MIDI || (self.page == PAGE_OSC && !self.osc.table_view) || self.page == PAGE_SER
     }
 
     /// (rows in the list, rows visible) of the current page; (0, 0) when it has no list.
@@ -1975,7 +2005,8 @@ impl Interceptor {
             PAGE_OSC => (self.osc.log.len(), (BODY_ROWS - 2) as usize),
             PAGE_IR if self.log_page() => (self.ir_log.len(), (BODY_ROWS - 1) as usize),
             PAGE_MIDI => (self.midi.log.len(), (BODY_ROWS - 3) as usize),
-            _ => (0, 0),
+            PAGE_USB => (self.usb_rows().len(), (BODY_ROWS - 1) as usize),
+            p => self.ports.dims(p).map_or((0, 0), |(len, vis, _)| (len, vis)),
         }
     }
 
@@ -2019,7 +2050,8 @@ impl Interceptor {
             PAGE_BLE => (1, 2),
             PAGE_OSC => (2, 1),
             PAGE_MIDI => (3, 1),
-            _ => return None,
+            PAGE_USB => (1, 1),
+            p => (self.ports.dims(p)?.2, 1),
         };
         let start = if self.log_page() { total.saturating_sub(vis).saturating_sub(self.scroll[self.page]) } else { self.scroll[self.page] };
         Some(ListGeom { first_row, item_rows, total, vis, start })
@@ -2134,6 +2166,7 @@ impl Interceptor {
                 self.midi.held = [0; 128];
             }
             PAGE_ETH => self.eth.hist.clear(),
+            PAGE_SER => self.ports.serial.log.clear(),
             _ => {}
         }
         self.reset_cursor();
@@ -2275,7 +2308,7 @@ fn rssi_meter(c: &mut Canvas<Window>, ctx: &Ctx, x: i32, y: i32, rssi: Option<i1
 
 impl Interceptor {
     fn draw_tabs(&self, c: &mut Canvas<Window>, ctx: &Ctx, p: &Pal) {
-        tabs_strip(self.page, ctx.tm).draw_strip(c, ctx.fs, ctx.tm);
+        tabs_strip(self.page, self.tab_first).draw_strip(c, ctx.fs, ctx.tm);
         if self.paused {
             // Two thin bars in the free 4 px at the right end of the strip.
             ui::fill_rect(c, Rect::new(grid::SCREEN_W - 10, grid::BAR_H + 6, 1, 8), p.ink);
@@ -2312,13 +2345,13 @@ impl Interceptor {
         }
         // The rule sits right of the longest key, so no value crosses it.
         vsep(c, p, LIST_X + 36, 0);
-        // Right panel: label row, a 6-row graph (RX solid, TX shaded), hint row.
+        // Right panel: label row, then the graph (RX solid, TX shaded) down to the last row.
         let gx = LIST_X + col_w + 8;
         let gw = (HIST_LEN * 2) as i32;
         let max = nice_ceil(self.eth.hist.iter().fold(1024.0f32, |m, (a, b)| m.max(*a).max(*b)));
         ctx.fs.draw_text(c, gx, BODY_Y + 1, "RX / TX", p.faint);
         right_text(c, ctx, gx + gw, BODY_Y, &fmt_rate(max as f64), p.faint);
-        let g = Rect::new(gx, BODY_Y + ROW, gw as u32, (6 * ROW) as u32);
+        let g = Rect::new(gx, BODY_Y + ROW, gw as u32, (7 * ROW - 3) as u32);
         ui::fill_rect(c, g, p.paper);
         let h = g.height() as f32;
         let off = HIST_LEN - self.eth.hist.len();
@@ -2334,7 +2367,6 @@ impl Interceptor {
             }
         }
         ui::draw_rect(c, g, p.ink);
-        ctx.fs.draw_text(c, gx, BODY_Y + 7 * ROW + 1, i18n::tr("Enter: next interface"), p.faint);
     }
 
     fn draw_bt(&mut self, c: &mut Canvas<Window>, ctx: &Ctx, p: &Pal) {
@@ -2376,10 +2408,8 @@ impl Interceptor {
             None => format!("{}{} {}", i18n::tr(if self.paused { "Paused" } else { "Scanning" }), if self.mock { i18n::tr(" (demo)") } else { "" }, i18n::tr_s(&format!("{} devices", sorted.len()))),
         };
         header_band(c, ctx, p, 0, &head, if self.mask { "mask on" } else { "mask off" });
-        // 1 header row + 3 two-row devices + a key hint on the last row.
+        // 1 header row + 3 two-row devices (the last row stays free).
         let vis = 3usize;
-        let hint = row_rect(BODY_ROWS - 1);
-        text_row(c, ctx, hint.x() + 4, hint.y(), LIST_W - 8, "Space: pause   M: mask", p.faint);
         let total = sorted.len();
         self.scroll[PAGE_BLE] = self.scroll[PAGE_BLE].min(total.saturating_sub(vis));
         for (i, d) in sorted.iter().enumerate().skip(self.scroll[PAGE_BLE]).take(vis) {
@@ -2639,17 +2669,41 @@ impl LauncherApp for Interceptor {
         "Interceptor".into()
     }
 
+    fn help(&self) -> Vec<(String, String)> {
+        let k = |a: &str, b: &str| (a.to_string(), b.to_string());
+        let mut v = vec![k("Space", "Pause / resume"), k("M", "Mask addresses"), k("Backspace", "Clear the page"), k("Up / Down", "Choose a row")];
+        v.extend(match self.page {
+            PAGE_ETH => vec![k("Return", "Next interface")],
+            PAGE_OSC => vec![k("Return", "Next port"), k("V", "Log / table")],
+            PAGE_DEV => vec![k("Return", "Open / close a node")],
+            PAGE_WIFI => vec![k("Return", "Scan again")],
+            PAGE_GROVE => vec![k("Return", "5V on / off")],
+            PAGE_SER => vec![k("Return", "Open the port / send the line"), k("P", "Next port (closed)"), k("B", "Next speed (closed)"), k("E", "Next line ending (closed)"), k("H", "Text / hex (closed)")],
+            PAGE_I2C => vec![k("Return", "Next bus"), k("R", "Scan again")],
+            PAGE_GPIO => vec![k("Return", "Next chip")],
+            PAGE_W1 => vec![k("Return", "Read again")],
+            _ => vec![],
+        });
+        v
+    }
+
     fn menu(&self) -> Vec<MenuItem> {
-        vec![
+        // The page's own items first, then the ones every page has.
+        let mut v = match self.page {
+            PAGE_OSC => vec![MenuItem::new("view", "OSC: log / table"), MenuItem::new("port", "OSC: next port")],
+            PAGE_DEV => vec![MenuItem::new("dev_toggle", "Device: expand / collapse (Return)"), MenuItem::new("dev_collapse", "Device: collapse all")],
+            p => self.ports.menu(p),
+        };
+        if let Some((pkg, _)) = self.ports.missing_package(self.page) {
+            v.insert(0, MenuItem::new("install_pkg", format!("Install {pkg}...")));
+        }
+        v.extend([
             MenuItem::new("mask", format!("Mask addresses: {}", if self.mask { "on" } else { "off" })),
             MenuItem::new("pause", if self.paused { "Resume" } else { "Pause" }),
             MenuItem::new("clear", "Clear page"),
             MenuItem::new("next", "Next page"),
-            MenuItem::new("view", "OSC: log / table"),
-            MenuItem::new("port", "OSC: next port"),
-            MenuItem::new("dev_toggle", "Device: expand / collapse (Return)"),
-            MenuItem::new("dev_collapse", "Device: collapse all"),
-        ]
+        ]);
+        v
     }
 
     fn context_menu(&mut self, x: i32, y: i32, _ctx: &Ctx) -> Option<Vec<MenuItem>> {
@@ -2687,7 +2741,7 @@ impl LauncherApp for Interceptor {
         None
     }
 
-    fn menu_action(&mut self, id: &str, _ctx: &Ctx) -> AppAction {
+    fn menu_action(&mut self, id: &str, ctx: &Ctx) -> AppAction {
         match id {
             "pause" => self.paused = !self.paused,
             "clear" => self.clear(),
@@ -2706,22 +2760,65 @@ impl LauncherApp for Interceptor {
                     dv.tree.collapse_all();
                 });
             }
-            _ => {}
+            "grove_serial" => {
+                self.ports.serial.select("/dev/ttyS0");
+                self.set_page(PAGE_SER);
+            }
+            "grove_i2c" => self.set_page(PAGE_I2C),
+            "install_pkg" => {
+                if let Some((pkg, why)) = self.ports.missing_package(self.page) {
+                    return AppAction::Install(crate::launcher::installer::InstallReq::apt(&[pkg], why));
+                }
+            }
+            id => {
+                if self.ports.menu_action(self.page, id, ctx) {
+                    self.last_page_started = None;
+                    self.worker = None;
+                    self.ports.restart = false;
+                }
+            }
         }
         AppAction::None
     }
 
-    fn key(&mut self, key: Keycode, mods: Mod, _repeat: bool, _ctx: &Ctx) -> AppAction {
+    fn text(&mut self, text: &str, _ctx: &Ctx) -> AppAction {
+        if self.page == PAGE_SER && self.ports.serial.is_open() {
+            self.ports.serial.input.extend(text.chars().filter(|c| !c.is_control()));
+        }
+        AppAction::None
+    }
+
+    fn key(&mut self, key: Keycode, mods: Mod, _repeat: bool, ctx: &Ctx) -> AppAction {
         let p = self.page;
+        if matches!(arrow_alias(key), Keycode::Return | Keycode::KpEnter) {
+            if let Some((pkg, why)) = self.ports.missing_package(p) {
+                return AppAction::Install(crate::launcher::installer::InstallReq::apt(&[pkg], why));
+            }
+        }
+        if p == PAGE_SER && self.ports.serial.is_open() {
+            // Typing goes to the line to send: only keys that never type stay commands.
+            match arrow_alias(key) {
+                Keycode::Return | Keycode::KpEnter => {
+                    self.ports.serial_send();
+                    return AppAction::None;
+                }
+                Keycode::Backspace => {
+                    self.ports.serial.input.pop();
+                    return AppAction::None;
+                }
+                Keycode::Escape | Keycode::Tab | Keycode::Left | Keycode::Right | Keycode::Up | Keycode::Down | Keycode::PageUp | Keycode::PageDown | Keycode::Home | Keycode::End => {}
+                _ => return AppAction::None,
+            }
+        }
         match arrow_alias(key) {
             Keycode::Escape => return AppAction::Quit,
             // Tab / Shift+Tab: next / previous tab (Left / Right do the same).
-            Keycode::Tab if mods.intersects(Mod::LSHIFTMOD | Mod::RSHIFTMOD) => self.set_page(p + TABS.len() - 1),
+            Keycode::Tab if mods.intersects(Mod::LSHIFTMOD | Mod::RSHIFTMOD) => self.set_page(p + NP - 1),
             Keycode::Tab => self.set_page(p + 1),
             k @ (Keycode::Up | Keycode::Down | Keycode::PageUp | Keycode::PageDown | Keycode::Home | Keycode::End | Keycode::Return) if p == PAGE_DEV => {
                 self.dev_key(k);
             }
-            Keycode::Left => self.set_page(p + TABS.len() - 1),
+            Keycode::Left => self.set_page(p + NP - 1),
             Keycode::Right => self.set_page(p + 1),
             Keycode::Up => self.move_cursor(-1),
             Keycode::Down => self.move_cursor(1),
@@ -2732,6 +2829,13 @@ impl LauncherApp for Interceptor {
             Keycode::M => self.mask = !self.mask,
             Keycode::Space => self.paused = !self.paused,
             Keycode::Return if p == PAGE_ETH => self.eth.next_iface(),
+            k if self.ports.key(p, k, ctx) => {
+                if self.ports.restart {
+                    self.ports.restart = false;
+                    self.last_page_started = None;
+                    self.worker = None;
+                }
+            }
             Keycode::Return if p == PAGE_OSC => {
                 self.osc.port_idx = (self.osc.port_idx + 1) % OSC_PORTS.len();
                 self.osc.reset();
@@ -2750,10 +2854,19 @@ impl LauncherApp for Interceptor {
     fn pointer(&mut self, ev: PointerEvent, ctx: &Ctx) -> AppAction {
         // Tabs: a click on a tab switches to it.
         if let PointerEvent::Down { x, y, button: 0, .. } = ev {
-            if let Some(i) = tabs_strip(self.page, ctx.tm).hit(x, y) {
+            if self.ports.missing_package(self.page).is_some() && contains_pt(Self::install_button_rect(), x, y) {
+                let (pkg, why) = self.ports.missing_package(self.page).unwrap();
+                return AppAction::Install(crate::launcher::installer::InstallReq::apt(&[pkg], why));
+            }
+            if let Some(h) = tabs_strip(self.page, self.tab_first).hit(x, y, ctx.tm) {
                 self.sb_drag = false;
-                if i != self.page {
-                    self.set_page(i);
+                let to = match h {
+                    widgets::FolderHit::Tab(i) => i,
+                    widgets::FolderHit::Prev => self.page + NP - 1,
+                    widgets::FolderHit::Next => self.page + 1,
+                };
+                if to % NP != self.page {
+                    self.set_page(to);
                 }
                 return AppAction::None;
             }
@@ -2829,6 +2942,12 @@ impl LauncherApp for Interceptor {
             }
         }
         self.ensure_worker();
+        dirty |= self.ports.tick(self.page, self.paused, ctx);
+        if self.ports.restart {
+            self.ports.restart = false;
+            self.last_page_started = None;
+            self.worker = None;
+        }
         while let Ok(ev) = self.rx.try_recv() {
             if !self.paused {
                 self.apply(ev);
@@ -2916,7 +3035,14 @@ impl LauncherApp for Interceptor {
             PAGE_OSC => self.draw_osc(c, ctx, &p),
             PAGE_IR => self.draw_ir(c, ctx, &p),
             PAGE_DEV => self.draw_dev(c, ctx, &p),
-            _ => self.draw_midi(c, ctx, &p),
+            PAGE_MIDI => self.draw_midi(c, ctx, &p),
+            PAGE_USB => self.draw_usb(c, ctx, &p),
+            PAGE_WIFI => self.draw_wifi(c, ctx, &p),
+            PAGE_GROVE => self.draw_grove(c, ctx, &p),
+            PAGE_SER => self.draw_serial(c, ctx, &p),
+            PAGE_I2C => self.draw_i2c(c, ctx, &p),
+            PAGE_GPIO => self.draw_gpio(c, ctx, &p),
+            _ => self.draw_w1(c, ctx, &p),
         }
         match self.page {
             PAGE_ETH => frame_sides(c, &p, body_frame(150)),
@@ -3268,7 +3394,7 @@ mod tests {
             let sys = crate::system::mock::MockBackend::new();
             let ctx = Ctx { fs: &fs, tm: &tm, sys: &sys, now: chrono::Local::now() };
             a.key(Keycode::Right, Mod::NOMOD, false, &ctx);
-            assert_eq!(a.page, PAGE_MIDI);
+            assert_eq!(a.page, PAGE_ETH, "Device is the last page: Right wraps");
             a.key(Keycode::Left, Mod::NOMOD, false, &ctx);
             assert_eq!(a.page, PAGE_DEV);
         }
@@ -3410,15 +3536,17 @@ mod tests {
                 let at = |x: usize, y: usize| (px[(y * 320 + x) * 3], px[(y * 320 + x) * 3 + 1], px[(y * 320 + x) * 3 + 2]);
                 let who = format!("{theme} / {name}");
                 // Bands in the column x = 5.
-                // The tab strip (y 16..36) is folder tabs: raised active tab, rule on its last pixel row.
+                // The tab strip (y 16..36) is folder tabs of one size, rule on its last pixel row.
                 let ink = tm.get_color("foreground");
                 let ink3 = (ink.r, ink.g, ink.b);
                 let sb = tm.get_color("select_bg");
-                let act_x = 4 + page * (TAB_W as usize) + TAB_W as usize / 2;
-                let idle_x = 4 + (if page == 0 { 1 } else { 0 }) * (TAB_W as usize) + TAB_W as usize / 2;
+                let strip = tabs_strip(app.page, app.tab_first);
+                let act = (0..320).find(|&x| strip.hit(x, 30, &tm) == Some(widgets::FolderHit::Tab(page))).expect("active tab shown") as usize;
+                let idle = (0..320).find(|&x| matches!(strip.hit(x, 30, &tm), Some(widgets::FolderHit::Tab(i)) if i != page)).unwrap() as usize;
                 if !table {
-                    assert_eq!(at(act_x, 35), (sb.r, sb.g, sb.b), "{who}: the active tab is open at the bottom");
-                    assert_eq!(at(idle_x, 35), ink3, "{who}: rule under the idle tabs");
+                    assert_eq!(at(act + 2, 30), (sb.r, sb.g, sb.b), "{who}: the active tab wears the selection colour");
+                    assert_eq!(at(act + 10, 35), ink3, "{who}: the rule runs under the active tab too");
+                    assert_eq!(at(idle + 10, 35), ink3, "{who}: rule under the idle tabs");
                     assert_eq!(at(4, 35), ink3, "{who}: the tab edge meets the rule");
                 }
                 let mut start = 36usize;
@@ -3466,13 +3594,24 @@ mod mouse_tests {
     fn clicking_a_tab_switches_page() {
         run(|ctx| {
             let mut a = Interceptor::new(true);
-            for i in 0..TABS.len() {
-                a.pointer(down(4 + i as i32 * TAB_W + 5, grid::BAR_H + 6, 1), ctx);
+            // The right arrow tab feeds through every page, the window follows.
+            let next_x = 4 + TABS_ROOM - 6;
+            for i in 1..NP {
+                a.pointer(down(next_x, grid::BAR_H + 10, 1), ctx);
                 assert_eq!(a.page, i);
+                let s = tabs_strip(a.page, a.tab_first);
+                assert!((0..320).any(|x| s.hit(x, grid::BAR_H + 10, ctx.tm) == Some(widgets::FolderHit::Tab(i))), "page {i} is in view");
             }
+            // The left arrow goes back; a click on a shown tab switches to it.
+            a.pointer(down(4 + 3, grid::BAR_H + 10, 1), ctx);
+            assert_eq!(a.page, NP - 2);
+            let s = tabs_strip(a.page, a.tab_first);
+            let x = (0..320).find(|&x| s.hit(x, grid::BAR_H + 10, ctx.tm) == Some(widgets::FolderHit::Tab(NP - 1))).unwrap();
+            a.pointer(down(x, grid::BAR_H + 10, 1), ctx);
+            assert_eq!(a.page, NP - 1);
             // Below the tab strip nothing switches.
             a.pointer(down(4 + 5, grid::BAR_H + TABS_H + 3, 1), ctx);
-            assert_eq!(a.page, TABS.len() - 1);
+            assert_eq!(a.page, NP - 1);
         });
     }
 

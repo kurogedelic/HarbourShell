@@ -91,7 +91,7 @@ pub fn rs_remainder(data: &[u8], n: usize) -> Vec<u8> {
 fn data_codewords(bytes: &[u8], version: usize) -> Vec<u8> {
     let cap = CAPACITY[version - 1].0;
     let mut bits: Vec<bool> = vec![];
-    let mut push = |v: u32, n: usize, bits: &mut Vec<bool>| {
+    let push = |v: u32, n: usize, bits: &mut Vec<bool>| {
         for i in (0..n).rev() {
             bits.push(v >> i & 1 == 1);
         }

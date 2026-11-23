@@ -949,7 +949,7 @@ impl Browser {
     /// Edit keys shared by the address bar and text fields; true if handled.
     fn edit_key(&mut self, key: Keycode, mods: Mod) -> bool {
         let ctrl = mods.intersects(Mod::LCTRLMOD | Mod::RCTRLMOD);
-        let (mut text, field) = match self.edit {
+        let (text, field) = match self.edit {
             Edit::Address => (std::mem::take(&mut self.addr), None),
             Edit::Field(f) => match &mut self.page {
                 Some(p) => (std::mem::take(&mut p.fields[f as usize].value), Some(f)),
@@ -1026,6 +1026,18 @@ fn byte_at(s: &str, chars: usize) -> usize {
 impl LauncherApp for Browser {
     fn title(&self) -> String {
         crate::launcher::i18n::app_name("browser")
+    }
+
+    fn help(&self) -> Vec<(String, String)> {
+        let k = |a: &str, b: &str| (a.to_string(), b.to_string());
+        vec![
+            k("Tab / Shift+Tab", "Next / previous link or field"),
+            k("Return", "Follow a link; type in a field, Return again sends"),
+            k("Up / Down", "Scroll"),
+            k("R", "Reader view"),
+            k("Ctrl+R / F5", "Reload"),
+            k("Alt", "Address, bookmarks, back, reload"),
+        ]
     }
 
     fn wants_tab(&self) -> bool {
@@ -1409,7 +1421,7 @@ impl LauncherApp for Browser {
         let (tm, fs) = (ctx.tm, ctx.fs);
         let ink = tm.get_color("foreground");
         let paper = tm.get_color("widget_face_active");
-        let faint = tm.get_color("text_faint");
+        let faint = crate::launcher::widgets::secondary_ink(tm);
         let line = tm.get_color("line");
         let sunken = tm.get_color("surface_sunken");
         ui::fill_rect(c, chrome::app_rect(), tm.get_color("home_bg"));
@@ -1422,31 +1434,13 @@ impl LauncherApp for Browser {
         let fwd_st = BtnState { pressed: self.pressed == 2, disabled: self.pos + 1 >= self.nav.len(), ..Default::default() };
         widgets::draw_icon_button(c, tm, fwd_r(), &ICON_FORWARD, fwd_st);
         widgets::draw_icon_button(c, tm, reload_r(), if loading { &ICON_STOP } else { &ICON_GO }, BtnState { pressed: self.pressed == 3, ..Default::default() });
-            ui::fill_rect(c, addr_r(), paper);
-            ui::draw_rect(c, addr_r(), ink);
-            let room = addr_r().width() as i32 - 8;
+            // The shared text field: the address being typed, or the page's address.
             if self.edit == Edit::Address {
-                let chars: Vec<char> = self.addr.chars().collect();
-                let mut start = 0;
-                while start < self.caret.min(chars.len()) && fs.measure_text(&chars[start..self.caret.min(chars.len())].iter().collect::<String>()) > room - 2 {
-                    start += 1;
-                }
-                let shown: String = chars[start..].iter().collect();
-                let before: String = chars[start..self.caret.min(chars.len()).max(start)].iter().collect();
-                let clip = Rect::new(addr_r().x() + 2, addr_r().y() + 1, addr_r().width() - 4, addr_r().height() - 2);
-                c.set_clip_rect(clip);
-                if self.fresh && !shown.is_empty() {
-                    ui::fill_rect(c, Rect::new(addr_r().x() + 3, addr_r().y() + 2, (fs.measure_text(&shown) + 2).min(room) as u32, 12), ink);
-                    fs.draw_text(c, addr_r().x() + 4, addr_r().y() + 2, &shown, paper);
-                } else {
-                    fs.draw_text(c, addr_r().x() + 4, addr_r().y() + 2, &shown, ink);
-                    ui::fill_rect(c, Rect::new(addr_r().x() + 4 + fs.measure_text(&before), addr_r().y() + 2, 1, 12), ink);
-                }
-                c.set_clip_rect(None);
+                widgets::draw_field(c, fs, tm, addr_r(), &widgets::Field { text: &self.addr, caret: Some(self.caret), select_all: self.fresh, ..Default::default() });
             } else {
                 let t = if let Some(l) = &self.loading { l.url.clone() } else { self.cur_url() };
-                let t = if t.is_empty() { i18n::tr("Address or search words").to_string() } else { url::display(&t) };
-                fs.draw_text(c, addr_r().x() + 4, addr_r().y() + 2, &chrome::fit_text(fs, &t, room), if self.cur_url().is_empty() { faint } else { ink });
+                let shown = if t.is_empty() { String::new() } else { url::display(&t) };
+                widgets::draw_field(c, fs, tm, addr_r(), &widgets::Field { text: &shown, placeholder: "Address or search words", ..Default::default() });
             }
         }
 
@@ -1534,28 +1528,13 @@ impl LauncherApp for Browser {
                         let r = Rect::new(x, y, it.w as u32, it.h as u32);
                         match f.kind {
                             FieldKind::Text | FieldKind::Password => {
-                                ui::fill_rect(c, r, paper);
-                                if hot || self.edit == Edit::Field(*k) {
+                                // The shared text field; a field the cursor is on gets the thick frame.
+                                let editing = self.edit == Edit::Field(*k);
+                                let field = widgets::Field { text: &f.value, caret: editing.then_some(self.caret), masked: f.kind == FieldKind::Password, ..Default::default() };
+                                widgets::draw_field(c, fs, tm, r, &field);
+                                if hot || editing {
                                     ui::draw_rect_thick(c, r, ink);
-                                } else {
-                                    ui::draw_rect(c, r, ink);
                                 }
-                                let shown: String = if f.kind == FieldKind::Password { "*".repeat(f.value.chars().count()) } else { f.value.clone() };
-                                let room = it.w - 8;
-                                let chars: Vec<char> = shown.chars().collect();
-                                let caret = if self.edit == Edit::Field(*k) { self.caret.min(chars.len()) } else { chars.len() };
-                                let mut start = 0;
-                                while start < caret && fs.measure_text(&chars[start..caret].iter().collect::<String>()) > room - 2 {
-                                    start += 1;
-                                }
-                                c.set_clip_rect(r.intersection(view).map(|q| Rect::new(q.x() + 2, q.y() + 1, q.width().saturating_sub(4), q.height().saturating_sub(2))));
-                                let vis: String = chars[start..].iter().collect();
-                                fs.draw_text(c, x + 4, y + 2, &vis, ink);
-                                if self.edit == Edit::Field(*k) {
-                                    let before: String = chars[start..caret].iter().collect();
-                                    ui::fill_rect(c, Rect::new(x + 4 + fs.measure_text(&before), y + 2, 1, 12), ink);
-                                }
-                                c.set_clip_rect(view);
                             }
                             FieldKind::Submit => widgets::draw_button(c, fs, tm, r, &f.label, BtnState { pressed: hot, ..Default::default() }),
                             FieldKind::Check => widgets::draw_checkbox(c, tm, x, y, f.checked, false, BtnState { hover: hot, pressed: hot, ..Default::default() }),
@@ -1602,9 +1581,9 @@ impl LauncherApp for Browser {
         let target = self.hover.or_else(|| self.selected()).and_then(|f| self.page.as_ref().map(|p| match f {
             Focus::Link(l) => url::display(&p.links[l as usize]),
             Focus::Field(k) => match p.fields[k as usize].kind {
-                FieldKind::Submit => i18n::tr("Press Enter to submit").to_string(),
-                FieldKind::Text | FieldKind::Password => i18n::tr("Enter to type, Enter again to send").to_string(),
-                _ => i18n::tr("Enter to change").to_string(),
+                FieldKind::Submit => i18n::tr("Form button").to_string(),
+                FieldKind::Text | FieldKind::Password => i18n::tr("Text field").to_string(),
+                _ => i18n::tr("Form choice").to_string(),
             },
             Focus::Image(i) => format!("{}: {}", i18n::tr("Picture"), url::display(&p.images[i as usize].url)),
         }));

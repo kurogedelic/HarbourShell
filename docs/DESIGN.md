@@ -80,6 +80,15 @@ Push button (rounded; default button double ring; pressed = inverted), check box
 slider, scroll bar, pop-up button + popup list (solid 1 px shadow, check mark on the
 current item), app menu, `PointerEvent` (move/down/up/drag/wheel, double click 450 ms).
 
+Text fields: every one-line entry draws through `widgets::draw_field` (`Field`): one grid row high (`FIELD_H` = 16),
+`surface_sunken` fill, 1 px ink frame, body-font text 4 px in, a 1 px caret at the capitals' height, the text scrolled
+to keep the caret in view, `*` per character when masked, inverted text when all is selected (the first key replaces it),
+a faint placeholder when empty, an optional fixed prefix (`>` prompt, Sheet's cell name). A label beside a field is a
+plate of the same 16 px height. In a card the field starts at the text's x and runs to the text's right edge; on a page
+it sits on a row of the grid. Pages with their own face (Infoscope, Radio) pass their colours. Used by the dialogs
+(name prompt, Save As), the install card, Settings' Wi-Fi password, the Agent, Browser (address bar, form fields),
+Infoscope, Radio search, Sheet's input bar and Interceptor's serial line.
+
 Dialogs (`src/launcher/dialogs.rs`): the "Save changes to <file>?" alert (Don't Save / Cancel / Save, Save is the default;
 D, S, Esc work too) and the Save As panel (name field with the suggestion selected, folder list, Right opens a folder,
 Left goes up, Enter saves, an existing file asks once more before it is replaced). The host shows them over an app;

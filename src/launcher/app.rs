@@ -37,6 +37,9 @@ pub enum AppAction {
     /// Open a file in an app. `app` names it ("Text Editor", "Images", "Sheet", "Music", "Paint"...);
     /// `None` picks one from the extension. The host shows a toast when nothing can open it.
     Open { app: Option<String>, path: PathBuf },
+    /// Install something a feature needs (Debian packages, the Japanese dictionary): the host
+    /// shows its install card, which asks for the user's password when apt needs it.
+    Install(crate::launcher::installer::InstallReq),
 }
 
 /// Things an app may need while it runs.
@@ -87,6 +90,12 @@ pub trait LauncherApp {
 
     fn pointer(&mut self, _ev: PointerEvent, _ctx: &Ctx) -> AppAction {
         AppAction::None
+    }
+
+    /// This app's keys for Help (Harbour menu > Help): (key, what it does), in English (translated
+    /// when shown). Empty = Help shows only the keys every screen shares.
+    fn help(&self) -> Vec<(String, String)> {
+        Vec::new()
     }
 
     /// A compact text description of what the app shows right now (for the Agent's

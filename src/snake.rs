@@ -185,11 +185,10 @@ impl SnakeState {
             // An alert card in the middle of the board.
             let title = crate::launcher::i18n::tr("Game Over");
             let score = crate::launcher::i18n::tr_s(&format!("Score {}", self.score));
-            let hint = crate::launcher::i18n::tr("Space: again");
             let tw = font.measure_display_text(title);
-            let widest = tw.max(font.measure_text(&score)).max(font.measure_text(hint));
+            let widest = tw.max(font.measure_text(&score));
             let card_w = (widest + 28).max(110);
-            let card_h = 52;
+            let card_h = 40;
             let cx = bx + board_w / 2;
             let cy = by + board_h / 2;
             let card = Rect::new(cx - card_w / 2, cy - card_h / 2, card_w as u32, card_h as u32);
@@ -197,8 +196,6 @@ impl SnakeState {
             font.draw_display_text(c, cx - tw / 2, card.y() + 5, title, amber);
             let sw = font.measure_text(&score);
             font.draw_text(c, cx - sw / 2, card.y() + 22, &score, amber);
-            let hw = font.measure_text(hint);
-            font.draw_text(c, cx - hw / 2, card.y() + 36, hint, muted);
         }
     }
 }

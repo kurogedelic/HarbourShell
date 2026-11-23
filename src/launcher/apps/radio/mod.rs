@@ -487,7 +487,6 @@ fn lamp(c: &mut Canvas<Window>, cx: i32, cy: i32, lit: bool, on: sdl2::pixels::C
 fn draw_dial(app: &Radio, c: &mut Canvas<Window>, assets: &mut AssetStore, ctx: &Ctx) {
     let (tm, fs) = (ctx.tm, ctx.fs);
     let land = widgets::tones(tm).dark;
-    let muted = tm.get_color("muted");
     let (mw, my) = (312i32, CONTENT_Y);
     let mx = 4;
     let station = app.stations.get(app.cursor);
@@ -497,7 +496,7 @@ fn draw_dial(app: &Radio, c: &mut Canvas<Window>, assets: &mut AssetStore, ctx: 
     // The panel: the band on an ink plate, On air (playing) and Loading (blinks while the station
     // list loads) lamps, the keys at the bottom.
     let lamps = [(tr("On air"), snap.as_ref().is_some_and(|p| !p.paused)), (tr("Loading"), app.loading && blink)];
-    draw_panel(c, ctx, tr(BANDS[app.band].0), &lamps, tr("< > Tune  ^ v Band  Enter Play"));
+    draw_panel(c, ctx, tr(BANDS[app.band].0), &lamps, "");
 
     // Tuning scale: ticks along a baseline, a dot per station, a needle on the tuned one.
     let n = app.stations.len();
@@ -524,7 +523,7 @@ fn draw_dial(app: &Radio, c: &mut Canvas<Window>, assets: &mut AssetStore, ctx: 
         for (x, idx) in marks {
             let label = idx.to_string();
             let lw = fs.measure_text(&label);
-            fs.draw_text(c, x - lw / 2, base + 10, &label, muted);
+            fs.draw_text(c, x - lw / 2, base + 10, &label, widgets::secondary_ink(tm));
         }
     }
     if n > 0 && n <= 78 {
@@ -655,6 +654,9 @@ fn draw_panel(c: &mut Canvas<Window>, ctx: &Ctx, label: &str, lamps: &[(&str, bo
     ui::fill_rect(c, Rect::new(mx + 6, my + 6, (lw + 6) as u32, 14), ink);
     fs.draw_display_text(c, mx + 9, my + 6, label, face);
     draw_lamps(c, fs, mx + mw - 6, my + 6, lamps, ink, face);
+    if keys.is_empty() {
+        return;
+    }
     let kw = fs.measure_text(keys);
     let kr = Rect::new(mx + 6, my + PANEL_H - 22, (kw + 6) as u32, 15);
     ui::draw_rect(c, kr, ink);
@@ -831,7 +833,7 @@ fn draw_deck(app: &Radio, c: &mut Canvas<Window>, assets: &mut AssetStore, ctx: 
     let this = audio::snapshot().filter(|p| p.podcast && episode.is_some_and(|e| e.audio == p.url));
     let played = this.as_ref().and_then(|_| audio::elapsed()).unwrap_or_default();
     let (on_air, paused) = (this.as_ref().is_some_and(|p| !p.paused), this.as_ref().is_some_and(|p| p.paused));
-    draw_panel(c, ctx, tr("PODCAST"), &[(tr("On air"), on_air), (tr("Paused"), paused)], tr("^ v Select  Enter Play  Space Pause"));
+    draw_panel(c, ctx, tr("PODCAST"), &[(tr("On air"), on_air), (tr("Paused"), paused)], "");
 
     let (x, y) = (14, CONTENT_Y + 30);
     draw_cassette(c, x, y, played.as_secs_f32() * 3.0, ink, face);
@@ -880,23 +882,15 @@ fn draw_search(app: &Radio, c: &mut Canvas<Window>, ctx: &Ctx) {
     };
     ui::fill_rect(c, r, face);
     ui::draw_rect(c, r, ink);
-    let ty = r.y() + (r.height() as i32 - 14) / 2;
+    let fy = r.y() + (r.height() as i32 - widgets::FIELD_H) / 2;
     let label = tr("SEARCH:");
     let lw = fs.measure_display_text(label);
-    ui::fill_rect(c, Rect::new(r.x() + 6, ty, (lw + 6) as u32, 14), ink);
-    fs.draw_display_text(c, r.x() + 9, ty, label, face);
-    let tx = r.x() + 6 + lw + 6 + 6;
-    let text = &app.search.text;
-    // Keep the end of the text (where the caret is) in view.
-    let room = r.right() - 10 - tx;
-    let mut shown: &str = text;
-    while fs.measure_text(shown) > room {
-        let mut it = shown.chars();
-        it.next();
-        shown = it.as_str();
-    }
-    fs.draw_text(c, tx, ty + 1, shown, ink);
-    ui::fill_rect(c, Rect::new(tx + fs.measure_text(shown) + 1, ty + 1, 1, 12), ink);
+    ui::fill_rect(c, Rect::new(r.x() + 6, fy, (lw + 6) as u32, widgets::FIELD_H as u32), ink);
+    fs.draw_display_text(c, r.x() + 9, fy + 1, label, face);
+    // The shared text field beside the label, as tall as the label plate area allows (one row).
+    let fx = r.x() + 6 + lw + 6 + 6;
+    let field = Rect::new(fx, r.y() + (r.height() as i32 - widgets::FIELD_H) / 2, (r.right() - 6 - fx) as u32, widgets::FIELD_H as u32);
+    widgets::draw_field(c, fs, tm, field, &widgets::Field { text: &app.search.text, caret: Some(app.search.caret), fill: Some(face), ink: Some(ink), ..Default::default() });
 }
 
 /// A message (a network error) on an outlined plate in the last row.
@@ -911,6 +905,17 @@ fn draw_error(c: &mut Canvas<Window>, ctx: &Ctx, err: &str) {
 
 impl LauncherApp for Radio {
     fn title(&self) -> String { crate::launcher::i18n::tr_s("Radio") }
+
+    fn help(&self) -> Vec<(String, String)> {
+        let k = |a: &str, b: &str| (a.to_string(), b.to_string());
+        vec![
+            k("Tab", "Radio / Podcast"),
+            k("Left / Right", "Tune (Radio)"),
+            k("Up / Down", "Band (Radio), episode (Podcast)"),
+            k("Return", "Play"),
+            k("Space", "Pause"),
+        ]
+    }
 
     fn describe(&self) -> String {
         let now = audio::snapshot().map(|n| format!("playing {}", n.label)).unwrap_or_else(|| "stopped".into());

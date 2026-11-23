@@ -22,6 +22,27 @@ pub const JA: &[(&str, &str)] = &[
     ("Try Open With in the menu", "「アプリで開く」を使用"),
     ("No app opens files without an extension", "拡張子なしは開けません"),
     ("A file with that name already exists.", "同名のファイルがあります。"),
+    // Files: Trash (Restore, Empty Trash)
+    ("Restore", "元に戻す"),
+    ("Restored", "元に戻しました"),
+    ("Empty Trash...", "ゴミ箱を空にする..."),
+    ("Empty the Trash?", "ゴミ箱を空にしますか？"),
+    ("Everything in it is removed for good.", "中身はすべて完全に削除されます。"),
+    ("The Trash is empty", "ゴミ箱は空です"),
+    ("Emptied the Trash", "ゴミ箱を空にしました"),
+    ("Only things at the top of the Trash can be restored", "ゴミ箱の直下のものだけ戻せます"),
+    ("Where it came from is not known", "元の場所がわかりません"),
+    // Files: Info card
+    ("Info...", "情報..."),
+    ("Kind", "種類"),
+    ("Modified", "変更日"),
+    ("Permissions", "アクセス権"),
+    ("Location", "場所"),
+    ("Folder", "フォルダ"),
+    ("Link", "リンク"),
+    ("Text file", "テキストファイル"),
+    ("Spreadsheet", "表計算"),
+    ("File", "ファイル"),
     // Text Editor / Sheet / Images / Paint / Recorder: shared messages
     ("Renamed", "名前を変更しました"),
     ("Not a valid name", "使えない名前です"),
@@ -35,7 +56,6 @@ pub const JA: &[(&str, &str)] = &[
     ("Edit in Paint", "Paintで編集"),
     ("Keep a picture extension (.png, .jpg...)", "画像の拡張子は残してください"),
     ("Rename picture to:", "画像の新しい名前:"),
-    ("No pictures in ~/Pictures", "~/Pictures に画像がありません"),
     ("Not a picture Images can show", "画像として表示できません"),
     ("That picture is gone", "画像が見つかりません"),
     // Paint: tools
@@ -77,7 +97,6 @@ pub const JA: &[(&str, &str)] = &[
     ("Cannot save", "保存できません"),
     ("Cannot open", "開けません"),
     ("No pictures", "画像がありません"),
-    ("There are no pictures in ~/Pictures to open.", "~/Pictures に画像がありません。"),
     ("Open picture:", "開く画像:"),
     // Recorder: screen
     ("Record", "録音"),
@@ -100,7 +119,6 @@ pub const JA: &[(&str, &str)] = &[
     ("LOW", "低"),
     ("No recordings yet.", "録音はまだありません"),
     ("Folder: Music/Recordings", "フォルダ: Music/Recordings"),
-    ("Return: close", "Return: 閉じる"),
     // Recorder: menu
     ("Input", "入力"),
     ("Rate", "レート"),
@@ -114,7 +132,6 @@ pub const JA: &[(&str, &str)] = &[
     ("That name exists", "その名前は既にあります"),
     ("Recording in progress", "録音中です"),
     ("Stop, save the file and leave?", "停止して保存し、終了しますか？"),
-    ("The recording is removed for good.", "録音は完全に削除されます。"),
     ("Rename recording:", "録音の新しい名前:"),
     // Recorder: message cards
     ("No microphone found. Probed:", "マイクが見つかりません。調査結果:"),
@@ -140,6 +157,8 @@ pub const JA: &[(&str, &str)] = &[
 
 /// Templates with one `{}` (a name or a number) on each side.
 pub const JA_PAT: &[(&str, &str)] = &[
+    ("No pictures in {}", "{} に画像がありません"),
+    ("There are no pictures in {} to open.", "{} に画像がありません。"),
     ("Cannot read: {}", "読み込めません: {}"),
     ("Not allowed: {}", "許可されていません: {}"),
     ("\"{}\" already exists", "「{}」はすでにあります"),
@@ -156,4 +175,6 @@ pub const JA_PAT: &[(&str, &str)] = &[
     ("{} is in use by another program.", "{}は他のプログラムが使用中です。"),
     ("This user may not open {}.", "このユーザーは{}を開けません。"),
     ("{} is gone.", "{}が見つかりません。"),
+    ("Folder: {}", "フォルダ: {}"),
+    ("at least {}", "{}以上"),
 ];

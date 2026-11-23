@@ -1030,7 +1030,7 @@ pub struct Music {
 }
 
 pub fn make() -> Box<dyn LauncherApp> {
-    let root = std::env::var_os("HOME").map(|h| PathBuf::from(h).join("Music")).unwrap_or_else(|| PathBuf::from("Music"));
+    let root = crate::launcher::fileops::user_dir(crate::launcher::fileops::UserDir::Music);
     let mock = std::env::var("HARBOUR_MOCK").map(|v| v == "1" || v == "true").unwrap_or(false);
     let mut m = Music::new(Box::new(Ffplay { min_start: Duration::ZERO }), Vec::new());
     let progress = Arc::new(library::Progress::default());
@@ -1262,6 +1262,19 @@ impl Drop for Music {
 }
 
 impl LauncherApp for Music {
+    fn help(&self) -> Vec<(String, String)> {
+        let k = |a: &str, b: &str| (a.to_string(), b.to_string());
+        match self.screen {
+            Screen::List => vec![k("Up / Down", "Choose a track"), k("Return / Right", "Play"), k("Space", "Play / Pause"), k("Double click", "Play")],
+            Screen::Now => vec![
+                k("Space / Return", "Play / Pause"),
+                k("Left / Up", "Previous track"),
+                k("Right / Down", "Next track"),
+                k("Click", "Play / Pause"),
+            ],
+        }
+    }
+
     fn title(&self) -> String {
         crate::launcher::i18n::tr_s("Music")
     }
@@ -1410,7 +1423,7 @@ impl Music {
         let (tm, fs) = (ctx.tm, ctx.fs);
         let ink = tm.get_color("foreground");
         let paper = tm.get_color("widget_face_active");
-        let faint = tm.get_color("text_faint");
+        let faint = crate::launcher::widgets::secondary_ink(tm);
         let line = tm.get_color("line");
         let area = Rect::new(LIST_X, LIST_Y, LIST_W as u32, LIST_H as u32);
         ui::fill_rect(c, area, paper);
@@ -1457,7 +1470,7 @@ impl Music {
     fn draw_now(&mut self, c: &mut Canvas<Window>, ctx: &Ctx) {
         let (tm, fs) = (ctx.tm, ctx.fs);
         let ink = tm.get_color("foreground");
-        let faint = tm.get_color("text_faint");
+        let faint = crate::launcher::widgets::secondary_ink(tm);
         let line = tm.get_color("line");
         let well = tm.get_color("surface_sunken");
         let now = Instant::now();
@@ -2100,5 +2113,13 @@ mod tests {
         tx.send((5, Some(Duration::from_secs(99)))).unwrap();
         assert!(m.poll_meta());
         assert_eq!(m.playing.as_ref().unwrap().total, Some(Duration::from_secs(99)));
+    }
+
+    #[test]
+    fn help_rows_are_filled_in() {
+        let (mut m, _) = app(2);
+        crate::launcher::help::check_app_rows("Music list", &m.help());
+        m.screen = Screen::Now;
+        crate::launcher::help::check_app_rows("Music now playing", &m.help());
     }
 }

@@ -40,12 +40,12 @@ pub const EXTENSIONS: [&str; 6] = ["png", "jpg", "jpeg", "bmp", "gif", "jpe"];
 const MAX_FILES: usize = 5000;
 const MAX_DEPTH: usize = 4;
 
-/// The picture area: the app frame's content rectangle (`grid::app_content`), 1 px clear of the
-/// frame's line: (3, 19, 314, 143).
+/// The picture area: inside the app frame with 1 px clear of its line on every side, down to
+/// y 166 (the frame's bottom line is y 168, as on the other framed screens): (3, 19, 314, 148).
 pub const AREA_X: i32 = 3;
 pub const AREA_Y: i32 = grid::BAR_H + 3;
 pub const AREA_W: i32 = grid::SCREEN_W - 2 * AREA_X;
-pub const AREA_H: i32 = 143;
+pub const AREA_H: i32 = grid::APP_FRAME_BOTTOM - 1 - AREA_Y;
 
 pub fn is_image(p: &Path) -> bool {
     p.extension().and_then(|e| e.to_str()).map(|e| EXTENSIONS.contains(&e.to_ascii_lowercase().as_str())).unwrap_or(false)
@@ -208,7 +208,7 @@ pub struct ImageViewer {
 }
 
 pub fn make() -> Box<dyn LauncherApp> {
-    let root = std::env::var_os("HOME").map(|h| PathBuf::from(h).join("Pictures")).unwrap_or_else(|| PathBuf::from("Pictures"));
+    let root = fileops::user_dir(fileops::UserDir::Pictures);
     Box::new(ImageViewer::new(scan(&root)))
 }
 
@@ -310,6 +310,18 @@ impl ImageViewer {
 }
 
 impl LauncherApp for ImageViewer {
+    fn help(&self) -> Vec<(String, String)> {
+        let k = |a: &str, b: &str| (a.to_string(), b.to_string());
+        vec![
+            k("Left / Right", "Previous / next picture"),
+            k("Return / Up", "Colour / 4-tone"),
+            k("Down", "Show file name"),
+            k("F2", "Rename"),
+            k("Click the edges", "Previous / next picture"),
+            k("Click the middle", "Colour / 4-tone"),
+        ]
+    }
+
     fn title(&self) -> String {
         crate::launcher::i18n::app_name("images")
     }
@@ -424,13 +436,13 @@ impl LauncherApp for ImageViewer {
         let (tm, fs) = (ctx.tm, ctx.fs);
         let ink = tm.get_color("foreground");
         let paper = if self.mono { tm.get_color("home_bg") } else { Color::RGB(0, 0, 0) };
-        let faint = tm.get_color("text_faint");
+        let faint = crate::launcher::widgets::secondary_ink(tm);
         let area = Rect::new(AREA_X, AREA_Y, AREA_W as u32, AREA_H as u32);
         ui::fill_rect(c, Rect::new(0, grid::BAR_H, grid::SCREEN_W as u32, (grid::SCREEN_H - grid::BAR_H) as u32), if self.mono { paper } else { tm.get_color("home_bg") });
         grid::draw_app_frame(c, grid::app_frame().y(), ink, None);
 
         if self.files.is_empty() {
-            fs.draw_text(c, grid::MARGIN + 6, grid::BAR_H + grid::MARGIN + 4, crate::launcher::i18n::tr("No pictures in ~/Pictures"), faint);
+            fs.draw_text(c, grid::MARGIN + 6, grid::BAR_H + grid::MARGIN + 4, &crate::launcher::i18n::tr_s(&format!("No pictures in {}", crate::launcher::fileops::tilde(&crate::launcher::fileops::user_dir(crate::launcher::fileops::UserDir::Pictures)))), faint);
             return;
         }
         if self.pic.is_none() {
@@ -479,8 +491,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_picture_area_is_the_frames_content_rectangle() {
-        assert_eq!(grid::app_content(), Rect::new(AREA_X, AREA_Y, AREA_W as u32, AREA_H as u32));
+    fn the_picture_area_keeps_1_px_clear_of_the_frame_on_every_side() {
+        let f = grid::app_frame_inner();
+        let inset = Rect::new(f.x() + 1, f.y() + 1, f.width() - 2, f.height() - 2);
+        assert_eq!(inset, Rect::new(AREA_X, AREA_Y, AREA_W as u32, AREA_H as u32));
+        assert_eq!(AREA_Y + AREA_H, grid::APP_FRAME_BOTTOM - 1, "last row y 166, the frame's line on y 168");
     }
 
     #[test]
@@ -628,5 +643,10 @@ mod tests {
         assert_eq!(v.menu().iter().any(|m| m.id == "paint"), has_paint, "Edit in Paint only with a Paint app");
         assert!(v.menu().iter().any(|m| m.id == "rename") && v.menu().iter().any(|m| m.id == "delete"));
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn help_rows_are_filled_in() {
+        crate::launcher::help::check_app_rows("Images", &ImageViewer::new(vec![]).help());
     }
 }

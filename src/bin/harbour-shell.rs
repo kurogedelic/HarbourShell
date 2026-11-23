@@ -101,6 +101,8 @@ struct Toast {
 
 /// A file another app asked to open (`AppAction::Open`); the main loop picks it up next frame.
 static OPEN_REQ: std::sync::Mutex<Option<(Option<String>, PathBuf)>> = std::sync::Mutex::new(None);
+/// Something an app asked to install (`AppAction::Install`); the main loop opens the card next frame.
+static INSTALL_REQ: std::sync::Mutex<Option<harbour_shell::launcher::installer::InstallReq>> = std::sync::Mutex::new(None);
 
 /// What the Text Editor does once the current note is safe (saved, or its changes dropped).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -129,6 +131,7 @@ fn apply_app_action(action: AppAction, screen: &mut Screen, workdir: &Path, shar
         AppAction::Quit => *screen = Screen::Home,
         AppAction::Toast(text) => *toast = Some(Toast { text, fraction: None, until: Instant::now() + Duration::from_secs(2) }),
         AppAction::Open { app, path } => *OPEN_REQ.lock().unwrap() = Some((app, path)),
+        AppAction::Install(req) => *INSTALL_REQ.lock().unwrap() = Some(req),
         AppAction::Launch(cmd) => {
             // No shell; an empty command must not reach Terminal::spawn.
             let argv: Vec<String> = cmd.split_whitespace().map(str::to_string).collect();
@@ -280,9 +283,13 @@ fn main() -> Result<(), String> {
         })
     };
     let mut tm = ThemeManager::new(Theme::load_from_yaml(&theme_for(&cfg))?);
+    // Harbour's data folder (the IME and the Agent already live here). The Text Editor's note pointer
+    // used to be in ~/.local/share/harbour-os: it is still read from there when the new one is missing.
+    let legacy_data = home_dir().join(".local/share/harbour-os");
     let data_dir = std::env::var("HARBOUR_DATA")
         .map(PathBuf::from)
-        .unwrap_or_else(|_| home_dir().join(".local/share/harbour-os"));
+        .unwrap_or_else(|_| home_dir().join(".local/share/harbour"));
+    let _ = std::fs::create_dir_all(&data_dir);
     let order_path = std::env::var("HARBOUR_ORDER_FILE")
         .map(PathBuf::from)
         .unwrap_or_else(|_| home_dir().join(".config/harbour/order.txt"));
@@ -358,14 +365,16 @@ fn main() -> Result<(), String> {
     // The lock screen's own map (World Clock style), on the device's time zone.
     let mut lock_world = WorldClock::new(chrono::Local::now());
     let mut snake = SnakeState::new();
-    // The note being edited: ~/.local/share/.../note.txt until "Save As" picks another file
-    // (remembered in `note_path.txt`).
+    // The note being edited: Documents/note.txt (or the old ~/.local/share/.../note.txt when only
+    // that one exists) until "Save As" picks another file (remembered in `note_path.txt`).
     let note_pointer = data_dir.join("note_path.txt");
+    let old_data = if std::env::var("HARBOUR_DATA").is_ok() { data_dir.clone() } else { legacy_data.clone() };
     let mut note_path = std::fs::read_to_string(&note_pointer)
+        .or_else(|_| std::fs::read_to_string(old_data.join("note_path.txt")))
         .ok()
         .map(|t| PathBuf::from(t.trim()))
         .filter(|p| p.is_file())
-        .unwrap_or_else(|| data_dir.join("note.txt"));
+        .unwrap_or_else(|| fileops::default_note(&old_data.join("note.txt"), &fileops::user_dir(fileops::UserDir::Documents).join("note.txt")));
     let mut editor = TextEditor::from_text(&std::fs::read_to_string(&note_path).unwrap_or_default());
     // Dialogs shown over an app: "save changes?" and the Save As panel.
     let mut unsaved: Option<UnsavedCard> = None;
@@ -396,6 +405,8 @@ fn main() -> Result<(), String> {
     // before it switches the view.
     let mut agent: Option<Box<AgentApp>> = None;
     let mut agent_open = false;
+    let mut installer: Option<harbour_shell::launcher::installer::Installer> = None;
+    let mut help: Option<harbour_shell::launcher::help::HelpView> = None;
     // 0 = closed .. 1 = fully open: the Agent slides in from the right over the current screen.
     let mut agent_prog: f32 = 0.0;
     let mut agent_prog_t = Instant::now();
@@ -603,6 +614,85 @@ fn main() -> Result<(), String> {
                 force_full = true;
                 let _ = sys.set_brightness(prev);
                 inputs.clear();
+            }
+        }
+
+        // ---- the install card: over everything, it takes every key, typed text and click ----
+        if installer.is_none() {
+            if let Some(req) = INSTALL_REQ.lock().unwrap().take() {
+                installer = Some(harbour_shell::launcher::installer::Installer::new(req));
+                dirty = true;
+            }
+        }
+        if let Some(inst) = installer.as_mut() {
+            use harbour_shell::launcher::installer::Out;
+            let mut out = Out::Stay;
+            let mut rest = Vec::new();
+            for i in std::mem::take(&mut inputs) {
+                match i {
+                    Input::Key { key, .. } => out = inst.key(key),
+                    Input::Text(t) => inst.text(&t),
+                    Input::MouseButton { button: 0, down: true } => out = inst.click(cursor.0, cursor.1),
+                    Input::MouseMove { dx, dy } => {
+                        cursor.0 = (cursor.0 + dx).clamp(0, SCREEN_W as i32 - 1);
+                        cursor.1 = (cursor.1 + dy).clamp(0, SCREEN_H as i32 - 1);
+                        cursor_until = Some(Instant::now() + Duration::from_secs(3));
+                    }
+                    other @ (Input::Quit | Input::Media(_)) => rest.push(other),
+                    _ => {}
+                }
+                dirty = true;
+                if out != Out::Stay {
+                    break;
+                }
+            }
+            inputs = rest;
+            if inst.tick() {
+                dirty = true;
+            }
+            if let Out::Close { installed } = out {
+                if installed && inst.req.job == harbour_shell::launcher::installer::Job::ImeDict {
+                    eprintln!("{}", ime.load_data(&harbour_shell::launcher::ime_glue::data_dir()));
+                }
+                if installed && inst.req.removes() {
+                    apps = load_apps(&app_dir, &order_path);
+                    rebuild_home(&mut home, &apps, &mut assets, &texture_creator, &cfg);
+                    if let Screen::Settings(st) = &mut screen {
+                        st.set_apps(app_refs(&apps));
+                    }
+                }
+                installer = None;
+                dirty = true;
+                force_full = true;
+            }
+        }
+
+        // ---- Help (Harbour menu > Help): scrolls with the keys, closes with Esc / Return ----
+        if installer.is_none() {
+            if let Some(h) = help.as_mut() {
+                let mut close = false;
+                let mut rest = Vec::new();
+                for i in std::mem::take(&mut inputs) {
+                    match i {
+                        Input::Key { key, .. } => close |= h.key(harbour_shell::platform::keys::arrow_alias(key)),
+                        Input::MouseButton { button: 0, down: true } => h.click(cursor.0, cursor.1),
+                        Input::MouseButton { button: 1, down: true } | Input::Menu => close = true,
+                        Input::MouseWheel { dy } => h.wheel(dy),
+                        Input::MouseMove { dx, dy } => {
+                            cursor.0 = (cursor.0 + dx).clamp(0, SCREEN_W as i32 - 1);
+                            cursor.1 = (cursor.1 + dy).clamp(0, SCREEN_H as i32 - 1);
+                            cursor_until = Some(Instant::now() + Duration::from_secs(3));
+                        }
+                        other @ (Input::Quit | Input::Media(_)) => rest.push(other),
+                        _ => {}
+                    }
+                    dirty = true;
+                }
+                inputs = rest;
+                if close {
+                    help = None;
+                    force_full = true;
+                }
             }
         }
 
@@ -1205,7 +1295,10 @@ fn main() -> Result<(), String> {
                                     "poweroff" => Some(SystemPage::PowerOff),
                                     _ => None,
                                 };
-                                if act == "lock" {
+                                if act == "help" {
+                                    let (name, rows) = screen_help(&screen, agent_open);
+                                    help = Some(harbour_shell::launcher::help::HelpView::new(&name, rows));
+                                } else if act == "lock" {
                                     locked = true;
                                 } else if act == "agent" {
                                     toggle_agent(&mut agent_open, &mut agent, &cfg, &mut toast);
@@ -1252,6 +1345,17 @@ fn main() -> Result<(), String> {
                                         _ => {}
                                     },
                                     "hf_out" => home.move_selected(harbour_shell::launcher::folders::Dest::Top),
+                                    "hf_hide" => {
+                                        if let Some(key) = home.items.get(home.selected).map(|i| i.key()) {
+                                            if let Ok(mut c) = cfg.lock() {
+                                                c.set_int(&desktop_config_key(&key), 0);
+                                                let _ = c.save();
+                                            }
+                                            apps = load_apps(&app_dir, &order_path);
+                                            rebuild_home(&mut home, &apps, &mut assets, &texture_creator, &cfg);
+                                            toast = Some(Toast { text: harbour_shell::launcher::i18n::tr_s("Hidden. Settings > Apps shows it again."), fraction: None, until: Instant::now() + Duration::from_secs(3) });
+                                        }
+                                    }
                                     "hf_new" => home_modal = Some(HomeModal::NewFolder(NamePrompt::new("New folder name:", harbour_shell::launcher::folders::DEFAULT_NAME))),
                                     "hf_rename" => {
                                         if let Some(i) = home.target_folder() {
@@ -1412,6 +1516,7 @@ fn main() -> Result<(), String> {
                                 s.set_apps(app_refs(&apps));
                             }
                         }
+                        SettingsEvent::Install(req) => *INSTALL_REQ.lock().unwrap() = Some(req),
                         SettingsEvent::Launch(exec) => {
                             let entry = AppEntry {
                                 id: String::new(),
@@ -1421,6 +1526,7 @@ fn main() -> Result<(), String> {
                                 terminal: false,
                                 sysplause: true,
                                 mtime: None,
+                                user: false,
                             };
                             run_external(&fs, &tm, &entry, &workdir, &shared, &mut canvas, &mut fb, &rx, &mut toast, &mut dirty, &mut last_input);
                         }
@@ -2011,6 +2117,12 @@ fn main() -> Result<(), String> {
                     chrome::draw_toast(&mut canvas, &fs, &tm, &t.text, t.fraction);
                 }
             }
+            if let Some(h) = &help {
+                h.draw(&mut canvas, &fs, &tm);
+            }
+            if let Some(inst) = &installer {
+                inst.draw(&mut canvas, &fs, &tm);
+            }
             chrome::draw_corners(&mut canvas, &tm);
             if cursor_until.is_some() && !locked && !matches!(&screen, Screen::App(a) if a.hides_pointer()) {
                 chrome::draw_cursor(&mut canvas, &tm, cursor.0, cursor.1);
@@ -2078,7 +2190,7 @@ fn main() -> Result<(), String> {
 // ---- helpers ------------------------------------------------------------------------------------
 
 fn load_apps(app_dir: &Path, order_path: &Path) -> Vec<AppEntry> {
-    let mut apps = registry::scan(app_dir);
+    let mut apps = registry::scan_with_user(app_dir, registry::user_app_dir().as_deref());
     registry::apply_order(&mut apps, &registry::load_order(order_path));
     apps
 }
@@ -2086,12 +2198,20 @@ fn load_apps(app_dir: &Path, order_path: &Path) -> Vec<AppEntry> {
 /// Settings > Apps: the installed apps (their order can be changed), then Harbour's own by package
 /// id (Show / Hide only; Settings itself is always shown).
 fn app_refs(apps: &[AppEntry]) -> Vec<AppRef> {
-    let mut v: Vec<AppRef> = apps.iter().map(|a| AppRef { id: a.id.clone(), name: a.name.clone(), exec: a.exec.clone() }).collect();
+    let dir = PathBuf::from(std::env::var("HARBOUR_APP_DIR").unwrap_or_else(|_| registry::DEFAULT_APP_DIR.into()));
+    let user = registry::user_app_dir();
+    let mut v: Vec<AppRef> = apps
+        .iter()
+        .map(|a| {
+            let folder = if a.user { user.clone().unwrap_or_else(|| dir.clone()) } else { dir.clone() };
+            AppRef { id: a.id.clone(), name: a.name.clone(), exec: a.exec.clone(), desktop: Some(folder.join(&a.id)), user: a.user }
+        })
+        .collect();
     v.extend(
         packages::catalog()
             .into_iter()
             .filter(|p| p.builtin != Builtin::Settings)
-            .map(|p| AppRef { name: p.shown_name(), exec: format!("{}{}", packages::EXEC_SCHEME, p.id), id: p.id }),
+            .map(|p| AppRef { name: p.shown_name(), exec: format!("{}{}", packages::EXEC_SCHEME, p.id), id: p.id, desktop: None, user: false }),
     );
     v
 }
@@ -2709,11 +2829,41 @@ fn system_menu(screen: &Screen) -> harbour_shell::launcher::widgets::AppMenu {
     if !matches!(screen, Screen::Home) {
         items.push(MenuItem::new("sys_home", "Home"));
     }
+    items.push(MenuItem::new("sys_help", "Help"));
     items.push(MenuItem::new("sys_agent", "Agent"));
     items.push(MenuItem::new("sys_lock", "Lock Screen"));
     items.push(MenuItem::new("sys_restart", "Restart..."));
     items.push(MenuItem::new("sys_poweroff", "Power Off..."));
     AppMenu::plain(items)
+}
+
+/// Help for the screen in front: its name and its own keys (apps give theirs; the host's screens here).
+fn screen_help(screen: &Screen, agent_open: bool) -> (String, Vec<(String, String)>) {
+    let k = |a: &str, b: &str| (a.to_string(), b.to_string());
+    if agent_open {
+        return ("Agent".into(), vec![k("Return", "Send"), k("Up / Down", "Scroll the chat"), k("Tab Tab", "Close the panel")]);
+    }
+    match screen {
+        Screen::App(a) => (a.title(), a.help()),
+        Screen::Home => ("Home".into(), vec![
+            k("Arrows", "Move the selection"),
+            k("Return", "Open"),
+            k("Right click", "Folders: new, rename, move"),
+            k("Esc", "Leave a folder"),
+        ]),
+        Screen::Settings(_) => ("Settings".into(), vec![
+            k("Up / Down", "Choose a row"),
+            k("Return", "Change it / open"),
+            k("Left / Right", "Choose a value"),
+            k("Esc", "Back"),
+            k("Tab", "Show / hide a password"),
+        ]),
+        Screen::Editor => ("Text Editor".into(), vec![k("Arrows", "Move the caret"), k("Tab", "Indent"), k("Alt", "New, Open, Save")]),
+        Screen::Terminal(_) => ("Terminal".into(), vec![k("Tab", "Completion (sent to the shell)"), k("Esc (hold)", "Leave")]),
+        Screen::Calculator => ("Calculator".into(), vec![k("Letters", "Functions on the keys"), k("Return", "="), k("Backspace", "Delete"), k("Left / Right", "Settings: change a value")]),
+        Screen::Clock => ("World Clock".into(), vec![k("Left / Right", "Move the map"), k("Up / Down", "Choose a city")]),
+        Screen::Snake => ("Snake".into(), vec![k("Arrows", "Steer"), k("Space", "Play again")]),
+    }
 }
 
 /// Ctrl or Alt held: Tab is part of a chord (Ctrl+Tab menu, Alt+Tab Agent), not a tap.

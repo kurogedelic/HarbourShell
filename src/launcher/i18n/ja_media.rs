@@ -47,7 +47,6 @@ pub const JA: &[(&str, &str)] = &[
     ("PODCAST", "ポッドキャスト"),
     ("On air", "放送中"),
     ("Loading", "読込中"),
-    ("< > Tune  ^ v Band  Enter Play", "< > 選局  ^ v 帯域  Enter 再生"),
     ("Scanning...", "検索中..."),
     ("No station", "局がありません"),
     ("Search", "検索"),
@@ -55,7 +54,6 @@ pub const JA: &[(&str, &str)] = &[
     ("No podcasts", "番組がありません"),
     ("No episodes", "エピソードなし"),
     ("Counter", "カウンタ"),
-    ("^ v Select  Enter Play  Space Pause", "^ v 選択  Enter 再生  Space 一時停止"),
     // Timer
     ("Start", "開始"),
     ("Pause", "一時停止"),
@@ -64,12 +62,6 @@ pub const JA: &[(&str, &str)] = &[
     ("Stopwatch", "計測"),
     ("Timer", "タイマ"),
     ("Laps", "ラップ"),
-    ("L = lap", "L = ラップ"),
-    ("Up/Dn  +/-1 min", "上下  +/-1分"),
-    ("Shift  +/-10 s", "Shift  +/-10秒"),
-    ("Enter  Go/Pause", "Enter  開始/停止"),
-    ("R      Reset", "R      リセット"),
-    ("Click the digits: +/-", "数字をクリック"),
     // Calendar
     ("Calendar", "カレンダ"),
     ("Go to today", "今日へ"),
@@ -97,7 +89,6 @@ pub const JA: &[(&str, &str)] = &[
     ("Entry", "入力方式"),
     ("Angle", "角度"),
     ("Format", "表示形式"),
-    ("Left/Right change   Tab/Esc close", "左右で変更   Tab/Escで閉じる"),
 ];
 
 /// Templates with one `{}` (a name or a number) on each side.

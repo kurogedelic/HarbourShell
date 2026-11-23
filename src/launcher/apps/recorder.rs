@@ -13,7 +13,7 @@
 //!   `HARBOUR_MOCK_NODEV=1` makes the mock list empty.
 //!
 //! Keys: Return / Space record / stop, P pause, Left / Right input device, Down (or 2) the Files
-//! tab, Up (or 1) back. Files: Up / Down select, Return plays, R renames, Delete deletes.
+//! tab, Up (or 1) back. Files: Up / Down select, Return plays, R renames, Delete moves to the Trash.
 //! A short Esc never leaves while recording: it asks. The chosen input and rate are remembered in
 //! `~/.config/harbour/recorder.txt` (apps cannot reach `config.json`).
 
@@ -39,6 +39,7 @@ use crate::font::FontSystem;
 use crate::grid;
 use crate::launcher::app::{AppAction, Ctx, LauncherApp};
 use crate::launcher::apps::music::{Audio, Ffplay, Proc};
+use crate::launcher::fileops;
 use crate::launcher::i18n;
 use crate::launcher::dialogs::{ConfirmAlert, ConfirmChoice, NamePrompt, PromptResult};
 use crate::launcher::sevenseg;
@@ -779,6 +780,8 @@ pub struct Recorder {
     state: State,
     mock: bool,
     dir: PathBuf,
+    /// Where Delete sends recordings (the freedesktop Trash; a temp one in mock mode).
+    trash: Option<PathBuf>,
     devices: Vec<Device>,
     scan_notes: Vec<String>,
     scanned: bool,
@@ -814,8 +817,9 @@ pub fn make() -> Box<dyn LauncherApp> {
     let dir = if mock {
         std::env::temp_dir().join("harbour-mock-recordings")
     } else {
-        std::env::var_os("HOME").map(|h| PathBuf::from(h).join("Music/Recordings")).unwrap_or_else(|| PathBuf::from("Recordings"))
+        fileops::user_dir(fileops::UserDir::Music).join("Recordings")
     };
+    let trash = if mock { Some(std::env::temp_dir().join("harbour-mock-trash")) } else { fileops::trash_dir() };
     let (selected, rate_pref) = if mock { (None, None) } else { settings_path().and_then(|p| std::fs::read_to_string(p).ok()).map(|t| parse_settings(&t)).unwrap_or((None, None)) };
     if mock && list_files(&dir).is_empty() {
         let _ = std::fs::create_dir_all(&dir);
@@ -828,6 +832,7 @@ pub fn make() -> Box<dyn LauncherApp> {
         state: State::Idle,
         mock,
         dir,
+        trash,
         devices: Vec::new(),
         scan_notes: Vec::new(),
         scanned: false,
@@ -1091,7 +1096,7 @@ impl Recorder {
 
     fn ask_delete(&mut self) {
         if let Some(f) = self.files.get(self.cursor) {
-            self.modal = Some(Modal::Delete(ConfirmAlert::new(vec![format!("Delete {}?", f.name), "The recording is removed for good.".into()], "Delete", false), f.path.clone()));
+            self.modal = Some(Modal::Delete(ConfirmAlert::new(vec![format!("Move \"{}\" to the Trash?", f.name), "Get it back from Files > Go to Trash.".into()], "Trash", false), f.path.clone()));
         }
     }
 
@@ -1109,8 +1114,15 @@ impl Recorder {
                 if self.playing.as_ref().map_or(false, |p| p.path == path) {
                     self.stop_playback();
                 }
-                match std::fs::remove_file(&path) {
-                    Ok(()) => self.refresh_files(),
+                let r = match &self.trash {
+                    Some(t) => fileops::trash(&path, t).map(|_| ()),
+                    None => Err("No Trash folder (HOME is not set)".to_string()),
+                };
+                match r {
+                    Ok(()) => {
+                        self.refresh_files();
+                        return AppAction::Toast("Moved to the Trash".into());
+                    }
                     Err(e) => return AppAction::Toast(format!("Delete failed: {e}")),
                 }
             }
@@ -1197,6 +1209,16 @@ impl Drop for Recorder {
 }
 
 impl LauncherApp for Recorder {
+    fn help(&self) -> Vec<(String, String)> {
+        let k = |a: &str, b: &str| (a.to_string(), b.to_string());
+        let mut v = vec![k("Tab / Shift+Tab", "Next / previous tab"), k("1 / 2", "Record / Files")];
+        v.extend(match self.tab {
+            Tab::Record => vec![k("Return / Space", "Start / stop recording"), k("P", "Pause / resume"), k("Left / Right", "Choose the input")],
+            Tab::Files => vec![k("Up / Down", "Choose a row"), k("Return / Space", "Play / Stop"), k("R / F2", "Rename"), k("Backspace", "Delete")],
+        });
+        v
+    }
+
     /// Tab switches Record / Files, so a double Tab here is not the Agent (Alt+Tab is).
     fn wants_tab(&self) -> bool {
         true
@@ -1527,7 +1549,7 @@ impl LauncherApp for Recorder {
             ctx.fs.draw_text(c, r.x() + 4, widgets::text_origin(r.y(), 16), &chrome::fit_text(ctx.fs, &i18n::tr_s(&t), r.width() as i32 - 8), tm.get_color("widget_face_active"));
         }
         if let Some(card) = &self.card {
-            draw_card(c, ctx, &card.title, &card.lines, "Return: close");
+            draw_card(c, ctx, &card.title, &card.lines, "");
         }
         match &self.modal {
             Some(Modal::Name(p, _)) => p.draw(c, ctx.fs, tm),
@@ -1715,7 +1737,10 @@ impl Recorder {
         ui::draw_rect(c, r, outline);
         if self.files.is_empty() {
             fs.draw_text(c, r.x() + 4, widgets::text_origin(r.y(), 16), i18n::tr("No recordings yet."), faint);
-            fs.draw_text(c, r.x() + 4, widgets::text_origin(r.y() + 16, 16), i18n::tr("Folder: Music/Recordings"), faint);
+            let home = std::env::var_os("HOME").map(PathBuf::from);
+            let shown = home.as_deref().and_then(|h| self.dir.strip_prefix(h).ok()).unwrap_or(&self.dir).to_string_lossy().into_owned();
+            let line = i18n::tr_s(&format!("Folder: {shown}"));
+            fs.draw_text(c, r.x() + 4, widgets::text_origin(r.y() + 16, 16), &chrome::fit_text(fs, &line, r.width() as i32 - 8), faint);
             return;
         }
         for i in 0..FILE_ROWS {
@@ -1962,6 +1987,35 @@ card 3: Scarlett [Scarlett 2i2 USB], device 0: USB Audio [USB Audio]\n";
     }
 
     #[test]
+    fn delete_moves_the_recording_to_the_trash() {
+        let mut r = make_test();
+        r.dir = std::env::temp_dir().join(format!("rec-test-trash-dir-{}", std::process::id()));
+        let trash = r.trash.clone().unwrap();
+        let _ = std::fs::remove_dir_all(&r.dir);
+        let _ = std::fs::remove_dir_all(&trash);
+        std::fs::create_dir_all(&r.dir).unwrap();
+        write_sample(&r.dir.join("REC_1.wav"), 1, 16_000);
+        r.refresh_files();
+        assert_eq!(r.files.len(), 1);
+        r.ask_delete();
+        match &r.modal {
+            Some(Modal::Delete(a, _)) => {
+                assert!(a.lines.iter().all(|l| !l.contains("for good")), "{:?}", a.lines);
+                assert!(a.lines.iter().any(|l| l.contains("Trash")));
+            }
+            _ => panic!("no delete dialog"),
+        }
+        let Some(Modal::Delete(a, path)) = r.modal.take() else { unreachable!() };
+        let out = r.do_modal(Modal::Delete(a, path), true, None);
+        assert!(matches!(out, AppAction::Toast(t) if t.contains("Trash")));
+        assert!(r.files.is_empty() && !r.dir.join("REC_1.wav").exists());
+        assert!(trash.join("files/REC_1.wav").exists(), "recoverable from the Trash");
+        assert!(trash.join("info/REC_1.wav.trashinfo").exists());
+        let _ = std::fs::remove_dir_all(&r.dir);
+        let _ = std::fs::remove_dir_all(&trash);
+    }
+
+    #[test]
     fn app_can_be_made_in_mock_mode() {
         let r = Recorder::new_for_test();
         assert_eq!(r.devices.len(), 2);
@@ -1984,6 +2038,7 @@ card 3: Scarlett [Scarlett 2i2 USB], device 0: USB Audio [USB Audio]\n";
             state: State::Idle,
             mock: true,
             dir: std::env::temp_dir().join("rec-test-app"),
+            trash: Some(std::env::temp_dir().join(format!("rec-test-trash-{}", std::process::id()))),
             devices: Vec::new(),
             scan_notes: Vec::new(),
             scanned: false,
@@ -2013,5 +2068,13 @@ card 3: Scarlett [Scarlett 2i2 USB], device 0: USB Audio [USB Audio]\n";
             sb_drag: false,
             dirty: true,
         }
+    }
+
+    #[test]
+    fn help_rows_are_filled_in() {
+        let mut r = Recorder::new_for_test();
+        crate::launcher::help::check_app_rows("Voice Memo record", &r.help());
+        r.tab = Tab::Files;
+        crate::launcher::help::check_app_rows("Voice Memo files", &r.help());
     }
 }

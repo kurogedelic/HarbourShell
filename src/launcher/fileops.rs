@@ -6,7 +6,8 @@
 //! * Symbolic links are never followed: copying a link makes a link, deleting a link removes the link.
 //! * `/` and `$HOME` cannot be renamed, moved or deleted; a folder cannot go into itself.
 //! * "Delete" moves to the Trash (`~/.local/share/Trash`, with a `.trashinfo`); only things already in
-//!   the Trash are deleted for good.
+//!   the Trash are deleted for good (with their `.trashinfo`). Restore reads `Path=` back.
+//! * Default save folders come from [`user_dir`] (XDG user dirs, else `~/Documents` etc.).
 
 use std::fs;
 use std::io;
@@ -285,6 +286,75 @@ pub fn trash(path: &Path, trash: &Path) -> Result<PathBuf, String> {
     }
 }
 
+/// `trash/info/<name>.trashinfo` for an item directly in `trash/files`, else `None`.
+fn info_file(item: &Path, trash: &Path) -> Option<PathBuf> {
+    if item.parent() != Some(trash.join("files").as_path()) {
+        return None;
+    }
+    let name = item.file_name()?.to_string_lossy().into_owned();
+    Some(trash.join("info").join(format!("{name}.trashinfo")))
+}
+
+/// Where a trashed item came from: the `Path=` line of its `.trashinfo`, percent-decoded.
+/// A relative path is relative to the folder that holds the Trash (the freedesktop rule).
+pub fn trashed_from(item: &Path, trash: &Path) -> Option<PathBuf> {
+    let text = fs::read_to_string(info_file(item, trash)?).ok()?;
+    let raw = text.lines().map(str::trim).find_map(|l| l.strip_prefix("Path="))?;
+    let p = PathBuf::from(percent_decode(raw.trim()));
+    if p.as_os_str().is_empty() {
+        return None;
+    }
+    Some(if p.is_absolute() { p } else { trash.parent()?.join(p) })
+}
+
+/// Delete something in the Trash for good; an item directly in `trash/files` loses its
+/// `.trashinfo` too.
+pub fn delete_from_trash(item: &Path, trash: &Path) -> Result<(), String> {
+    remove_any(item).map_err(err)?;
+    if let Some(info) = info_file(item, trash) {
+        let _ = fs::remove_file(info);
+    }
+    Ok(())
+}
+
+/// Put a trashed item back where it came from. Never overwrites: a clash gets a free name.
+/// A missing original folder is made again. Returns where it went.
+pub fn restore(item: &Path, trash: &Path) -> Result<PathBuf, String> {
+    let info = info_file(item, trash).ok_or("Only things at the top of the Trash can be restored")?;
+    let from = trashed_from(item, trash).ok_or("Where it came from is not known")?;
+    let dir = from.parent().ok_or("Where it came from is not known")?;
+    let name = from.file_name().ok_or("Where it came from is not known")?.to_string_lossy().into_owned();
+    if fs::symlink_metadata(item).is_err() {
+        return Err("It is gone".into());
+    }
+    let target = dir.join(unique_name(dir, &name));
+    guard(&target).map_err(err)?;
+    fs::create_dir_all(dir).map_err(err)?;
+    let p = move_to_exact(item, &target)?;
+    let _ = fs::remove_file(info);
+    Ok(p)
+}
+
+/// Delete everything in the Trash for good (items and their `.trashinfo` files). Returns how many
+/// items went. Stops at the first failure.
+pub fn empty_trash(trash: &Path) -> Result<usize, String> {
+    let mut n = 0;
+    if let Ok(rd) = fs::read_dir(trash.join("files")) {
+        for e in rd.flatten() {
+            remove_any(&e.path()).map_err(err)?;
+            n += 1;
+        }
+    }
+    if let Ok(rd) = fs::read_dir(trash.join("info")) {
+        for e in rd.flatten() {
+            if e.file_name().to_string_lossy().ends_with(".trashinfo") {
+                let _ = fs::remove_file(e.path());
+            }
+        }
+    }
+    Ok(n)
+}
+
 fn move_to_exact(src: &Path, target: &Path) -> Result<PathBuf, String> {
     if fs::rename(src, target).is_ok() {
         return Ok(target.to_path_buf());
@@ -307,6 +377,193 @@ fn percent_encode(s: &str) -> String {
         }
     }
     out
+}
+
+fn percent_decode(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%' && i + 2 < b.len() {
+            let hex = std::str::from_utf8(&b[i + 1..i + 3]).ok().filter(|h| h.bytes().all(|c| c.is_ascii_hexdigit()));
+            if let Some(v) = hex.and_then(|h| u8::from_str_radix(h, 16).ok()) {
+                out.push(v);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(b[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+// ------------------------------------------------------------------------------ default folders
+
+/// The user's standard folders, where apps save by default.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UserDir {
+    Documents,
+    Pictures,
+    Music,
+}
+
+impl UserDir {
+    fn key(self) -> &'static str {
+        match self {
+            UserDir::Documents => "XDG_DOCUMENTS_DIR",
+            UserDir::Pictures => "XDG_PICTURES_DIR",
+            UserDir::Music => "XDG_MUSIC_DIR",
+        }
+    }
+
+    fn fallback(self) -> &'static str {
+        match self {
+            UserDir::Documents => "Documents",
+            UserDir::Pictures => "Pictures",
+            UserDir::Music => "Music",
+        }
+    }
+}
+
+/// The folder for `kind`: `XDG_*_DIR` from `~/.config/user-dirs.dirs` (or `$XDG_CONFIG_HOME/...`)
+/// when it is set there, else `~/Documents`, `~/Pictures`, `~/Music`. The folder may not exist yet.
+/// A path for people: the home folder as `~` (`/home/pi/Pictures` -> `~/Pictures`).
+pub fn tilde(p: &Path) -> String {
+    match home().and_then(|h| p.strip_prefix(&h).ok().map(|r| r.to_path_buf())) {
+        Some(r) if r.as_os_str().is_empty() => "~".into(),
+        Some(r) => format!("~/{}", r.display()),
+        None => p.display().to_string(),
+    }
+}
+
+pub fn user_dir(kind: UserDir) -> PathBuf {
+    let Some(h) = home() else { return PathBuf::from(kind.fallback()) };
+    let config = std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from).filter(|p| p.is_absolute()).unwrap_or_else(|| h.join(".config"));
+    let text = fs::read_to_string(config.join("user-dirs.dirs")).ok();
+    user_dir_from(kind, &h, text.as_deref())
+}
+
+/// [`user_dir`] from the text of a `user-dirs.dirs` file. Values are `"$HOME/..."` or absolute
+/// paths; one that is just `$HOME` means "not set" (the freedesktop rule), so the default is used.
+pub fn user_dir_from(kind: UserDir, home: &Path, user_dirs: Option<&str>) -> PathBuf {
+    let set = user_dirs.and_then(|t| {
+        t.lines().map(str::trim).filter(|l| !l.starts_with('#')).find_map(|l| {
+            let v = l.strip_prefix(kind.key())?.trim_start().strip_prefix('=')?.trim();
+            let v = v.strip_prefix('"').and_then(|v| v.strip_suffix('"')).unwrap_or(v);
+            let p = if v == "$HOME" || v == "$HOME/" {
+                return None;
+            } else if let Some(rest) = v.strip_prefix("$HOME/") {
+                home.join(rest.trim_end_matches('/'))
+            } else if v.starts_with('/') {
+                PathBuf::from(v)
+            } else {
+                return None;
+            };
+            (p != home).then_some(p)
+        })
+    });
+    set.unwrap_or_else(|| home.join(kind.fallback()))
+}
+
+/// The Text Editor's default note: `new` (Documents/note.txt), except when only the `old` one
+/// (from before notes lived in Documents) exists, so no note is lost.
+pub fn default_note(old: &Path, new: &Path) -> PathBuf {
+    if old.is_file() && !new.exists() { old.to_path_buf() } else { new.to_path_buf() }
+}
+
+// ------------------------------------------------------------------------------ info
+
+/// What Files' Info card shows about one item.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ItemInfo {
+    pub name: String,
+    /// "Folder", "Link", "Text file"... (English; translate when shown).
+    pub kind: &'static str,
+    /// Bytes; for a folder, the sum of the files in it (links not followed).
+    pub size: u64,
+    /// For a folder: the walk stopped at [`INFO_MAX_ENTRIES`], so `size` is a lower bound.
+    pub size_capped: bool,
+    pub modified: Option<std::time::SystemTime>,
+    /// Unix permission bits (`0o755`), 0 where unknown.
+    pub mode: u32,
+    pub path: PathBuf,
+}
+
+/// The most entries Info walks to sum a folder's size (keeps the card quick on a big tree).
+pub const INFO_MAX_ENTRIES: usize = 20_000;
+
+/// Facts about `p` (not following a link at `p`).
+pub fn item_info(p: &Path) -> Result<ItemInfo, String> {
+    let md = fs::symlink_metadata(p).map_err(err)?;
+    let ft = md.file_type();
+    let kind = if ft.is_symlink() {
+        "Link"
+    } else if ft.is_dir() {
+        "Folder"
+    } else {
+        match open_kind(p) {
+            Some(OpenKind::Text) => "Text file",
+            Some(OpenKind::Image) => "Picture",
+            Some(OpenKind::Sheet) => "Spreadsheet",
+            Some(OpenKind::Music) => "Audio",
+            None => "File",
+        }
+    };
+    let (size, size_capped) = if ft.is_dir() { dir_size(p, INFO_MAX_ENTRIES) } else { (md.len(), false) };
+    #[cfg(unix)]
+    let mode = {
+        use std::os::unix::fs::PermissionsExt;
+        md.permissions().mode() & 0o7777
+    };
+    #[cfg(not(unix))]
+    let mode = 0;
+    let abs = if p.is_absolute() { p.to_path_buf() } else { std::env::current_dir().map(|d| d.join(p)).unwrap_or_else(|_| p.to_path_buf()) };
+    Ok(ItemInfo {
+        name: p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| abs.to_string_lossy().into_owned()),
+        kind,
+        size,
+        size_capped,
+        modified: md.modified().ok(),
+        mode,
+        path: abs,
+    })
+}
+
+/// Sum of file sizes under `dir`, visiting at most `max` entries; `true` when it stopped early.
+/// Links are counted as links, never followed.
+pub fn dir_size(dir: &Path, max: usize) -> (u64, bool) {
+    let mut total = 0u64;
+    let mut seen = 0usize;
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        let Ok(rd) = fs::read_dir(&d) else { continue };
+        for e in rd.flatten() {
+            seen += 1;
+            if seen > max {
+                return (total, true);
+            }
+            let Ok(md) = fs::symlink_metadata(e.path()) else { continue };
+            if md.is_dir() {
+                stack.push(e.path());
+            } else {
+                total += md.len();
+            }
+        }
+    }
+    (total, false)
+}
+
+/// `0o755` -> "rwxr-xr-x".
+pub fn mode_string(mode: u32) -> String {
+    let mut s = String::with_capacity(9);
+    for shift in [6, 3, 0] {
+        let b = (mode >> shift) & 7;
+        s.push(if b & 4 != 0 { 'r' } else { '-' });
+        s.push(if b & 2 != 0 { 'w' } else { '-' });
+        s.push(if b & 1 != 0 { 'x' } else { '-' });
+    }
+    s
 }
 
 fn err(e: io::Error) -> String {
@@ -458,6 +715,116 @@ mod tests {
         trash(&d.join("日本.txt"), &t).unwrap();
         let info = fs::read_to_string(t.join("info/日本.txt.trashinfo")).unwrap();
         assert!(info.contains("%E6%97%A5%E6%9C%AC.txt"), "{info}");
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn percent_decoding_undoes_the_encoding() {
+        for s in ["/home/a b/日本.txt", "/x/100%/y", "/plain"] {
+            assert_eq!(percent_decode(&percent_encode(s)), s);
+        }
+        assert_eq!(percent_decode("/a%20b"), "/a b");
+        assert_eq!(percent_decode("/bad%zz%2"), "/bad%zz%2", "broken escapes stay as they are");
+    }
+
+    #[test]
+    fn restore_puts_it_back_without_overwriting() {
+        let d = tmp("restore");
+        let t = d.join("Trash");
+        fs::create_dir(d.join("docs")).unwrap();
+        fs::write(d.join("docs/日本 語.txt"), "first").unwrap();
+        let p = trash(&d.join("docs/日本 語.txt"), &t).unwrap();
+        assert_eq!(trashed_from(&p, &t).unwrap(), d.join("docs/日本 語.txt"));
+        let back = restore(&p, &t).unwrap();
+        assert_eq!(back, d.join("docs/日本 語.txt"));
+        assert_eq!(fs::read_to_string(&back).unwrap(), "first");
+        assert!(!p.exists() && !t.join("info/日本 語.txt.trashinfo").exists(), "item and info both leave the Trash");
+        // A clash at home gets a free name; the existing file is untouched.
+        let p = trash(&back, &t).unwrap();
+        fs::write(d.join("docs/日本 語.txt"), "newer").unwrap();
+        let back = restore(&p, &t).unwrap();
+        assert_eq!(back, d.join("docs/日本 語 copy.txt"));
+        assert_eq!(fs::read_to_string(d.join("docs/日本 語.txt")).unwrap(), "newer");
+        // The original folder is gone: it is made again.
+        fs::create_dir_all(d.join("gone/sub")).unwrap();
+        fs::write(d.join("gone/sub/x.txt"), "x").unwrap();
+        let p = trash(&d.join("gone/sub/x.txt"), &t).unwrap();
+        fs::remove_dir_all(d.join("gone")).unwrap();
+        assert_eq!(restore(&p, &t).unwrap(), d.join("gone/sub/x.txt"));
+        // No .trashinfo: refused, nothing moves.
+        fs::write(t.join("files/stray"), "s").unwrap();
+        assert!(restore(&t.join("files/stray"), &t).is_err());
+        assert!(t.join("files/stray").exists());
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn deleting_in_the_trash_and_emptying_it_remove_the_info_files() {
+        let d = tmp("empty");
+        let t = d.join("Trash");
+        fs::write(d.join("a.txt"), "A").unwrap();
+        fs::create_dir_all(d.join("dir/in")).unwrap();
+        fs::write(d.join("dir/in/b"), "B").unwrap();
+        let a = trash(&d.join("a.txt"), &t).unwrap();
+        delete_from_trash(&a, &t).unwrap();
+        assert!(!a.exists() && !t.join("info/a.txt.trashinfo").exists());
+        // Deleting inside a trashed folder leaves the folder's info alone.
+        let dir = trash(&d.join("dir"), &t).unwrap();
+        delete_from_trash(&dir.join("in/b"), &t).unwrap();
+        assert!(t.join("info/dir.trashinfo").exists());
+        fs::write(d.join("c"), "C").unwrap();
+        trash(&d.join("c"), &t).unwrap();
+        assert_eq!(empty_trash(&t).unwrap(), 2);
+        assert_eq!(fs::read_dir(t.join("files")).unwrap().count(), 0);
+        assert_eq!(fs::read_dir(t.join("info")).unwrap().count(), 0);
+        assert_eq!(empty_trash(&d.join("NoTrash")).unwrap(), 0, "no Trash yet is not an error");
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn user_dirs_honour_the_xdg_file() {
+        let h = Path::new("/home/u");
+        assert_eq!(user_dir_from(UserDir::Documents, h, None), h.join("Documents"));
+        let text = "# comment\nXDG_DOCUMENTS_DIR=\"$HOME/書類\"\nXDG_PICTURES_DIR=\"/data/pics/\"\nXDG_MUSIC_DIR=\"$HOME/\"\n";
+        assert_eq!(user_dir_from(UserDir::Documents, h, Some(text)), h.join("書類"));
+        assert_eq!(user_dir_from(UserDir::Pictures, h, Some(text)), PathBuf::from("/data/pics/"));
+        assert_eq!(user_dir_from(UserDir::Music, h, Some(text)), h.join("Music"), "$HOME alone means not set");
+        assert_eq!(user_dir_from(UserDir::Music, h, Some("XDG_MUSIC_DIR=relative")), h.join("Music"));
+        assert_eq!(user_dir_from(UserDir::Pictures, h, Some("XDG_PICTURES_DIR_X=\"/no\"")), h.join("Pictures"));
+    }
+
+    #[test]
+    fn the_old_note_is_kept_until_a_new_one_exists() {
+        let d = tmp("note");
+        let (old, new) = (d.join("data/note.txt"), d.join("Documents/note.txt"));
+        assert_eq!(default_note(&old, &new), new, "fresh start: Documents");
+        fs::create_dir_all(d.join("data")).unwrap();
+        fs::write(&old, "old notes").unwrap();
+        assert_eq!(default_note(&old, &new), old, "only the old note: keep it");
+        fs::create_dir_all(d.join("Documents")).unwrap();
+        fs::write(&new, "new").unwrap();
+        assert_eq!(default_note(&old, &new), new, "both: the new one");
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn info_sums_folders_and_describes_items() {
+        let d = tmp("info");
+        fs::create_dir_all(d.join("f/g")).unwrap();
+        fs::write(d.join("f/a.txt"), vec![b'a'; 100]).unwrap();
+        fs::write(d.join("f/g/b.png"), vec![b'b'; 50]).unwrap();
+        let i = item_info(&d.join("f")).unwrap();
+        assert_eq!((i.kind, i.size, i.size_capped, i.name.as_str()), ("Folder", 150, false, "f"));
+        assert_eq!(i.path, d.join("f"));
+        let (_, capped) = dir_size(&d.join("f"), 2);
+        assert!(capped, "the walk stops at the cap");
+        let i = item_info(&d.join("f/a.txt")).unwrap();
+        assert_eq!((i.kind, i.size), ("Text file", 100));
+        assert!(i.modified.is_some());
+        assert_eq!(item_info(&d.join("f/g/b.png")).unwrap().kind, "Picture");
+        assert_eq!(mode_string(0o755), "rwxr-xr-x");
+        assert_eq!(mode_string(0o640), "rw-r-----");
+        assert!(item_info(&d.join("nope")).is_err());
         let _ = fs::remove_dir_all(&d);
     }
 
