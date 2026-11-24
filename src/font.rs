@@ -234,6 +234,10 @@ impl FontSystem {
     pub fn draw_display_text(&self, c: &mut Canvas<Window>, x: i32, y: i32, text: &str, color: Color) {
         match self.display_face(text) {
             Some(f) => f.draw(c, x, y + 2, text, color),
+            // The text font stands in (Japanese): its 12 px glyphs reach a pixel lower than the
+            // display face's capitals, so in a tab, a button or the title strip they sat low.
+            // A pixel up puts them in the middle of the same row.
+            None if text.chars().any(|ch| !ch.is_ascii()) => self.draw_text(c, x, y - 1, text, color),
             None => self.draw_text(c, x, y, text, color),
         }
     }

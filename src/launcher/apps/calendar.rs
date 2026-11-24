@@ -245,7 +245,12 @@ impl LauncherApp for Calendar {
 
         // Weekday header.
         let wd = Rect::new(GRID_X, WD_Y, l.grid_w() as u32, WD_H as u32);
-        ui::fill_rect(c, wd, alt);
+        // A black-and-white panel prints the band's tone as dots, right through the letters: there
+        // the weekdays stand on the plain page (the heavy rule below still closes the row).
+        let mono = crate::launcher::settings::panel_is_mono();
+        if !mono {
+            ui::fill_rect(c, wd, alt);
+        }
         for (i, name) in WEEKDAYS.iter().enumerate() {
             let s: String = if ja { JA_WD[i].to_string() } else { name.chars().take(2).collect() };
             let w = fs.measure_text(&s);
@@ -278,10 +283,13 @@ impl LauncherApp for Calendar {
                 ui::draw_rect(c, cell, ink);
             }
             let s = d.day().to_string();
-            let w = fs.measure_text(&s);
+            // The dates are in the display face (bold), like the big day number in the side panel.
+            let w = fs.measure_display_text(&s);
             let col = if is_sel { widgets::selection(tm).fg } else if in_month { ink } else { faint };
-            fs.draw_text(c, r.x() + (cell_w - w) / 2, widgets::text_origin(r.y(), r.height() as i32), &s, col);
-            if !in_month && !is_sel {
+            fs.draw_display_text(c, r.x() + (cell_w - w + 1) / 2, widgets::text_origin(r.y(), r.height() as i32) - 1, &s, col);
+            // The days of the neighbouring months are in the fainter ink, clean. Only where the
+            // theme has no fainter ink (black and white) are they thinned with a dither instead.
+            if !in_month && !is_sel && (faint == ink || mono) {
                 dither::fill(c, cell, paper, Pattern::Quarter);
             }
         }
@@ -310,7 +318,9 @@ impl LauncherApp for Calendar {
         };
         let lines = [crate::launcher::i18n::tr_s(&rel), crate::launcher::i18n::tr_s(&format!("Day {}", sel.ordinal())), crate::launcher::i18n::tr_s(&format!("Week {}", sel.iso_week().week()))];
         for (i, l) in lines.iter().enumerate() {
-            fs.draw_text(c, panel.x() + 6, panel.y() + 44 + i as i32 * grid::ROW_H, l, if i == 0 { ink } else { faint });
+            // In the middle of its row (between the rule above and the one below), kanji included.
+            let y = crate::launcher::widgets::text_origin(panel.y() + 41 + i as i32 * grid::ROW_H, grid::ROW_H - 1);
+            fs.draw_text(c, panel.x() + 6, y, l, if i == 0 { ink } else { faint });
         }
         // Rules: under the date block and under every info row.
         for k in 0..4 {

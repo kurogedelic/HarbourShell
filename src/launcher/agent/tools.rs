@@ -58,7 +58,7 @@ pub fn specs() -> Vec<ToolSpec> {
         ),
         spec(
             "set_setting",
-            "Change a device setting. brightness 5-100, volume 0-100, mute on/off, theme black|sky|mobile|terminal, invert on/off, statusbar default|black|white, screen_off 0|10|30|60|300 seconds, lock_style wall|world|ascii|7seg, auto_lock 0|60|300|900 seconds, lock_screen_off 0|5|8|15|30|60 seconds, lock_date on/off, lock_battery on/off.",
+            "Change a device setting. brightness 5-100, volume 0-100, mute on/off, theme black|sky|mobile|terminal|platinum, invert on/off, statusbar default|black|white, screen_off 0|10|30|60|300 seconds, lock_style wall|world|ascii|7seg, auto_lock 0|60|300|900 seconds, lock_screen_off 0|5|8|15|30|60 seconds, lock_date on/off, lock_battery on/off.",
             json!({"name": s, "value": s}),
             &["name", "value"],
         ),

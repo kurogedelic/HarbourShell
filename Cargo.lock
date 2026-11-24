@@ -114,6 +114,7 @@ dependencies = [
 name = "harbour-shell"
 version = "0.2.0"
 dependencies = [
+ "cc",
  "chrono",
  "chrono-tz",
  "libc",

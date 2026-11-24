@@ -626,6 +626,10 @@ impl Camera {
 }
 
 impl LauncherApp for Camera {
+    fn takes_text(&self) -> bool {
+        false
+    }
+
     fn help(&self) -> Vec<(String, String)> {
         let k = |a: &str, b: &str| (a.to_string(), b.to_string());
         vec![

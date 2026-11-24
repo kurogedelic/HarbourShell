@@ -42,11 +42,12 @@ pub const LOCK_STYLES: [&str; 4] = ["Wall clock", "World Clock", "ASCII art", "7
 /// Status bar colours (index = `harbour_statusbar`).
 const BAR_STYLES: [&str; 3] = ["Default", "Black", "White"];
 /// Colour themes (index = `harbour_theme` in config.json).
-pub const THEMES: [(&str, &str); 4] = [
+pub const THEMES: [(&str, &str); 5] = [
     ("Amber", "assets/themes/theme-black.yaml"),
     ("Sky", "assets/themes/theme-paper.yaml"),
     ("Mobile", "assets/themes/theme-mobile.yaml"),
     ("Terminal", "assets/themes/theme-terminal.yaml"),
+    ("Platinum", "assets/themes/theme-platinum.yaml"),
 ];
 
 /// A grey or black-and-white panel has one theme of its own (name, file): the colour themes are not
@@ -56,6 +57,11 @@ static PANEL_THEME: std::sync::OnceLock<(&'static str, &'static str)> = std::syn
 /// The panel shows only greys (`gray`) or only black and white (`mono`): fix the theme.
 pub fn fix_theme_for_panel(mono: bool) {
     let _ = PANEL_THEME.set(if mono { ("1-bit", "assets/themes/theme-mono.yaml") } else { ("Gray", "assets/themes/theme-gray.yaml") });
+}
+
+/// True on a black-and-white panel: every "fainter" ink prints as plain black there.
+pub fn panel_is_mono() -> bool {
+    PANEL_THEME.get().is_some_and(|p| p.0 == "1-bit")
 }
 
 fn panel_theme() -> Option<(&'static str, &'static str)> {
@@ -1822,8 +1828,10 @@ fn draw_panel_row(c: &mut Canvas<Window>, fs: &FontSystem, tm: &ThemeManager, r:
             let txt = format!("{p}%");
             let tw = fs.measure_text(&txt);
             fs.draw_text(c, right - tw, ty, &txt, ink);
-            let sx = left + (fs.measure_text(&r.label) + 12).max(60);
-            let track = Rect::new(sx, mid - 5, (right - tw - 8 - sx).max(20) as u32, 11);
+            // Every slider starts and ends at the same place (Brightness, Volume): the start clears
+            // the longer of the two labels, the end leaves room for "100%".
+            let sx = left + (fs.measure_text(&r.label) + 12).max(76);
+            let track = Rect::new(sx, mid - 5, (right - fs.measure_text("100%") - 8 - sx).max(20) as u32, 11);
             draw_panel_slider(c, tm, track, *p, selected, selected && pressed);
             reg.push((track, Hit::Slider(idx)));
         }
@@ -1951,7 +1959,10 @@ fn draw_view(c: &mut Canvas<Window>, fs: &FontSystem, tm: &ThemeManager, region:
         base
     } else {
         draw_sidebar(c, fs, tm, &base, v.section, v.in_root, if on_screen { Some(&mut *reg) } else { None });
-        pane_rect(&base)
+        // While the cursor is in the sidebar it opens out to show every name whole (Japanese names
+        // are wider): the page starts after it, so no label, check box or button is covered.
+        let sb = if v.in_root { sidebar_full_w(fs).min(base.width() as i32 / 2) } else { SB_W };
+        Rect::new(base.x() + sb, base.y(), (base.width() as i32 - sb).max(1) as u32, base.height())
     };
     let shown = if v.in_root { SECTION_PAGES[v.section].clone() } else { v.page.clone() };
     if shown == Page::AgentConnect {
@@ -2378,12 +2389,12 @@ mod tests {
         s.cursor = 0;
         assert_eq!(s.rows()[0].val, Val::Text("Amber".into()), "Amber is the default");
         assert_eq!(press(&mut s, Keycode::Left), Event::None, "already the first theme");
-        for want in ["Sky", "Mobile", "Terminal"] {
+        for want in ["Sky", "Mobile", "Terminal", "Platinum"] {
             assert_eq!(press(&mut s, Keycode::Right), Event::ThemeChanged);
             assert_eq!(s.rows()[0].val, Val::Text(want.into()));
         }
         assert_eq!(press(&mut s, Keycode::Right), Event::None, "already the last theme");
-        assert_eq!(Config::load(dir.join("config.json")).get_int("harbour_theme", 0), 3);
+        assert_eq!(Config::load(dir.join("config.json")).get_int("harbour_theme", 0), 4);
         assert_eq!(press(&mut s, Keycode::Left), Event::ThemeChanged);
     }
 
@@ -2413,7 +2424,7 @@ mod tests {
         assert_eq!(Config::load(dir.join("config.json")).get_int("harbour_theme_invert", 0), 1);
         assert_eq!(theme_path(1, true), "assets/themes/theme-paper-invert.yaml");
         assert_eq!(theme_path(1, false), "assets/themes/theme-paper.yaml");
-        assert_eq!(theme_path(99, false), "assets/themes/theme-terminal.yaml", "clamped");
+        assert_eq!(theme_path(99, false), "assets/themes/theme-platinum.yaml", "clamped");
     }
 
     #[test]
@@ -2792,7 +2803,9 @@ mod tests {
         assert_eq!(Config::load(dir.join("config.json")).get_int("harbour_theme", 0), 2);
         // Left / right still step the value while it is closed.
         assert_eq!(press(&mut s, Keycode::Right), Event::ThemeChanged);
-        assert_eq!(press(&mut s, Keycode::Right), Event::None, "Terminal is the last theme");
+        assert_eq!(press(&mut s, Keycode::Right), Event::ThemeChanged);
+        assert_eq!(press(&mut s, Keycode::Right), Event::None, "Platinum is the last theme");
+        assert_eq!(press(&mut s, Keycode::Left), Event::ThemeChanged);
         assert_eq!(press(&mut s, Keycode::Left), Event::ThemeChanged);
         assert_eq!(s.cfg_int("harbour_theme", 0), 2);
         // Screen off through the list.

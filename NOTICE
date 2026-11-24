@@ -23,6 +23,8 @@ THIRD_PARTY_LICENSES.md (Rust crates). In short:
   * ChiKareGo2 by Giles Booth (assets/fonts/ChiKareGo2.fnt): Creative Commons Attribution,
     converted to another file format by tools/gen_chikarego.py (this is an adaptation).
   * World map: Natural Earth 110m land, public domain.
+  * Felucca-Engines (third_party/felucca-engines/): the synthesis engines Yacht plays, MIT
+    (Copyright (c) 2026 Leo Kuroshita, Hügelton Instruments; text in third_party/felucca-engines/LICENSE).
   * Time zones: the IANA tz database through the chrono-tz crate.
   * Input method (src/ime/): original code, no third-party input-method code or tables. No dictionary is included
     in the repository or in any release. The optional Japanese input dictionary is third-party data that the USER

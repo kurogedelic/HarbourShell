@@ -1250,7 +1250,22 @@ fn draw_button(c: &mut Canvas<Window>, fs: &FontSystem, tm: &ThemeManager, r: Re
     let fg = if pressed { paper } else { ink };
     fs.draw_display_text(c, face.x() + 3, face.y(), legend, fg);
     let lw = fs.measure_text(label);
-    fs.draw_text(c, face.x() + (face.width() as i32 - lw) / 2, face.y() + 12, label, fg);
+    let room = face.width() as i32 - 4;
+    if lw <= room {
+        fs.draw_text(c, face.x() + (face.width() as i32 - lw) / 2, face.y() + 12, label, fg);
+    } else {
+        // Four-letter names ("acos", "10^x") are a pixel or two wider than the key face: set them a
+        // pixel tighter per letter so they clear the key's frame on both sides.
+        let n = label.chars().count() as i32;
+        let tight = lw - (n - 1);
+        let mut x = face.x() + (face.width() as i32 - tight + 1) / 2;
+        let mut buf = [0u8; 4];
+        for ch in label.chars() {
+            let g: &str = ch.encode_utf8(&mut buf);
+            fs.draw_text(c, x, face.y() + 12, g, fg);
+            x += fs.measure_text(g) - 1;
+        }
+    }
 }
 
 /// Keep the right end of `text` when it does not fit.

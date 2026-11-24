@@ -827,7 +827,8 @@ impl LauncherApp for SheetApp {
         let right = grid::scroll_x() + grid::SCROLL_W;
 
         // Input line: reference, then the raw contents (or the edit in progress).
-        let bar = Rect::new(X0, BAR_Y, (right - X0 - grid::MARGIN) as u32, widgets::FIELD_H as u32);
+        // As wide as the grid below it (row numbers + the visible columns), so their right edges line up.
+        let bar = Rect::new(X0, BAR_Y, ((ROW_HEAD_W + vis_cols() as i32 * CELL_W) as u32).min((right - X0 - grid::MARGIN) as u32), widgets::FIELD_H as u32);
         let name = cell_name(self.col, self.row);
         let field = match &self.edit {
             Some(e) => widgets::Field { text: &e.text, caret: Some(e.caret), ..Default::default() },

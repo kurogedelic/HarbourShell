@@ -108,6 +108,19 @@ pub const JA: &[(&str, &str)] = &[
     ("Entry", "入力方式"),
     ("Angle", "角度"),
     ("Format", "表示形式"),
+    // Yacht
+    ("Next sound", "次の音色"),
+    ("Previous sound", "前の音色"),
+    ("Clear pattern", "パターンを消去"),
+    ("Demo pattern", "デモパターン"),
+    ("Move the cursor", "カーソルを動かす"),
+    ("Put or take away a note", "ノートを置く / 消す"),
+    ("Shorter / longer note", "ノートを短く / 長く"),
+    ("Previous / next sound", "前 / 次の音色"),
+    ("Play / stop the loop", "ループを再生 / 停止"),
+    ("Take away the note", "ノートを消す"),
+    // Settings > Network before it has looked
+    ("Open to check the connection", "開くと接続を確認します"),
 ];
 
 /// Templates with one `{}` (a name or a number) on each side.

@@ -1664,14 +1664,16 @@ impl Recorder {
         let (rate, ch) = if idle { (self.rate_pref.unwrap_or(48_000), 1u16) } else { (self.rate, self.ch) };
         let rx = 150;
         if let Some(f) = free {
-            fs.draw_text(c, rx, y, &format!("{} {}", i18n::tr("Free space"), fmt_free(f)), ink);
-            fs.draw_text(c, rx, y + if i18n::get() == i18n::Lang::Ja { 13 } else { 11 }, &left_text(&fmt_remaining(f, rate, ch)), faint);
+            // Two 12 px lines between the device row's rule and the graph: a clear pixel between
+            // them and two above the graph's frame, in either language.
+            fs.draw_text(c, rx, y - 4, &format!("{} {}", i18n::tr("Free space"), fmt_free(f)), ink);
+            fs.draw_text(c, rx, y + 9, &left_text(&fmt_remaining(f, rate, ch)), faint);
         } else {
             fs.draw_text(c, rx, y, i18n::tr("Free space: ?"), faint);
         }
 
         // Waveform: an outlined graph of the last 7.8 s.
-        let g = Rect::new(grid::MARGIN, 84, (grid::SCREEN_W - 2 * grid::MARGIN) as u32, 40);
+        let g = Rect::new(grid::MARGIN, 86, (grid::SCREEN_W - 2 * grid::MARGIN) as u32, 38);
         ui::fill_rect(c, g, tm.get_color("widget_face_active"));
         ui::draw_rect(c, g, ink);
         let cy = g.y() + g.height() as i32 / 2;

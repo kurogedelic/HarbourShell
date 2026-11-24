@@ -176,6 +176,8 @@ impl TimerApp {
         self.cd_total = if up { (self.cd_total + step).min(MAX_SET) } else { self.cd_total.saturating_sub(step).max(MIN_SET) };
     }
 
+    /// The row starts under the progress bar's left end (X0 + 3): the default button's ring then
+    /// stands on the margin instead of left of everything above it.
     fn buttons(&self, now: Instant) -> Vec<(Rect, Act, String)> {
         let (running, done) = match self.mode {
             Mode::Stopwatch => (self.sw.running(), false),
@@ -187,7 +189,7 @@ impl TimerApp {
             v.push((Act::Lap, "Lap"));
         }
         v.push((Act::Reset, "Reset"));
-        v.into_iter().enumerate().map(|(i, (a, l))| (Rect::new(X0 + i as i32 * (BTN_W + grid::GUTTER), BTN_Y, BTN_W as u32, grid::BTN_H as u32), a, l.to_string())).collect()
+        v.into_iter().enumerate().map(|(i, (a, l))| (Rect::new(X0 + 3 + i as i32 * (BTN_W + grid::GUTTER), BTN_Y, BTN_W as u32, grid::BTN_H as u32), a, l.to_string())).collect()
     }
 
     fn act(&mut self, a: Act, now: Instant) {
@@ -242,6 +244,10 @@ impl Default for TimerApp {
 }
 
 impl LauncherApp for TimerApp {
+    fn takes_text(&self) -> bool {
+        false
+    }
+
     /// Tab switches Stopwatch / Timer, so a double Tab here is not the Agent (Alt+Tab is).
     fn wants_tab(&self) -> bool {
         true

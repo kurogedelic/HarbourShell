@@ -70,7 +70,7 @@ fn choice(v: &str, names: &[&str]) -> Result<i64, String> {
 }
 
 // The theme files' names (Amber is `theme-black.yaml`); one per entry of `THEMES`.
-const THEME_NAMES: [&str; 4] = ["black", "sky", "mobile", "terminal"];
+const THEME_NAMES: [&str; 5] = ["black", "sky", "mobile", "terminal", "platinum"];
 const LOCK_STYLE_NAMES: [&str; 4] = ["wall", "world", "ascii", "7seg"];
 const ON_OFF: [&str; 2] = ["off", "on"];
 const BAR_NAMES: [&str; 3] = ["default", "black", "white"];

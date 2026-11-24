@@ -473,7 +473,12 @@ impl Monitor {
         let total = m.total_kb.max(1) as f32;
         card(c, ctx, p, r, "Memory", &fmt_pct(m.used_kb() as f32 / total));
         stacked_bar(c, p, Rect::new(r.x() + 4, r.y() + 22, GRAPH_W as u32, 12), &[(m.used_kb() as f32 / total, false), (m.cache_kb() as f32 / total, true)]);
-        let line = format!("{} {}  {} {}", fmt_kb(m.used_kb()), i18n::tr("used"), fmt_kb(m.cache_kb()), i18n::tr("cache"));
+        let mut line = format!("{} {}  {} {}", fmt_kb(m.used_kb()), i18n::tr("used"), fmt_kb(m.cache_kb()), i18n::tr("cache"));
+        if ctx.fs.measure_text(&line) > cw - 8 {
+            // "キャッシュ" is five wide characters: where the line would be cut, the short Latin word
+            // keeps the number whole.
+            line = format!("{} {}  {} cache", fmt_kb(m.used_kb()), i18n::tr("used"), fmt_kb(m.cache_kb()));
+        }
         text_l(c, ctx, r.x() + 4, r.y() + 34, &chrome::fit_text(ctx.fs, &line, cw - 8), p.faint);
         let line = format!("{} {}  {} {}", fmt_kb(m.free_only_kb()), i18n::tr("free"), fmt_kb(m.total_kb), i18n::tr("total"));
         text_l(c, ctx, r.x() + 4, r.y() + 47, &chrome::fit_text(ctx.fs, &line, cw - 8), p.faint);
@@ -675,6 +680,10 @@ impl Monitor {
 }
 
 impl LauncherApp for Monitor {
+    fn takes_text(&self) -> bool {
+        false
+    }
+
     fn help(&self) -> Vec<(String, String)> {
         let k = |a: &str, b: &str| (a.to_string(), b.to_string());
         let mut v = vec![

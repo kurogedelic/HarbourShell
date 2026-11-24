@@ -1497,7 +1497,10 @@ impl LauncherApp for Browser {
                                     xx += 2;
                                 }
                             } else {
-                                let _ = c.draw_line((x, uy), (x + it.w - 1, uy));
+                                // A link's line ends with its last letter: the space the layout
+                                // keeps with the word (before "|" or the next word) is not underlined.
+                                let trail = if it.link.is_some() && text.ends_with(' ') { fs.measure_text(" ") } else { 0 };
+                                let _ = c.draw_line((x, uy), (x + (it.w - trail).max(1) - 1, uy));
                             }
                         }
                     }

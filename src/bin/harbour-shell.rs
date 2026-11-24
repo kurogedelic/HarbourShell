@@ -658,7 +658,7 @@ fn main() -> Result<(), String> {
                 ScriptStep::Input(v) => inputs.extend(v),
                 ScriptStep::Theme(i, invert) => {
                     if let Ok(mut c) = cfg.lock() {
-                        c.set_int("harbour_theme", i.clamp(0, 3));
+                        c.set_int("harbour_theme", i.clamp(0, harbour_shell::launcher::settings::THEMES.len() as i64 - 1));
                         c.set_int("harbour_theme_invert", invert as i64);
                         let _ = c.save();
                     }
@@ -1138,7 +1138,7 @@ fn main() -> Result<(), String> {
                             let bar = desk.as_ref().map(|d| d.size).unwrap_or((harbour_shell::grid::sw(), harbour_shell::grid::sh()));
                             let mut st = status.lock().map(|s| s.clone()).unwrap_or_default();
                             st.time = chrono::Local::now().format("%H:%M").to_string();
-                            let text_screen = agent_open || matches!(screen, Screen::Editor | Screen::Terminal(_) | Screen::Settings(_) | Screen::App(_));
+                            let text_screen = agent_open || (matches!(screen, Screen::Editor | Screen::Terminal(_) | Screen::Settings(_)) || matches!(&screen, Screen::App(a) if a.takes_text()));
                             st.ime = ime.indicator(text_screen).to_string();
                             let hit = harbour_shell::grid::with_surface(bar, || chrome::status_hit(&fs, &st, cursor.0));
                             if let Some((item, x)) = hit {
@@ -1360,7 +1360,7 @@ fn main() -> Result<(), String> {
                 && (agent_open
                     || save_panel.is_some()
                     || home_modal.is_some()
-                    || matches!(screen, Screen::Editor | Screen::Terminal(_) | Screen::Settings(_) | Screen::App(_)));
+                    || (matches!(screen, Screen::Editor | Screen::Terminal(_) | Screen::Settings(_)) || matches!(&screen, Screen::App(a) if a.takes_text())));
             ime.set_learning(!matches!(screen, Screen::Terminal(_)));
             inputs = ime.process(inputs, text_screen);
             ime.tick();
@@ -2468,7 +2468,8 @@ fn main() -> Result<(), String> {
             let now_home = matches!(screen, Screen::Home);
             if prev_home && !now_home {
                 let flexible = screen_flexible(&screen);
-                let size = d.initial_size(flexible);
+                let asked = if let Screen::App(a) = &screen { a.desk_size() } else { None };
+                let size = asked.unwrap_or_else(|| d.initial_size(flexible));
                 let id = d.open(size, flexible, None);
                 fid = Some(id);
                 if let Some(w) = d.get(id) {
@@ -2639,7 +2640,7 @@ fn main() -> Result<(), String> {
                     && (agent_open
                         || save_panel.is_some()
                         || home_modal.is_some()
-                        || matches!(screen, Screen::Editor | Screen::Terminal(_) | Screen::Settings(_) | Screen::App(_)));
+                        || (matches!(screen, Screen::Editor | Screen::Terminal(_) | Screen::Settings(_)) || matches!(&screen, Screen::App(a) if a.takes_text())));
                 st.ime = ime.indicator(ime_text_screen).to_string();
                 // The current app's name sits to the right of the anchor (the folder name on Home).
                 let context: String = if agent_open { harbour_shell::launcher::i18n::app_name("Agent") } else { match &screen {

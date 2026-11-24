@@ -431,6 +431,14 @@ impl Home {
         h
     }
 
+    /// The window a folder's apps fill: up to four columns and three rows of tiles.
+    pub fn folder_window_size(&self) -> (i32, i32) {
+        let n = self.items.len().max(1) as i32;
+        let cols = n.clamp(2, 4);
+        let rows = ((n + cols - 1) / cols).clamp(1, 3);
+        (GRID_X + cols * CELL_W + 8, GRID_Y + rows * CELL_H + 4)
+    }
+
     pub fn close_folder(&mut self) -> HomeAction {
         let Some(fi) = self.open.take() else { return HomeAction::None };
         let id = if fi == RECENT { Some("\0recent".to_string()) } else { self.folders.list.get(fi).map(|f| folder_id(&f.name)) };

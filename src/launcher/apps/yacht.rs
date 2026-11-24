@@ -3,8 +3,11 @@
 //! A keyboard on the left, a 16-step grid on the right, a blinking cursor, a scroll bar and the
 //! name of the note under the cursor. Arrows move the cursor (the roll scrolls to keep it in
 //! view), Return puts a note there or takes it away, `-` / `=` (or Shift+Left / Right) make the
-//! note under the cursor (or the next one placed) shorter / longer, Space plays the 16 steps in a
-//! loop with a square wave and stops. The pattern is kept in `~/Yacht/pattern.txt`.
+//! note under the cursor (or the next one placed) shorter / longer, `,` / `.` pick the sound, Space
+//! plays the 16 steps in a loop and stops. The pattern is kept in `~/Yacht/pattern.txt`.
+//!
+//! The sounds are the Felucca-Engines' presets (LOFI, ANALOG, TRIO, PHASE, WHEEL, NOISE), rendered
+//! by [`super::yacht_synth`]; a plain square wave stands in if an engine cannot render.
 //!
 //! Sound: the loop is rendered and played over and over by the shell's own mixer
 //! ([`crate::sound`], also in the web build); without it, it goes to a WAV file played with
@@ -36,7 +39,47 @@ pub const HIGH: u8 = 96;
 pub const ROWS: usize = (HIGH - LOW + 1) as usize;
 /// Tempo: 120 BPM, a step is a sixteenth note.
 pub const STEP_MS: u64 = 125;
-const RATE: u32 = 22_050;
+
+use super::yacht_synth as synth;
+
+/// Samples of one step at the engines' rate: STEP_MS rounded down to whole control blocks, so the
+/// loop the engines render and the play head agree.
+pub fn step_samples() -> usize {
+    let blk = synth::block() as usize;
+    (synth::rate() as u64 * STEP_MS / 1000) as usize / blk * blk
+}
+
+/// How long a step lasts.
+pub fn step_dur() -> std::time::Duration {
+    std::time::Duration::from_secs_f64(step_samples() as f64 / synth::rate() as f64)
+}
+
+/// A loop at another rate (linear interpolation; the end wraps to the start).
+pub fn resample(pcm: &[i16], from: u32, to: u32) -> Vec<i16> {
+    if from == to || pcm.is_empty() {
+        return pcm.to_vec();
+    }
+    let n = ((pcm.len() as u64 * to as u64 + from as u64 / 2) / from as u64) as usize;
+    (0..n)
+        .map(|i| {
+            let pos = i as f64 * from as f64 / to as f64;
+            let k = pos as usize % pcm.len();
+            let f = pos - pos.floor();
+            let (a, b) = (pcm[k] as f64, pcm[(k + 1) % pcm.len()] as f64);
+            (a + (b - a) * f).round() as i16
+        })
+        .collect()
+}
+
+/// Every (engine, preset) in order, for `,` / `.`.
+pub fn sounds() -> Vec<(usize, usize)> {
+    (0..synth::engine_count()).flat_map(|e| (0..synth::preset_count(e)).map(move |p| (e, p))).collect()
+}
+
+/// "LOFI PULSE LD".
+pub fn sound_name(engine: usize, preset: usize) -> String {
+    format!("{} {}", synth::engine_name(engine), synth::preset_name(engine, preset))
+}
 
 const NAMES: [&str; 12] = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
 
@@ -70,13 +113,16 @@ impl Note {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Pattern {
     pub notes: Vec<Note>,
+    /// The sound: a Felucca engine and one of its presets.
+    pub engine: usize,
+    pub preset: usize,
 }
 
 impl Pattern {
     /// The short phrase the original sketch started with.
     pub fn demo() -> Self {
         let n = |step, pitch, len| Note { step, pitch, len };
-        Pattern { notes: vec![n(0, 60, 1), n(1, 62, 1), n(3, 60, 1), n(4, 67, 1), n(11, 65, 4)] }
+        Pattern { notes: vec![n(0, 60, 1), n(1, 62, 1), n(3, 60, 1), n(4, 67, 1), n(11, 65, 4)], ..Default::default() }
     }
 
     /// Index of the note sounding at (step, pitch).
@@ -123,6 +169,7 @@ impl Pattern {
     /// One note per line: `step pitch length`.
     pub fn to_text(&self) -> String {
         let mut s = String::from("# Yacht pattern: step pitch length\n");
+        s.push_str(&format!("sound {} {}\n", self.engine, self.preset));
         for n in &self.notes {
             s.push_str(&format!("{} {} {}\n", n.step, n.pitch, n.len));
         }
@@ -133,6 +180,15 @@ impl Pattern {
     pub fn from_text(text: &str) -> Self {
         let mut p = Pattern::default();
         for line in text.lines() {
+            if let Some(rest) = line.strip_prefix("sound ") {
+                let v: Vec<usize> = rest.split_whitespace().filter_map(|w| w.parse().ok()).collect();
+                if let [e, pr] = v[..] {
+                    if pr < synth::preset_count(e) {
+                        (p.engine, p.preset) = (e, pr);
+                    }
+                }
+                continue;
+            }
             let v: Vec<u8> = line.split_whitespace().filter_map(|w| w.parse().ok()).collect();
             if let [step, pitch, len] = v[..] {
                 if step < STEPS && (LOW..=HIGH).contains(&pitch) && len >= 1 && p.at(step, pitch).is_none() {
@@ -145,10 +201,19 @@ impl Pattern {
         p
     }
 
-    /// The loop as mono 16-bit samples: a square wave per note, mixed, with a short fade at each
-    /// end of a note so it does not click.
+    /// The loop as mono 16-bit samples at `rate`, played by the pattern's sound.
     pub fn render(&self, rate: u32) -> Vec<i16> {
-        let step_len = (rate as u64 * STEP_MS / 1000) as usize;
+        let notes: Vec<(u8, u8, u8)> = self.notes.iter().map(|n| (n.step, n.pitch, n.len)).collect();
+        match synth::render(self.engine, self.preset, &notes, step_samples(), STEPS as usize) {
+            Some(pcm) => resample(&pcm, synth::rate(), rate),
+            None => self.render_square(rate),
+        }
+    }
+
+    /// The stand-in: a square wave per note, mixed, with a short fade at each end of a note so it
+    /// does not click.
+    pub fn render_square(&self, rate: u32) -> Vec<i16> {
+        let step_len = (step_samples() as u64 * rate as u64 / synth::rate() as u64) as usize;
         let total = step_len * STEPS as usize;
         let mut mix = vec![0f32; total];
         let fade = (rate as usize / 500).max(1);
@@ -219,7 +284,8 @@ impl Player {
     }
 
     fn step(&self, now: Instant) -> u8 {
-        ((now.saturating_duration_since(self.since).as_millis() as u64 / STEP_MS) % STEPS as u64) as u8
+        let t = now.saturating_duration_since(self.since).as_secs_f64();
+        ((t / step_dur().as_secs_f64()) as u64 % STEPS as u64) as u8
     }
 }
 
@@ -379,7 +445,7 @@ impl Yacht {
             return AppAction::None;
         }
         let wav = self.wav_path();
-        if let Err(e) = std::fs::write(&wav, self.pattern.wav(RATE)) {
+        if let Err(e) = std::fs::write(&wav, self.pattern.wav(synth::rate())) {
             return AppAction::Toast(format!("Cannot play: {e}"));
         }
         self.player = None;
@@ -438,6 +504,18 @@ impl Yacht {
         self.changed()
     }
 
+    /// Step through every engine's presets (`d` = +1 next, -1 previous).
+    fn cycle_sound(&mut self, d: i32) -> AppAction {
+        let all = sounds();
+        if all.is_empty() {
+            return AppAction::None;
+        }
+        let i = all.iter().position(|s| *s == (self.pattern.engine, self.pattern.preset)).unwrap_or(0);
+        let (e, p) = all[(i as i32 + d).rem_euclid(all.len() as i32) as usize];
+        (self.pattern.engine, self.pattern.preset) = (e, p);
+        self.changed()
+    }
+
     fn clear(&mut self) -> AppAction {
         self.pattern.notes.clear();
         self.changed()
@@ -451,6 +529,10 @@ impl Drop for Yacht {
 }
 
 impl LauncherApp for Yacht {
+    fn takes_text(&self) -> bool {
+        false
+    }
+
     fn title(&self) -> String {
         "Yacht".to_string()
     }
@@ -466,6 +548,7 @@ impl LauncherApp for Yacht {
             k("Return", "Put or take away a note"),
             k("- / =", "Shorter / longer note"),
             k("Shift+Left / Right", "Shorter / longer note"),
+            k(", / .", "Previous / next sound"),
             k("Space", "Play / stop the loop"),
             k("Backspace", "Take away the note"),
         ]
@@ -473,7 +556,8 @@ impl LauncherApp for Yacht {
 
     fn describe(&self) -> String {
         format!(
-            "Yacht step sequencer: cursor at step {} on {}, {} notes, {}",
+            "Yacht step sequencer: sound {}, cursor at step {} on {}, {} notes, {}",
+            sound_name(self.pattern.engine, self.pattern.preset),
             self.step + 1,
             note_name(self.pitch),
             self.pattern.notes.len(),
@@ -484,6 +568,8 @@ impl LauncherApp for Yacht {
     fn menu(&self) -> Vec<MenuItem> {
         vec![
             MenuItem::new("play", if self.playing() { "Stop" } else { "Play" }),
+            MenuItem::new("next_sound", "Next sound"),
+            MenuItem::new("prev_sound", "Previous sound"),
             MenuItem::new("clear", "Clear pattern"),
             MenuItem::new("demo", "Demo pattern"),
         ]
@@ -496,6 +582,8 @@ impl LauncherApp for Yacht {
                 AppAction::None
             }
             "play" => self.play(),
+            "next_sound" => self.cycle_sound(1),
+            "prev_sound" => self.cycle_sound(-1),
             "clear" => self.clear(),
             "demo" => {
                 self.pattern = Pattern::demo();
@@ -528,6 +616,8 @@ impl LauncherApp for Yacht {
             Keycode::Down => self.move_cursor(0, 1),
             Keycode::Minus | Keycode::KpMinus | Keycode::LeftBracket => return self.resize(-1),
             Keycode::Equals | Keycode::KpPlus | Keycode::RightBracket => return self.resize(1),
+            Keycode::Comma => return self.cycle_sound(-1),
+            Keycode::Period => return self.cycle_sound(1),
             Keycode::Return | Keycode::KpEnter => return self.toggle(),
             Keycode::Backspace | Keycode::Delete => {
                 if let Some(i) = self.pattern.at(self.step, self.pitch) {
@@ -593,14 +683,15 @@ impl LauncherApp for Yacht {
         self.follow(l.rows);
         ui::fill_rect(c, Rect::new(0, grid::BAR_H, grid::sw() as u32, (grid::sh() - grid::BAR_H) as u32), tm.get_color("home_bg"));
 
-        // Header: cursor note, step, length, transport.
+        // Header: cursor note, sound, step and length, transport.
         let x0 = l.keys.x() + 2;
         fs.draw_text(c, x0, l.head_y, &note_name(self.pitch), ink);
-        let info = format!("Step {:>2}/{}   Len {}", self.step + 1, STEPS, self.len);
-        fs.draw_text(c, l.grid.x() + 4, l.head_y, &info, faint);
-        let tr = if self.playing() { "Play" } else { "Stop" };
+        fs.draw_text(c, l.grid.x() + 2, l.head_y, &sound_name(self.pattern.engine, self.pattern.preset), ink);
+        let tr = crate::launcher::i18n::tr(if self.playing() { "Play" } else { "Stop" });
         let tx = l.grid.right() - fs.measure_text(tr);
         fs.draw_text(c, tx, l.head_y, tr, ink);
+        let info = format!("{}/{} L{}", self.step + 1, STEPS, self.len);
+        fs.draw_text(c, tx - 16 - fs.measure_text(&info), l.head_y, &info, faint);
         // A play triangle or a stop square before the word (the font has neither).
         let (ix, iy) = (tx - 11, l.head_y + 3);
         if self.playing() {
@@ -757,14 +848,15 @@ mod tests {
     }
 
     #[test]
-    fn the_rendered_loop_is_sixteen_steps_of_square_wave() {
+    fn the_stand_in_is_sixteen_steps_of_square_wave() {
+        const RATE: u32 = 44_100;
         let mut p = Pattern::default();
-        let silent = p.render(RATE);
-        assert_eq!(silent.len(), (RATE as u64 * STEP_MS / 1000) as usize * STEPS as usize);
+        let silent = p.render_square(RATE);
+        assert_eq!(silent.len(), step_samples() * STEPS as usize);
         assert!(silent.iter().all(|s| *s == 0));
         p.toggle(0, 69, 1);
-        let a = p.render(RATE);
-        let step = (RATE as u64 * STEP_MS / 1000) as usize;
+        let a = p.render_square(RATE);
+        let step = step_samples();
         assert!(a[..step].iter().any(|s| *s > 1000) && a[..step].iter().any(|s| *s < -1000));
         assert!(a[step..].iter().all(|s| *s == 0), "only the first step sounds");
         // Sign changes per second ~ 2 x 440.
@@ -774,6 +866,42 @@ mod tests {
         let wav = p.wav(RATE);
         assert_eq!(&wav[0..4], b"RIFF");
         assert_eq!(wav.len(), 44 + a.len() * 2);
+    }
+
+    #[test]
+    fn the_loop_plays_the_engines_and_fits_any_rate() {
+        let mut p = Pattern::demo();
+        let a = p.render(synth::rate());
+        assert_eq!(a.len(), step_samples() * STEPS as usize);
+        assert!(a.iter().map(|s| (*s as i32).abs()).max().unwrap() > 1000);
+        assert_ne!(a, p.render_square(synth::rate()), "an engine, not the stand-in");
+        let b = p.render(48_000);
+        assert_eq!(b.len(), (a.len() as f64 * 48_000.0 / 44_100.0).round() as usize);
+        assert_eq!(resample(&[0, 100], 1, 2), [0, 50, 100, 50]);
+        assert!((step_dur().as_secs_f64() - 0.125).abs() < 0.002);
+        p.engine = 99;
+        assert_eq!(p.render(44_100), p.render_square(44_100), "no such engine: the stand-in");
+    }
+
+    #[test]
+    fn sounds_step_through_every_preset_and_are_saved() {
+        let (fs, tm, sys) = ctx_parts();
+        let ctx = Ctx { fs: &fs, tm: &tm, sys: &sys, now: chrono::Local::now() };
+        let path = tmp("sounds");
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+        let mut y = Yacht::load(path.clone());
+        let all = sounds();
+        assert!(all.len() > 20);
+        y.key(Keycode::Comma, Mod::empty(), false, &ctx);
+        assert_eq!((y.pattern.engine, y.pattern.preset), *all.last().unwrap(), "wraps to the last");
+        y.key(Keycode::Period, Mod::empty(), false, &ctx);
+        y.key(Keycode::Period, Mod::empty(), false, &ctx);
+        assert_eq!((y.pattern.engine, y.pattern.preset), all[1]);
+        assert_eq!(Yacht::load(path.clone()).pattern, y.pattern, "the sound is saved with the notes");
+        assert!(sound_name(0, 0).starts_with("LOFI "));
+        let q = Pattern::from_text("sound 0 999\nsound 77 0\n1 60 1\n");
+        assert_eq!((q.engine, q.preset), (0, 0), "a sound that does not exist is ignored");
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
     #[test]

@@ -44,6 +44,14 @@ impl FolderWindow {
 }
 
 impl LauncherApp for FolderWindow {
+    fn takes_text(&self) -> bool {
+        false
+    }
+
+    fn desk_size(&self) -> Option<(i32, i32)> {
+        Some(self.home.folder_window_size())
+    }
+
     fn title(&self) -> String {
         self.name.clone()
     }

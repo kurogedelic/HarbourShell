@@ -17,6 +17,8 @@ PALETTES = {
     "mobile": ("Mobile", ["#0C1511", "#2A4B3D", "#7E955B", "#B1C594", "#EBEEC0"]),
     # phosphor green: Invert gives the classic green-on-black terminal look
     "terminal": ("Terminal", ["#010A02", "#0B3D1A", "#1FA043", "#59F07F", "#D3FFDF"]),
+    # light greys with a cool cast in the mid tones: a quiet, neutral desk
+    "platinum": ("Platinum", ["#101014", "#555566", "#9999AA", "#DDDDDD", "#FFFFFF"]),
     # Grey panels (HARBOUR_PANEL=gray or an 8-bit grey driver): five greys. Not offered on colour screens.
     "gray": ("Gray", ["#000000", "#404040", "#808080", "#C0C0C0", "#FFFFFF"]),
     # Black-and-white panels (Sharp memory LCDs): the panel shows black, white and an ordered dither

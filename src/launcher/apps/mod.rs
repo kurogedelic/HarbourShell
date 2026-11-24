@@ -28,6 +28,7 @@ pub mod sheet;
 pub mod timer;
 pub mod tone;
 pub mod yacht;
+pub mod yacht_synth;
 
 /// Shown on the home screen after the core built-ins, in this order.
 pub const REGISTRY: &[AppDef] = &[

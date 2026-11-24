@@ -101,13 +101,14 @@ impl Camera {
         ui::fill_rect(c, Rect::new(x0, 92, w as u32, 1), rule);
 
         // Brightness and contrast meters (only what the camera has).
-        let mut y = 95;
+        // 14 px apart: a 12 px line of kanji keeps two clear pixels above the next one.
+        let mut y = 96;
         if let Some(i) = &self.info {
             for (label, r) in [("Bright", i.bright), ("Contrast", i.contrast)] {
                 if let Some(r) = r {
                     fs.draw_text(c, x0, y, &i18n::tr_s(label), land);
                     widgets::draw_meter(c, tm, Rect::new(x0 + 56, y + 2, (w - 56) as u32, 8), r.frac());
-                    y += 12;
+                    y += 14;
                 }
             }
         }

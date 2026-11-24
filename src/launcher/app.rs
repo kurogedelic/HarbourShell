@@ -128,6 +128,18 @@ pub trait LauncherApp {
         false
     }
 
+    /// The window size this screen asks for on a desk (surface width and height), when the usual
+    /// one does not suit it (a folder with three apps needs a small window).
+    fn desk_size(&self) -> Option<(i32, i32)> {
+        None
+    }
+
+    /// False for apps with nowhere to type (Camera, Monitor, Yacht...): the input method then
+    /// leaves their keys alone and its mark stays out of the menu strip.
+    fn takes_text(&self) -> bool {
+        true
+    }
+
     /// True for apps whose Tab key matters (the host then needs Ctrl+Tab for the menu).
     fn wants_tab(&self) -> bool {
         false
