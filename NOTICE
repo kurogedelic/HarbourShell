@@ -1,0 +1,39 @@
+Harbour Shell
+Copyright (c) 2026 kurogedelic
+
+Licensed under the Mozilla Public License, version 2.0 (see LICENSE).
+https://www.mozilla.org/en-US/MPL/2.0/
+
+Licences at a glance
+  * Source code (src/, tools/, packaging/, docs text, tests): MPL-2.0 (LICENSE). The MPL-2.0 covers the
+    source files only.
+  * The author's own artwork (app icons, status-bar icons, UI images, boot splash, 7-segment atlases,
+    Cavs font, screenshots): Copyright (c) 2026 kurogedelic, ALL RIGHTS RESERVED. Only the finished assets are
+    published, for use as part of this project; no permission is given to reuse them elsewhere (see
+    LICENSE-ARTWORK.txt). The drawing sources are kept private.
+  * Third-party material: its own licence, below.
+
+Third-party material shipped in this repository keeps its own licence. The full list, with
+authors, licences and links, is in THIRD_PARTY.md (fonts, data, tools) and
+THIRD_PARTY_LICENSES.md (Rust crates). In short:
+
+  * Shinonome 12 dot fonts (assets/fonts/shnmk12.bdf, shnm6x12r.bdf): public domain.
+  * M+ bitmap fonts (assets/fonts/mplus_*.bdf, src/generated/mplus_f12r.rs): M+ FONTS
+    licence (free, unlimited use/copy/distribution; text in assets/fonts/MPlus-LICENSE.txt).
+  * ChiKareGo2 by Giles Booth (assets/fonts/ChiKareGo2.fnt): Creative Commons Attribution,
+    converted to another file format by tools/gen_chikarego.py (this is an adaptation).
+  * World map: Natural Earth 110m land, public domain.
+  * Time zones: the IANA tz database through the chrono-tz crate.
+  * Input method (src/ime/): original code, no third-party input-method code or tables. No dictionary is included
+    in the repository or in any release. The optional Japanese input dictionary is third-party data that the USER
+    chooses to download at install time (Mozc OSS dictionary, Google, BSD-3-Clause; the data carries the NAIST/IPAdic,
+    ICOT and Okinawa dictionary terms). It is converted on the device and its licence text is
+    assets/ime/Mozc-LICENSE.txt (verbatim). Details in THIRD_PARTY.md ("Input method").
+
+Trademarks
+  Harbour Shell is an independent project. It is not affiliated with, endorsed by or
+  sponsored by Apple Inc., M5Stack, the Raspberry Pi Foundation / Raspberry Pi Ltd, the Debian
+  Project, Meta Platforms, Inc. (Muse), OpenAI, Anthropic, Groq, Nous Research, Z.ai or
+  Playdate / Panic Inc. All product names and trademarks belong to their owners and are used
+  only to say which hardware, services or file formats the software works with. No Apple code,
+  fonts or artwork are included.
