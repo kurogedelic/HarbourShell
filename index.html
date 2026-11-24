@@ -32,7 +32,7 @@
     setStatus: function (t) { if (t) note.innerHTML = 'Harbour Shell<br>' + t.replace(/\(.*\)/, ''); },
     onRuntimeInitialized: function () { note.style.display = 'none'; canvas.focus(); },
     // Each build's files carry its version, so a browser never mixes an old build with a new one.
-    locateFile: function (path, prefix) { return prefix + path + '?v=311fc374c2'; },
+    locateFile: function (path, prefix) { return prefix + path + '?v=9b2459bd2e'; },
     onAbort: function (w) { note.style.display = 'flex'; note.textContent = 'Harbour Shell stopped: ' + w; },
   };
   canvas.addEventListener('mousedown', function () { canvas.focus(); });
@@ -46,6 +46,6 @@
     }, 600);
   });
 </script>
-<script src="harbour-shell.js?v=311fc374c2"></script>
+<script src="harbour-shell.js?v=9b2459bd2e"></script>
 </body>
 </html>
