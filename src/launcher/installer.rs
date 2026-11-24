@@ -11,6 +11,9 @@
 //! * [`Job::ImeDict`]: the optional Japanese input dictionary (`ime_install.sh install --yes`,
 //!   into the user's home: no password).
 //!
+//! * [`Job::Harbour`]: a newer Harbour Shell (the release's `.deb` is downloaded, its SHA-256
+//!   checked against the release's own, then `sudo -S apt-get install -y <file>`).
+//!
 //! With `HARBOUR_MOCK=1` (or off Linux) nothing runs: the card walks through believable progress.
 
 use std::io::{BufRead, BufReader, Write};
@@ -37,6 +40,8 @@ pub enum Job {
     /// Uninstall Debian packages (an installed app).
     AptRemove(Vec<String>),
     ImeDict,
+    /// Harbour Shell itself, this version (see `launcher::update`).
+    Harbour(String),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -56,6 +61,9 @@ impl InstallReq {
     pub fn removes(&self) -> bool {
         matches!(self.job, Job::AptRemove(_))
     }
+    pub fn harbour(version: &str) -> Self {
+        Self { job: Job::Harbour(version.to_string()), why: "Newer version. Files and settings stay.".into() }
+    }
     pub fn ime_dict() -> Self {
         Self { job: Job::ImeDict, why: "Kanji conversion for Japanese input.".into() }
     }
@@ -64,6 +72,7 @@ impl InstallReq {
         match &self.job {
             Job::Apt(p) | Job::AptRemove(p) => p.join(", "),
             Job::ImeDict => i18n::tr_s("the Japanese dictionary"),
+            Job::Harbour(v) => format!("Harbour Shell {v}"),
         }
     }
 }
@@ -147,7 +156,7 @@ impl Installer {
 
     /// apt needs root: ask for the user's password (not when Harbour already runs as root).
     pub fn needs_password(&self) -> bool {
-        matches!(self.req.job, Job::Apt(_) | Job::AptRemove(_)) && !is_root()
+        matches!(self.req.job, Job::Apt(_) | Job::AptRemove(_) | Job::Harbour(_)) && !is_root()
     }
 
     pub fn text(&mut self, t: &str) {
@@ -289,6 +298,11 @@ impl Installer {
                         title(c, &i18n::tr_s("Uninstalled"));
                         line(c, 0, &i18n::tr_s(&format!("{} was removed.", self.req.what())), faint);
                     }
+                    Ok(()) if matches!(self.req.job, Job::Harbour(_)) => {
+                        title(c, &i18n::tr_s("Installed"));
+                        line(c, 0, &i18n::tr_s(&format!("{} is installed.", self.req.what())), faint);
+                        line(c, 1, &i18n::tr_s("Restart Harbour to use it."), faint);
+                    }
                     Ok(()) => {
                         title(c, &i18n::tr_s("Installed"));
                         line(c, 0, &i18n::tr_s(&format!("{} is ready.", self.req.what())), faint);
@@ -385,36 +399,43 @@ fn run(job: &Job, password: String, tx: &Sender<Msg>) -> Result<(), String> {
                 return Err("Not a valid package name".into());
             }
             let verb = if matches!(job, Job::AptRemove(_)) { "remove" } else { "install" };
-            let mut cmd = if is_root() {
-                let mut c = Command::new("apt-get");
-                c.args(apt_args(verb, pkgs).into_iter().skip(5));
-                c
-            } else {
-                let mut c = Command::new("sudo");
-                c.args(apt_args(verb, pkgs));
-                c
-            };
-            let mut child = cmd
-                .env("DEBIAN_FRONTEND", "noninteractive")
-                .stdin(Stdio::piped())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .spawn()
-                .map_err(|e| format!("sudo: {e}"))?;
-            if let Some(mut si) = child.stdin.take() {
-                let mut pw = password;
-                pw.push('\n');
-                let _ = si.write_all(pw.as_bytes());
-                // Overwrite our copy before it is dropped.
-                // SAFETY: zeroing the bytes keeps the String valid UTF-8 (all NULs).
-                unsafe { pw.as_bytes_mut().iter_mut().for_each(|b| *b = 0) };
+            sudo_apt(verb, pkgs, password, tx)
+        }
+        Job::Harbour(ver) => {
+            if crate::launcher::update::parse_version(ver).is_none() {
+                return Err("Not a version".into());
             }
-            let (ok, out) = pump(child, tx);
-            if ok {
-                Ok(())
-            } else {
-                Err(explain_failure(&out))
-            }
+            let deb = format!("harbour-shell_{ver}_arm64.deb");
+            let base = format!("https://github.com/{}/releases/download/v{ver}", crate::launcher::update::REPO);
+            let dir = std::env::temp_dir().join(format!("harbour-update-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+            let res = (|| {
+                for name in [deb.clone(), format!("{deb}.sha256")] {
+                    let _ = tx.send(Msg::Line(format!("downloading {name}")));
+                    let ok = Command::new("curl")
+                        .args(["--fail", "--silent", "--show-error", "--location", "--retry", "2", "--max-time", "600", "--proto", "=https", "--proto-redir", "=https", "--user-agent", "HarbourShell", "-o"])
+                        .arg(dir.join(&name))
+                        .arg(format!("{base}/{name}"))
+                        .stdin(Stdio::null())
+                        .status()
+                        .map_err(|e| format!("curl: {e}"))?
+                        .success();
+                    if !ok {
+                        return Err("Download failed (no network, or the release has no package)".to_string());
+                    }
+                }
+                let _ = tx.send(Msg::Line("checking the download".into()));
+                let want = std::fs::read_to_string(dir.join(format!("{deb}.sha256"))).map_err(|e| e.to_string())?;
+                let have = Command::new("sha256sum").arg(dir.join(&deb)).output().map_err(|e| format!("sha256sum: {e}"))?;
+                let have = String::from_utf8_lossy(&have.stdout).to_string();
+                if !checksum_matches(&want, &have) {
+                    return Err("The download is damaged or not the release (checksum)".to_string());
+                }
+                sudo_apt("install", &[dir.join(&deb).to_string_lossy().to_string()], password, tx)
+            })();
+            let _ = std::fs::remove_dir_all(&dir);
+            res
         }
         Job::ImeDict => {
             let script = ime_script().ok_or("ime_install.sh not found")?;
@@ -430,6 +451,47 @@ fn run(job: &Job, password: String, tx: &Sender<Msg>) -> Result<(), String> {
     }
 }
 
+/// Do the first words of two `sha256sum` lines agree (and look like a SHA-256)?
+pub fn checksum_matches(want: &str, have: &str) -> bool {
+    let first = |s: &str| s.split_whitespace().next().unwrap_or("").to_ascii_lowercase();
+    let (w, h) = (first(want), first(have));
+    w.len() == 64 && w.bytes().all(|b| b.is_ascii_hexdigit()) && w == h
+}
+
+/// `apt-get <verb> -y <args>` through sudo with the password on its stdin (straight when root).
+fn sudo_apt(verb: &str, args: &[String], password: String, tx: &Sender<Msg>) -> Result<(), String> {
+    let mut cmd = if is_root() {
+        let mut c = Command::new("apt-get");
+        c.args(apt_args(verb, args).into_iter().skip(5));
+        c
+    } else {
+        let mut c = Command::new("sudo");
+        c.args(apt_args(verb, args));
+        c
+    };
+    let mut child = cmd
+        .env("DEBIAN_FRONTEND", "noninteractive")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("sudo: {e}"))?;
+    if let Some(mut si) = child.stdin.take() {
+        let mut pw = password;
+        pw.push('\n');
+        let _ = si.write_all(pw.as_bytes());
+        // Overwrite our copy before it is dropped.
+        // SAFETY: zeroing the bytes keeps the String valid UTF-8 (all NULs).
+        unsafe { pw.as_bytes_mut().iter_mut().for_each(|b| *b = 0) };
+    }
+    let (ok, out) = pump(child, tx);
+    if ok {
+        Ok(())
+    } else {
+        Err(explain_failure(&out))
+    }
+}
+
 fn run_mock(job: &Job, password: &str, tx: &Sender<Msg>) -> Result<(), String> {
     let steps: Vec<String> = match job {
         Job::Apt(p) | Job::AptRemove(p) => {
@@ -440,6 +502,13 @@ fn run_mock(job: &Job, password: &str, tx: &Sender<Msg>) -> Result<(), String> {
             vec!["Reading package lists...".into(), "Building dependency tree...".into(), format!("Unpacking {} ...", p.join(" ")), format!("Setting up {} ...", p.join(" "))]
         }
         Job::ImeDict => vec!["downloading dictionary00.txt".into(), "downloading dictionary09.txt".into(), "converting...".into()],
+        Job::Harbour(v) => {
+            if password == "wrong" {
+                std::thread::sleep(Duration::from_millis(600));
+                return Err("Wrong password".into());
+            }
+            vec![format!("downloading harbour-shell_{v}_arm64.deb"), "checking the download".into(), format!("Unpacking harbour-shell ({v}) ..."), format!("Setting up harbour-shell ({v}) ...")]
+        }
     };
     for s in steps {
         let _ = tx.send(Msg::Line(s));
@@ -451,6 +520,15 @@ fn run_mock(job: &Job, password: &str, tx: &Sender<Msg>) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_download_is_accepted_only_with_the_release_checksum() {
+        let sum = "a".repeat(64);
+        assert!(checksum_matches(&format!("{sum}  harbour-shell_1.0.0_arm64.deb\n"), &format!("{}  /tmp/x.deb\n", sum.to_uppercase())));
+        assert!(!checksum_matches(&format!("{sum}  x"), &format!("{}  x", "b".repeat(64))));
+        assert!(!checksum_matches("", ""), "an empty answer is not a match");
+        assert!(!checksum_matches("Not Found", "Not Found"));
+    }
 
     #[test]
     fn package_names_are_checked() {

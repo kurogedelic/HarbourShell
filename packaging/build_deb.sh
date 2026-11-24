@@ -12,6 +12,10 @@ VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
 if [ "${HARBOUR_RELEASE:-0}" != 1 ] && ! git describe --exact-match --tags "v$VERSION" >/dev/null 2>&1; then
   VERSION="$VERSION+git$(date -u +%Y%m%d%H%M).$(git rev-parse --short HEAD 2>/dev/null || echo local)"
 fi
+# Apps that are not ready for a release: left out of a release package (they stay in the +git
+# builds). HARBOUR_RELEASE_HIDE overrides the list.
+RELEASE_HIDE=""
+case "$VERSION" in *+git*) ;; *) RELEASE_HIDE="${HARBOUR_RELEASE_HIDE-yacht}" ;; esac
 BIN=dist/arm64/harbour-shell
 [ -x "$BIN" ] || { echo "build the binary first: ./tools_build_arm64.sh" >&2; exit 1; }
 SPLASH=dist/bundle/boot/splash.bmp
@@ -34,6 +38,7 @@ docker run -i --rm rust:trixie sh -c '
   install -D -m644 dist/bundle/boot/splash.bmp $R/usr/share/harbour-shell/boot/splash.bmp
   cp -r assets $R/usr/share/harbour-shell/assets
   cp -r apps $R/usr/share/harbour-shell/apps
+  for a in '"$RELEASE_HIDE"'; do rm -rf "$R/usr/share/harbour-shell/apps/$a"; done
   mkdir -p $R/usr/share/doc/harbour-shell
   cp LICENSE NOTICE THIRD_PARTY.md THIRD_PARTY_LICENSES.md $R/usr/share/doc/harbour-shell/
   install -m644 packaging/harbour-shell.service $R/usr/lib/systemd/user/harbour-shell.service

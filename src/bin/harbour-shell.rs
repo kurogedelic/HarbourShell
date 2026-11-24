@@ -480,6 +480,10 @@ fn main() -> Result<(), String> {
     let mut refresh_due: Option<Instant> = None;
     let mut prev_home = true;
     let mut next_scan = Instant::now() + Duration::from_secs(3);
+    // Harbour's own releases (launcher::update): what was known last time, and when to look again.
+    let mut update_state = harbour_shell::launcher::update::State::load(&data_dir);
+    harbour_shell::launcher::update::set_available(update_state.available());
+    let mut next_update_look = Instant::now() + Duration::from_secs(15);
 
     let mut script = Script::from_env();
     // Japanese input method (Ctrl+Space toggles; see memos/japanese-ime-plan.md). One seam: its
@@ -2158,6 +2162,42 @@ fn main() -> Result<(), String> {
         }
 
         // ---- periodic updates ------------------------------------------------------------------
+        // ---- a newer Harbour Shell? ---------------------------------------------------------------
+        {
+            use harbour_shell::launcher::update;
+            let unix = chrono::Utc::now().timestamp();
+            if Instant::now() >= next_update_look {
+                next_update_look = Instant::now() + Duration::from_secs(600);
+                let on = cfg.lock().map(|c| c.get_int("harbour_update_check", 1) != 0).unwrap_or(true);
+                if on && (update::pretend().is_some() || (script.is_none() && update::can_ask())) && update_state.due(unix) {
+                    update::start();
+                }
+            }
+            if let Some(res) = update::take_result() {
+                let asked = update::take_asked();
+                let say = |text: String| Some(Toast { text, fraction: None, until: Instant::now() + Duration::from_secs(4) });
+                match res {
+                    Ok(v) => {
+                        update_state.checked = unix;
+                        update_state.latest = Some(v);
+                        let news = update_state.announce();
+                        update_state.save(&data_dir);
+                        update::set_available(update_state.available());
+                        let tr = harbour_shell::launcher::i18n::tr_s;
+                        match (update_state.available(), news, asked) {
+                            (Some(v), Some(_), _) | (Some(v), None, true) => toast = say(tr(&format!("Harbour Shell {v} is out (Settings > System)"))),
+                            (None, _, true) => toast = say(tr("Harbour Shell is up to date")),
+                            _ => {}
+                        }
+                    }
+                    // A failed look is tried again at the next ten-minute mark; only a look the user
+                    // asked for says so.
+                    Err(e) if asked => toast = say(harbour_shell::launcher::i18n::tr_s(&e)),
+                    Err(_) => {}
+                }
+                dirty = true;
+            }
+        }
         if Instant::now() >= next_scan {
             next_scan = Instant::now() + Duration::from_secs(3);
             // Pick up apps installed or removed while the launcher is open.
@@ -2562,17 +2602,20 @@ fn main() -> Result<(), String> {
                         harbour_shell::grid::set_surface(w, h);
                         Some(r)
                     } else {
+                        // The window whose close box the pointer is on (it may be one behind).
+                        let hover_id = d.hit(dcur.0, dcur.1).filter(|id| harbour_shell::launcher::desk::on_close_box(d, *id, dcur.0, dcur.1));
                         for w in d.windows_mut() {
                             if Some(w.id) == fid || Some(w.id) == showing {
                                 continue;
                             }
+                            let close_hover = hover_id == Some(w.id);
                             draw_window_frame(&mut canvas, &tm, w.rect, false);
                             canvas.set_viewport(w.rect);
                             let size = (w.rect.width() as i32, w.rect.height() as i32);
                             if let Some(sc) = w.slot.as_mut() {
                                 harbour_shell::grid::with_surface(size, || {
                                     let ctx = Ctx { fs: &fs, tm: &tm, sys: sys.as_ref(), now: chrono::Local::now() };
-                                    draw_back_window(&mut canvas, &mut assets, &ctx, sc, &mut home, &mut calc, &mut world, &snake, &mut editor, bar_style);
+                                    draw_back_window(&mut canvas, &mut assets, &ctx, sc, &mut home, &mut calc, &mut world, &snake, &mut editor, bar_style, close_hover);
                                 });
                             }
                             canvas.set_viewport(None);
@@ -3316,14 +3359,21 @@ fn draw_title_bar(c: &mut Canvas<Window>, fs: &FontSystem, tm: &ThemeManager, ti
         };
         band(c, x + s + 3, tx - 5);
         band(c, tx + tw + 5, w - 3);
-        harbour_shell::ui::draw_rect(c, Rect::new(x, y, s as u32, s as u32), ink);
+    }
+    // Every window shows its close box (it works without the focus too): in the fainter ink on a
+    // window behind, like its name.
+    let soft = harbour_shell::launcher::widgets::secondary_ink(tm);
+    let mark = if focused { ink } else { soft };
+    {
+        let (x, y, s) = CLOSE_BOX;
+        harbour_shell::ui::draw_rect(c, Rect::new(x, y, s as u32, s as u32), mark);
         if close_hover {
             // Under the pointer the box shows what it does: a cross.
-            harbour_shell::ui::line(c, x + 2, y + 2, x + s - 3, y + s - 3, ink);
-            harbour_shell::ui::line(c, x + s - 3, y + 2, x + 2, y + s - 3, ink);
+            harbour_shell::ui::line(c, x + 2, y + 2, x + s - 3, y + s - 3, mark);
+            harbour_shell::ui::line(c, x + s - 3, y + 2, x + 2, y + s - 3, mark);
         }
     }
-    fs.draw_display_text(c, tx, 1, &text, if focused { ink } else { harbour_shell::launcher::widgets::secondary_ink(tm) });
+    fs.draw_display_text(c, tx, 1, &text, if focused { ink } else { soft });
 }
 
 /// The resize mark of a flexible window: a small solid triangle in its bottom-right corner (the
@@ -3349,6 +3399,7 @@ fn draw_back_window(
     snake: &SnakeState,
     editor: &mut TextEditor,
     bar_style: u8,
+    close_hover: bool,
 ) {
     let (fs, tm) = (ctx.fs, ctx.tm);
     chrome::draw_desktop(c, tm);
@@ -3363,7 +3414,7 @@ fn draw_back_window(
         Screen::App(a) => fit_title(fs, &a.title()),
     };
     let _ = bar_style;
-    draw_title_bar(c, fs, tm, &title, false, false);
+    draw_title_bar(c, fs, tm, &title, false, close_hover);
     match screen {
         Screen::Home => {}
         Screen::Settings(s) => s.draw(c, fs, tm),

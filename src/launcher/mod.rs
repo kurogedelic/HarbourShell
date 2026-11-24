@@ -29,6 +29,7 @@ pub mod settings;
 pub mod sevenseg;
 pub mod sysicon;
 pub mod terminal;
+pub mod update;
 pub mod widgets;
 pub mod worldclock;
 pub mod worldmap;

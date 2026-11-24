@@ -831,6 +831,12 @@ impl Settings {
                     row("App Store", Val::Arrow),
                     row("Official launcher", Val::Arrow),
                     row("About", Val::Arrow),
+                    // Harbour's own releases: the newer one to install, or this version (Enter checks now).
+                    match crate::launcher::update::available() {
+                        Some(v) => row(&format!("Update to {v}"), Val::Arrow),
+                        None => row("Harbour Shell", Val::Text(crate::launcher::update::current().to_string())),
+                    },
+                    row("Check for new versions", Val::Toggle(self.cfg_int("harbour_update_check", 1) == 1)),
                     row("Shutdown", Val::None),
                     row("Restart", Val::Arrow),
                     row("Power off", Val::Arrow),
@@ -1132,7 +1138,7 @@ impl Settings {
                 let (p, _) = self.sys.volume().unwrap_or((0, false));
                 self.set_volume_pct((p as i32 + dir * 5).clamp(0, 100) as u8);
             }
-            (Page::Audio, 1 | 2) | (Page::Theme, 1) | (Page::Lock, 3 | 4) | (Page::Agent, 0) => return self.activate(),
+            (Page::Audio, 1 | 2) | (Page::Theme, 1) | (Page::Lock, 3 | 4) | (Page::Agent, 0) | (Page::System, 12) => return self.activate(),
             (Page::Agent, 1) => return self.cycle_agent_provider(dir),
             (Page::Network, 0) | (Page::Bluetooth, 0) | (Page::ExtPort, _) => return self.activate(),
             (page, row) => {
@@ -1282,8 +1288,19 @@ impl Settings {
                     None => self.note("Not available"),
                 }
             }
-            (Page::System, 12) => self.push(Page::Confirm(Confirm::Reboot)),
-            (Page::System, 13) => self.push(Page::Confirm(Confirm::Poweroff)),
+            (Page::System, 14) => self.push(Page::Confirm(Confirm::Reboot)),
+            (Page::System, 15) => self.push(Page::Confirm(Confirm::Poweroff)),
+            (Page::System, 11) => match crate::launcher::update::available() {
+                Some(v) => return Event::Install(crate::launcher::installer::InstallReq::harbour(&v)),
+                None => {
+                    crate::launcher::update::ask_now();
+                    self.note("Checking for a new version...".to_string());
+                }
+            },
+            (Page::System, 12) => {
+                let on = self.cfg_int("harbour_update_check", 1) == 1;
+                self.cfg_set("harbour_update_check", (!on) as i64);
+            }
             (Page::Apps, i) => {
                 if let Some(a) = self.apps.get(i).cloned() {
                     self.app_pkg = a.desktop.as_deref().and_then(owning_package);
@@ -2619,10 +2636,30 @@ mod tests {
     }
 
     #[test]
+    fn harbours_own_update_row_checks_installs_and_can_be_switched_off() {
+        let (mut s, _, dir) = settings();
+        goto(&mut s, Page::System);
+        crate::launcher::update::set_available(None);
+        assert_eq!(s.rows()[11].label, "Harbour Shell");
+        assert_eq!(s.rows()[11].val, Val::Text(crate::launcher::update::current().into()));
+        crate::launcher::update::set_available(Some("999.1.0"));
+        assert_eq!(s.rows()[11].label, "Update to 999.1.0");
+        s.cursor = 11;
+        assert_eq!(press(&mut s, Keycode::Return), Event::Install(crate::launcher::installer::InstallReq::harbour("999.1.0")));
+        crate::launcher::update::set_available(None);
+        // The switch is on until the user turns it off.
+        assert_eq!(s.rows()[12].val, Val::Toggle(true));
+        s.cursor = 12;
+        press(&mut s, Keycode::Return);
+        s.flush_cfg();
+        assert_eq!(Config::load(dir.join("config.json")).get_int("harbour_update_check", 1), 0);
+    }
+
+    #[test]
     fn restart_requires_confirmation() {
         let (mut s, _, _) = settings();
         goto(&mut s, Page::System);
-        s.cursor = 12;
+        s.cursor = 14;
         press(&mut s, Keycode::Return);
         assert!(matches!(s.page, Page::Confirm(Confirm::Reboot)));
         press(&mut s, Keycode::Escape);
@@ -2869,7 +2906,7 @@ mod tests {
     fn dialog_buttons_are_clickable() {
         let (mut s, _, _) = settings();
         goto(&mut s, Page::System);
-        s.cursor = 12;
+        s.cursor = 14;
         press(&mut s, Keycode::Return);
         assert!(matches!(s.page, Page::Confirm(Confirm::Reboot)));
         s.hits = vec![(Rect::new(0, 0, 50, 20), Hit::Cancel)];

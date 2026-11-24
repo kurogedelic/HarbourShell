@@ -124,3 +124,16 @@ fn a_folder_opens_in_a_window_and_its_apps_in_windows_of_their_own() {
     // On the Cardputer's own screen a folder is still a page of Home.
     run_with("folder-small", "320x170", "wait:200,goto:Tools,Return,wait:900,expect:screen=home", Some(folders));
 }
+
+#[test]
+fn a_window_behind_closes_from_its_own_close_box() {
+    // Files opens at the top-left of the free area and Calendar cascades over it: Files' close box
+    // (drawn on every window) stays in view at (22, 33) and closes Files without touching Calendar.
+    run(
+        "back-close",
+        "800x480",
+        "wait:200,goto:files,Return,wait:900,click:300:470,wait:100,\
+         goto:calendar,Return,wait:900,expect:screen=calendar&windows=2,\
+         click:22:33,wait:900,expect:screen=calendar&windows=1",
+    );
+}

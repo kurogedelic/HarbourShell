@@ -177,7 +177,7 @@ Harbour is drawn for the Cardputer Zero's 320 x 170. On a bigger screen (`HARBOU
   and down); going back to Home (Quit, Esc held, the close box) closes it, zooming back into the icon, and the window
   under it takes the focus. A window's top 16 px row is its **title bar**: a close box at the left and the name in the
   middle, with a 1 px dither band either side of the name while it has the focus (the close box shows a cross under
-  the pointer; a click on the bar opens the window's menu where it was clicked, as do the desk strip's menus); a flexible window shows a small
+  the pointer, and a window behind shows its own, in the fainter ink, and closes from it without coming forward; a click on the bar opens the window's menu where it was clicked, as do the desk strip's menus); a flexible window shows a small
   solid triangle in its bottom-right corner, where it is resized from. Windows have a 1 px frame and a 1 px shadow.
 * **Two kinds of app** (`LauncherApp::sizing`):
   * `Fixed` (the default): drawn pixel by pixel for 320 x 170, always that size. Calculator, World Clock, Timer, Snake,

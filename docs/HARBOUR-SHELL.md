@@ -143,13 +143,22 @@ Environment: `HARBOUR_FB`, `HARBOUR_HEADLESS`, `HARBOUR_MOCK`, `HARBOUR_SCALE`, 
 `HARBOUR_LAUNCH_SHOT=<file.bmp>` (saves the "Opening" screen).
 Headless runs also work on the device (real backend, no LCD): `HARBOUR_HEADLESS=1 HARBOUR_ROOT=~/harbour-shell ./bin/harbour-shell`.
 
+## New versions
+
+Once a day Harbour reads the latest release's version from GitHub (`launcher::update`) and compares it with its own. A newer one is announced once with a toast and stays in Settings > System as "Update to x.y.z", which downloads that release's `.deb`, checks it against the release's SHA-256 and installs it with apt (the install card asks for the password); the new version runs after Harbour restarts. "Harbour Shell <version>" on the same page checks now.
+
+- What goes out: one request for the repository's public "latest release" record, with a generic client name and nothing about the device or its user. "Check for new versions" (Settings > System, `harbour_update_check` in config.json) turns it off.
+- Not asked in mock runs or the web demo. `HARBOUR_UPDATE_LATEST=1.2.3` stands in for the answer (tests, demos).
+- The state (`update.txt` in `~/.local/share/harbour`): when it last looked, the latest version seen, the version already announced.
+- A release package leaves out the apps that are not ready (`RELEASE_HIDE` in `packaging/build_deb.sh`, now Yacht); the `+git` builds keep them.
+
 ## Web demo
 
 `web/build.sh` builds Harbour Shell as a web page with Emscripten (SDL2 from the Emscripten ports) into `web/dist/`; `web/build.sh serve` also serves it on http://localhost:8017. It needs `emcc` and `rustup target add wasm32-unknown-emscripten`.
 
 - The page picks the picture size from the browser window (a desk when there is room). `?size=320x170` shows the Cardputer Zero's screen, `?scale=N` forces the zoom, `?mode=desk|full` and `?lang=ja` work like `HARBOUR_MODE` and `LANG`, and `?script=...` drives it like `HARBOUR_SCRIPT`.
 - The hardware is pretend (`HARBOUR_MOCK`). The home folder is kept in the browser (IndexedDB), so notes, drawings and settings survive a reload.
-- Sound: the shell's clicks and Yacht play through the browser's audio once the page has had a click or a key (browsers start sound only then).
+- Sound: the shell's clicks (and Yacht, when it is built in with `HARBOUR_WEB_APPS`) play through the browser's audio once the page has had a click or a key (browsers start sound only then).
 - There are no threads in the page: `rt::sleep` hands each frame back to the browser (Asyncify) and `rt::spawn` runs its work at once.
 - Left out: apps that need the network, a terminal, a camera or the sound device (Browser, Infoscope, Radio, Music, Voice Memo, Terminal, Interceptor, Monitor, Camera) and the Agent. The Japanese dictionary is never redistributed, so input is kana only.
 - HarbourTalk is in: it talks to the board server through the browser (synchronous XMLHttpRequest), so the server lists the page's address in `ALLOWED_ORIGINS` (`server/harbourtalk/README.md`); the server setting `demo` gives the demo board instead.
