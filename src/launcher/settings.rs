@@ -49,10 +49,26 @@ pub const THEMES: [(&str, &str); 4] = [
     ("Terminal", "assets/themes/theme-terminal.yaml"),
 ];
 
+/// A grey or black-and-white panel has one theme of its own (name, file): the colour themes are not
+/// offered there. Set once at start-up by the host from the panel it found.
+static PANEL_THEME: std::sync::OnceLock<(&'static str, &'static str)> = std::sync::OnceLock::new();
+
+/// The panel shows only greys (`gray`) or only black and white (`mono`): fix the theme.
+pub fn fix_theme_for_panel(mono: bool) {
+    let _ = PANEL_THEME.set(if mono { ("1-bit", "assets/themes/theme-mono.yaml") } else { ("Gray", "assets/themes/theme-gray.yaml") });
+}
+
+fn panel_theme() -> Option<(&'static str, &'static str)> {
+    PANEL_THEME.get().copied()
+}
+
 /// The theme file for theme `index` (clamped) and the Invert switch: `theme-<name>-invert.yaml`
-/// is the same palette with the tones reversed.
+/// is the same palette with the tones reversed. A grey or 1-bit panel always gets its own theme.
 pub fn theme_path(index: i64, invert: bool) -> String {
-    let base = THEMES[index.clamp(0, THEMES.len() as i64 - 1) as usize].1;
+    let base = match panel_theme() {
+        Some((_, path)) => path,
+        None => THEMES[index.clamp(0, THEMES.len() as i64 - 1) as usize].1,
+    };
     if invert { base.replace(".yaml", "-invert.yaml") } else { base.to_string() }
 }
 const BRIGHTNESS_MIN: u32 = 5;
@@ -309,6 +325,24 @@ impl Settings {
         self.activate();
     }
 
+    /// Jump straight to a section (the menu-bar status menus): "network", "sound", "display",
+    /// "system". Unknown names leave the section list.
+    pub fn open_section(&mut self, name: &str) {
+        let page = match name {
+            "network" => Page::Network,
+            "sound" => Page::Audio,
+            "display" => Page::Display,
+            "system" => Page::System,
+            _ => return,
+        };
+        self.stack.clear();
+        self.page = Page::Root;
+        self.scroll = 0;
+        self.popup = None;
+        self.cursor = SECTION_PAGES.iter().position(|p| *p == page).unwrap_or(0);
+        self.activate();
+    }
+
     /// Jump straight to a page below a section (the system menu: About, Restart, Power Off); Back
     /// returns through the section's page to the section list.
     pub fn open_system_page(&mut self, target: SystemPage) {
@@ -426,7 +460,7 @@ impl Settings {
     fn spawn(&mut self, label: &'static str, f: impl FnOnce(Arc<dyn Backend>) -> Done + Send + 'static) {
         let (tx, rx) = channel();
         let sys = self.sys.clone();
-        std::thread::spawn(move || {
+        crate::rt::spawn(move || {
             let _ = tx.send(f(sys));
         });
         self.pending = Some(Pending { rx, label });
@@ -435,7 +469,7 @@ impl Settings {
     /// Fire-and-forget hardware write (volume etc.) that must not block the UI.
     fn background(&self, f: impl FnOnce(Arc<dyn Backend>) + Send + 'static) {
         let sys = self.sys.clone();
-        std::thread::spawn(move || f(sys));
+        crate::rt::spawn(move || f(sys));
     }
 
     /// Poll workers and flush debounced config writes. Call once per frame.
@@ -629,6 +663,9 @@ impl Settings {
     }
 
     fn theme_name(&self) -> &'static str {
+        if let Some((name, _)) = panel_theme() {
+            return name;
+        }
         THEMES[self.cfg_int("harbour_theme", 0).clamp(0, THEMES.len() as i64 - 1) as usize].0
     }
 
@@ -1661,6 +1698,10 @@ struct ChoiceSpec {
 
 /// The pop-up rows of every page (`None`: not a pop-up row).
 fn choice_spec(page: &Page, row: usize) -> Option<ChoiceSpec> {
+    // On a grey or 1-bit panel the theme is the panel's own: nothing to choose.
+    if *page == Page::Theme && row == 0 && panel_theme().is_some() {
+        return None;
+    }
     let spec = |key, values: Vec<i64>, labels: Vec<String>, default| Some(ChoiceSpec { key, values, labels, default });
     let names = |n: &[&str]| n.iter().map(|s| s.to_string()).collect::<Vec<_>>();
     let index = |n: usize| (0..n as i64).collect::<Vec<_>>();

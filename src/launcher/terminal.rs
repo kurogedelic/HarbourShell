@@ -1,5 +1,6 @@
 //! Built-in terminal: a PTY plus a small VT100 emulator drawn with Harbour's
-//! bitmap font in a fixed 6x13 cell grid below the menu strip (53 x 11 cells).
+//! bitmap font in a grid of 6 x 11 px cells inside the app frame (52 x 13 cells on the 320 x 170
+//! screen; in a bigger window the grid grows to fill it and the program is told the new size).
 //!
 //! Supported: printable UTF-8 (CJK as double-width), CR/LF/BS/TAB/BEL, cursor
 //! movement (CUU/CUD/CUF/CUB/CUP/CHA/VPA), erase (ED/EL/ECH), insert/delete
@@ -18,7 +19,7 @@ use sdl2::rect::Rect;
 use sdl2::render::Canvas;
 use sdl2::video::Window;
 
-use crate::chrome::{BAR_H, SCREEN_H, SCREEN_W};
+use crate::chrome::BAR_H;
 use crate::font::FontSystem;
 use crate::platform::Shared;
 use crate::theme::ThemeManager;
@@ -26,12 +27,22 @@ use crate::ui;
 
 pub const CELL_W: i32 = 6;
 pub const CELL_H: i32 = 11;
-/// The text grid fills the app frame's content rectangle (`grid::app_content`: x 3..316, y 19..161,
-/// 1 px clear of the line): 52 x 13 cells (312 x 143).
+/// The text grid fills the app frame's content rectangle (`grid::app_content`: x 3..316, y 19..161
+/// on the 320 x 170 screen, 1 px clear of the line): 52 x 13 cells (312 x 143) there.
 pub const COLS: usize = 52;
 pub const ROWS: usize = 13;
-/// Top-left of the first cell (x 4..315, y 19..161).
+/// Top-left of the first cell on the 320 x 170 screen (x 4..315, y 19..161).
 pub const ORIGIN: (i32, i32) = (4, 19);
+
+/// The text grid for the surface being drawn now: the top-left of the first cell and how many
+/// columns and rows fit in the content rectangle. The first column starts 1 px in from the content's
+/// left edge (a pixel more clear of the frame's line), as it always has.
+pub fn layout() -> ((i32, i32), usize, usize) {
+    let ct = crate::grid::app_content();
+    let cols = ((ct.width() as i32 - 1) / CELL_W).max(1) as usize;
+    let rows = (ct.height() as i32 / CELL_H).max(1) as usize;
+    ((ct.x() + 1, ct.y()), cols, rows)
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Cell {
@@ -99,6 +110,38 @@ impl Vt {
             utf8: Vec::new(),
             cursor_visible: true,
         }
+    }
+
+    /// Change the grid to `cols` x `rows` (the window was resized). The text keeps its place at the
+    /// top-left; when rows go away the top lines scroll off so the cursor's line stays on screen.
+    /// The scroll region becomes the whole screen again (the program redraws on SIGWINCH anyway).
+    pub fn resize(&mut self, cols: usize, rows: usize) {
+        let (cols, rows) = (cols.max(1), rows.max(1));
+        if (cols, rows) == (self.cols, self.rows) {
+            return;
+        }
+        if self.cy >= rows {
+            let n = self.cy + 1 - rows;
+            self.grid.drain(..n);
+            self.cy -= n;
+            self.saved.1 = self.saved.1.saturating_sub(n);
+        }
+        self.grid.resize(rows, vec![BLANK; cols]);
+        for row in &mut self.grid {
+            row.resize(cols, BLANK);
+            // A double-width character cut in half at the new right edge goes.
+            if row.last().is_some_and(|c| c.ch != '\0' && is_wide(c.ch)) {
+                row[cols - 1] = BLANK;
+            }
+        }
+        self.cols = cols;
+        self.rows = rows;
+        self.top = 0;
+        self.bottom = rows - 1;
+        self.cx = self.cx.min(cols - 1);
+        self.cy = self.cy.min(rows - 1);
+        self.saved = (self.saved.0.min(cols - 1), self.saved.1.min(rows - 1));
+        self.wrap_pending = false;
     }
 
     pub fn row_text(&self, y: usize) -> String {
@@ -473,7 +516,9 @@ impl Terminal {
     pub fn spawn(argv: &[String], workdir: Option<&std::path::Path>, shared: Arc<Shared>, pause_on_exit: bool) -> Result<Self, String> {
         let mut master: libc::c_int = -1;
         let mut slave: libc::c_int = -1;
-        let mut ws = libc::winsize { ws_row: ROWS as u16, ws_col: COLS as u16, ws_xpixel: 0, ws_ypixel: 0 };
+        // The size of the surface it starts on; `draw` follows it when the window changes.
+        let (_, cols, rows) = layout();
+        let mut ws = libc::winsize { ws_row: rows as u16, ws_col: cols as u16, ws_xpixel: 0, ws_ypixel: 0 };
         let r = unsafe { libc::openpty(&mut master, &mut slave, std::ptr::null_mut(), std::ptr::null_mut(), &mut ws) };
         if r != 0 {
             return Err(format!("openpty: {}", std::io::Error::last_os_error()));
@@ -487,8 +532,8 @@ impl Terminal {
         let mut cmd = Command::new(&argv[0]);
         cmd.args(&argv[1..])
             .env("TERM", "vt100")
-            .env("COLUMNS", COLS.to_string())
-            .env("LINES", ROWS.to_string())
+            .env("COLUMNS", cols.to_string())
+            .env("LINES", rows.to_string())
             .stdin(Stdio::from(dup(&slave)?))
             .stdout(Stdio::from(dup(&slave)?))
             .stderr(Stdio::from(dup(&slave)?));
@@ -505,7 +550,7 @@ impl Terminal {
         let child = cmd.spawn().map_err(|e| format!("{}: {e}", argv[0]))?;
         drop(slave);
         shared.child_pgid.store(child.id() as i32, Ordering::SeqCst);
-        Ok(Self { vt: Vt::new(COLS, ROWS), master, child, shared, exit_code: None, pause_on_exit })
+        Ok(Self { vt: Vt::new(cols, rows), master, child, shared, exit_code: None, pause_on_exit })
     }
 
     pub fn write(&self, bytes: &[u8]) {
@@ -544,17 +589,31 @@ impl Terminal {
         changed
     }
 
+    /// Follow the surface's size: resize the screen and tell the program (TIOCSWINSZ on the pty,
+    /// which sends it SIGWINCH). Nothing happens while the size stays the same.
+    pub fn fit(&mut self) {
+        let (_, cols, rows) = layout();
+        if (cols, rows) == (self.vt.cols, self.vt.rows) {
+            return;
+        }
+        self.vt.resize(cols, rows);
+        let ws = libc::winsize { ws_row: rows as u16, ws_col: cols as u16, ws_xpixel: 0, ws_ypixel: 0 };
+        unsafe { libc::ioctl(self.master.as_raw_fd(), libc::TIOCSWINSZ as _, &ws) };
+    }
+
     pub fn exited(&self) -> bool {
         self.exit_code.is_some()
     }
 
-    pub fn draw(&self, c: &mut Canvas<Window>, fs: &FontSystem, tm: &ThemeManager) {
+    /// Draw on the current surface; resizes the grid first when the surface changed size.
+    pub fn draw(&mut self, c: &mut Canvas<Window>, fs: &FontSystem, tm: &ThemeManager) {
+        self.fit();
         let ink = tm.get_color("foreground");
         let paper = tm.get_color("widget_face_active");
-        let area = Rect::new(0, BAR_H, SCREEN_W, SCREEN_H - BAR_H as u32);
+        let area = Rect::new(0, BAR_H, crate::chrome::screen_w(), crate::chrome::screen_h() - BAR_H as u32);
         ui::fill_rect(c, area, paper);
         crate::grid::draw_app_frame(c, crate::grid::app_frame().y(), ink, None);
-        let (x0, y0) = ORIGIN;
+        let ((x0, y0), _, _) = layout();
         for (y, row) in self.vt.grid.iter().enumerate() {
             for (x, cell) in row.iter().enumerate() {
                 let (px, py) = (x0 + x as i32 * CELL_W, y0 + y as i32 * CELL_H);
@@ -584,7 +643,7 @@ impl Terminal {
                 let msg = crate::launcher::i18n::tr_s(&format!("[exited {code}]  press any key"));
                 let w = fs.measure_text(&msg) + 8;
                 // Over the last rows of the text, inside the content area.
-                let r = Rect::new((SCREEN_W as i32 - w) / 2, crate::grid::app_content().bottom() - 2 - 16, w as u32, 16);
+                let r = Rect::new((crate::grid::sw() - w) / 2, crate::grid::app_content().bottom() - 2 - 16, w as u32, 16);
                 ui::fill_rect(c, r, ink);
                 fs.draw_text(c, r.x() + 4, r.y() + 1, &msg, paper);
             }
@@ -624,6 +683,43 @@ mod tests {
         assert_eq!(ROWS, 13);
         assert!((ct.width() as i32) < (COLS as i32 + 1) * CELL_W, "no room for another column");
         assert!((ct.height() as i32) < (ROWS as i32 + 1) * CELL_H, "no room for another row");
+    }
+
+    #[test]
+    fn the_layout_at_320x170_is_the_fixed_grid_and_grows_with_the_surface() {
+        assert_eq!(layout(), (ORIGIN, COLS, ROWS));
+        crate::grid::with_surface((640, 400), || {
+            let ct = crate::grid::app_content();
+            let ((x0, y0), cols, rows) = layout();
+            assert!(cols > COLS && rows > ROWS, "{cols} x {rows}");
+            assert!(x0 + cols as i32 * CELL_W <= ct.right() && y0 + rows as i32 * CELL_H <= ct.bottom());
+            assert!((ct.width() as i32) < (cols as i32 + 1) * CELL_W + 1, "no room for another column");
+            assert!((ct.height() as i32) < (rows as i32 + 1) * CELL_H, "no room for another row");
+        });
+    }
+
+    #[test]
+    fn resizing_keeps_the_text_and_the_cursor_line() {
+        let mut v = vt("1\r\n2\r\n3\r\n4\r\nabcdef");
+        v.resize(30, 8);
+        assert_eq!((v.cols, v.rows, v.grid.len(), v.grid[0].len()), (30, 8, 8, 30));
+        assert_eq!(v.row_text(0), "1");
+        assert_eq!(v.row_text(4), "abcdef");
+        assert_eq!((v.cx, v.cy), (6, 4));
+        // Fewer rows: the top lines scroll off, the cursor's line stays.
+        v.resize(4, 2);
+        assert_eq!(v.grid.iter().map(|r| r.len()).collect::<Vec<_>>(), [4, 4]);
+        assert_eq!(v.row_text(0), "4");
+        assert_eq!(v.row_text(1), "abcd");
+        assert_eq!((v.cx, v.cy), (3, 1));
+        // The scroll region is the whole new screen: a line feed at the bottom scrolls.
+        v.feed(b"\r\nz");
+        assert_eq!(v.row_text(0), "abcd");
+        assert_eq!(v.row_text(1), "z");
+        // A wide character cut at the new right edge is cleared, not left half-drawn.
+        let mut v = vt("ab日");
+        v.resize(3, 5);
+        assert_eq!(v.row_text(0), "ab");
     }
 
     #[test]
@@ -730,6 +826,7 @@ mod tests {
         }
         t.poll();
         assert_eq!(t.exit_code, Some(3));
+        assert_eq!((t.vt.cols, t.vt.rows), (COLS, ROWS));
         assert_eq!(t.vt.row_text(0), "hi");
     }
 

@@ -251,7 +251,7 @@ impl Installer {
     pub fn draw(&self, c: &mut Canvas<Window>, fs: &FontSystem, tm: &ThemeManager) {
         let ink = tm.get_color("foreground");
         let faint = crate::launcher::widgets::secondary_ink(tm);
-        crate::dither::fill(c, Rect::new(0, grid::BAR_H, grid::SCREEN_W as u32, (grid::SCREEN_H - grid::BAR_H) as u32), tm.get_color("widget_shadow"), crate::dither::Pattern::Eighth);
+        crate::dither::fill(c, Rect::new(0, grid::BAR_H, grid::sw() as u32, (grid::sh() - grid::BAR_H) as u32), tm.get_color("widget_shadow"), crate::dither::Pattern::Eighth);
         let r = card_rect();
         widgets::draw_panel(c, tm, r);
         let tx = r.x() + 14;
@@ -309,7 +309,7 @@ impl Installer {
 
 fn card_rect() -> Rect {
     let (w, h) = (288u32, 112u32);
-    Rect::new((grid::SCREEN_W as i32 - w as i32) / 2, grid::BAR_H + (grid::SCREEN_H - grid::BAR_H - h as i32) / 2, w, h)
+    Rect::new((grid::sw() as i32 - w as i32) / 2, grid::BAR_H + (grid::sh() - grid::BAR_H - h as i32) / 2, w, h)
 }
 
 fn field_rect(r: Rect) -> Rect {

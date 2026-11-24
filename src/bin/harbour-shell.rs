@@ -35,6 +35,7 @@ use harbour_shell::launcher::widgets::{PointerEvent, DOUBLE_CLICK, DOUBLE_CLICK_
 use harbour_shell::launcher::calc::{Calc, CalcEvent, Settings as CalcSettings};
 use harbour_shell::chrome::{self, StatusView, SCREEN_H, SCREEN_W};
 use harbour_shell::font::{load_mplus_f12r, FontSystem};
+use harbour_shell::launcher::desk::{Desk, Press, Release, WinId};
 use harbour_shell::launcher::desktop_entry;
 use harbour_shell::launcher::fileops;
 use harbour_shell::launcher::folders::Dest;
@@ -214,8 +215,37 @@ fn main() -> Result<(), String> {
     } else {
         std::env::var("HARBOUR_SCALE").ok().and_then(|s| s.parse().ok()).filter(|s| (1..=6).contains(s)).unwrap_or(3)
     };
+    // The picture size. On a device: from the panel (its size, physical size and HARBOUR_ROTATE),
+    // scaled by whole numbers (HARBOUR_SCALE forces the scale). In a desktop window: HARBOUR_SCREEN=WxH.
+    use harbour_shell::platform::display::{self as disp, PanelKind, Rotation};
+    let rotation = Rotation::parse(&std::env::var("HARBOUR_ROTATE").unwrap_or_default());
+    let mut panel: Option<Fb> = None;
+    let mut panel_scale = 1usize;
+    let desk_size = match &fb_path {
+        Some(p) => {
+            let d = disp::open(p).map_err(|e| format!("framebuffer {p}: {e}"))?;
+            let forced = std::env::var("HARBOUR_SCALE").ok().and_then(|s| s.parse().ok());
+            let ((w, h), k) = disp::choose_scale(rotation.view(d.size()), d.mm(), forced);
+            eprintln!("[display] panel {:?} ({:?} mm), {:?}: picture {w}x{h} at {k}x", d.size(), d.mm(), PanelKind::from_env(d.kind()));
+            panel = Some(d);
+            panel_scale = k;
+            (w as i32, h as i32)
+        }
+        None => std::env::var("HARBOUR_SCREEN").ok().and_then(|v| parse_size(&v)).unwrap_or((SCREEN_W as i32, SCREEN_H as i32)),
+    };
+    // A grey or black-and-white panel gets its own theme (the colour themes are not offered).
+    let panel_kind = PanelKind::from_env(panel.as_ref().map_or(PanelKind::Color, |d| d.kind()));
+    if panel_kind != PanelKind::Color {
+        harbour_shell::launcher::settings::fix_theme_for_panel(panel_kind == PanelKind::Mono);
+    }
+    // How a bigger picture is used: a desk with windows when there is room for them, otherwise one
+    // screen at a time over the whole picture (HARBOUR_MODE=desk|full forces one).
+    let mode_env = std::env::var("HARBOUR_MODE").unwrap_or_default();
+    let bigger = desk_size != (SCREEN_W as i32, SCREEN_H as i32);
+    let want_desk = bigger && mode_env != "full" && (mode_env == "desk" || (desk_size.0 >= 560 && desk_size.1 >= 300));
+    let full = bigger && !want_desk;
     let window = video
-        .window("Harbour", SCREEN_W * scale, SCREEN_H * scale)
+        .window("Harbour", desk_size.0 as u32 * scale, desk_size.1 as u32 * scale)
         .position_centered()
         .build()
         .map_err(|e| e.to_string())?;
@@ -328,16 +358,14 @@ fn main() -> Result<(), String> {
         if let Err(e) = harbour_shell::platform::mouse::spawn(tx.clone(), shared.clone()) {
             eprintln!("[mouse] reader not started: {e}");
         }
+        if let Err(e) = harbour_shell::platform::gamepad::spawn(tx.clone(), shared.clone()) {
+            eprintln!("[pad] reader not started: {e}");
+        }
     }
     let _ = &tx;
 
-    let mut fb: Option<Fb> = match &fb_path {
-        Some(p) => match harbour_shell::platform::display::open(p) {
-            Ok(f) => Some(f),
-            Err(e) => return Err(format!("framebuffer {p}: {e}")),
-        },
-        None => None,
-    };
+    // The panel behind a scaler: whole-number scaling, centred, turned, toned for grey / 1-bit.
+    let mut fb: Option<Fb> = panel.take().map(|d| Box::new(disp::Scaled::new(d, (desk_size.0 as usize, desk_size.1 as usize), panel_scale, rotation)) as Fb);
     if let Some(f) = fb.as_ref() {
         f.unblank(); // a previous process may have left the panel powered down
     }
@@ -456,7 +484,38 @@ fn main() -> Result<(), String> {
         eprintln!("{}", ime.load_data(&harbour_shell::launcher::ime_glue::data_dir()));
     }
     let mut rec = Recorder::from_env();
+    // Gamepads in a desktop window (SDL's game controllers); on a device they are read from evdev.
+    let controllers = if headless { None } else { sdl.game_controller().ok() };
+    let mut pads: Vec<sdl2::controller::GameController> = Vec::new();
+    let mut stick_axes = (0i16, 0i16);
     let mut events = sdl.event_pump()?;
+    // In a desktop window the system draws the pointer, in Harbour's arrow: it moves smoothly
+    // however long a frame takes to draw (the drawn pointer waits for the next frame).
+    let mut os_cursor_keep = if headless { None } else { make_os_cursor(&tm, scale) };
+    let os_cursor = os_cursor_keep.is_some();
+    // The theme's pointer colours the system cursor was made with (remade when they change).
+    let mut cursor_colors = (tm.get_color("foreground"), tm.get_color("widget_face_active"));
+    if os_cursor {
+        sdl.mouse().show_cursor(true);
+    }
+    // The desk (a bigger screen): Home is the desk itself, every other screen a window. `fid` is the
+    // focused window, whose screen is `screen` (None: Home has the focus and `screen` is Home); the
+    // other windows keep their screen in their slot.
+    let mut desk: Option<Desk<Screen>> = want_desk.then(|| Desk::new(desk_size));
+    // Gamepad: the on-screen keyboard (X opens it), the stick's position and its leftover fraction of
+    // a pixel, when the stick last moved the pointer (A clicks while it shows), what A's press was.
+    let mut osk: Option<harbour_shell::launcher::osk::Osk> = None;
+    let mut stick: (i16, i16) = (0, 0);
+    let mut stick_frac = (0.0f32, 0.0f32);
+    let mut stick_t = Instant::now();
+    let mut pad_pointer_until = Instant::now();
+    let mut pad_a_click = false;
+    let mut fid: Option<WinId> = None;
+    home.set_desk(desk.is_some());
+    // Zoom rectangles on the desk: (progress, from, to, the window to show once it ends).
+    let mut desk_zoom: Option<(f32, Rect, Rect, Option<WinId>)> = None;
+    // Starts where a script's pointer starts, so scripted clicks give desk coordinates.
+    let mut dcur = (SCREEN_W as i32 / 2, SCREEN_H as i32 / 2);
 
     'main: loop {
         if TERMINATE.load(std::sync::atomic::Ordering::SeqCst) {
@@ -464,6 +523,9 @@ fn main() -> Result<(), String> {
         }
         // ---- gather input ------------------------------------------------------
         let mut inputs: Vec<Input> = Vec::new();
+        // In a desktop window the pointer follows the system mouse's absolute position (relative
+        // steps divided by the scale lose their remainders and drift away from it).
+        let mut abs_at = if desk.is_some() || full { dcur } else { cursor };
         for e in events.poll_iter() {
             match e {
                 Event::Quit { .. } => inputs.push(Input::Quit),
@@ -472,8 +534,13 @@ fn main() -> Result<(), String> {
                 }
                 Event::KeyUp { keycode: Some(key), .. } => inputs.push(Input::KeyUp { key }),
                 Event::TextInput { text, .. } => inputs.push(Input::Text(text)),
-                Event::MouseMotion { xrel, yrel, .. } => {
-                    inputs.push(Input::MouseMove { dx: xrel / scale as i32, dy: yrel / scale as i32 })
+                Event::MouseMotion { x, y, .. } => {
+                    let p = (x / scale as i32, y / scale as i32);
+                    let (dx, dy) = (p.0 - abs_at.0, p.1 - abs_at.1);
+                    abs_at = p;
+                    if dx != 0 || dy != 0 {
+                        inputs.push(Input::MouseMove { dx, dy });
+                    }
                 }
                 Event::MouseButtonDown { mouse_btn, .. } | Event::MouseButtonUp { mouse_btn, .. } => {
                     let down = matches!(e, Event::MouseButtonDown { .. });
@@ -485,6 +552,46 @@ fn main() -> Result<(), String> {
                     inputs.push(Input::MouseButton { button, down });
                 }
                 Event::MouseWheel { y, .. } => inputs.push(Input::MouseWheel { dy: y }),
+                Event::ControllerDeviceAdded { which, .. } => {
+                    if let Some(c) = controllers.as_ref().and_then(|g| g.open(which).ok()) {
+                        eprintln!("[pad] {}", c.name());
+                        pads.push(c);
+                    }
+                }
+                Event::ControllerButtonDown { button, .. } | Event::ControllerButtonUp { button, .. } => {
+                    use harbour_shell::launcher::osk::Pad;
+                    use sdl2::controller::Button as B;
+                    let down = matches!(e, Event::ControllerButtonDown { .. });
+                    let pad = match button {
+                        B::DPadUp => Some(Pad::Up),
+                        B::DPadDown => Some(Pad::Down),
+                        B::DPadLeft => Some(Pad::Left),
+                        B::DPadRight => Some(Pad::Right),
+                        B::A => Some(Pad::A),
+                        B::B => Some(Pad::B),
+                        B::X => Some(Pad::X),
+                        B::Y => Some(Pad::Y),
+                        B::LeftShoulder => Some(Pad::L),
+                        B::RightShoulder => Some(Pad::R),
+                        B::Start => Some(Pad::Start),
+                        B::Back => Some(Pad::Select),
+                        B::LeftStick => Some(Pad::Stick),
+                        _ => None,
+                    };
+                    if let Some(pad) = pad {
+                        inputs.push(Input::Pad { pad, down });
+                    }
+                }
+                Event::ControllerAxisMotion { axis, value, .. } => {
+                    use sdl2::controller::Axis;
+                    let v = (value as i32 * 1000 / 32767).clamp(-1000, 1000) as i16;
+                    match axis {
+                        Axis::LeftX => stick_axes.0 = v,
+                        Axis::LeftY => stick_axes.1 = v,
+                        _ => continue,
+                    }
+                    inputs.push(Input::Stick { x: stick_axes.0, y: stick_axes.1 });
+                }
                 _ => {}
             }
         }
@@ -518,6 +625,7 @@ fn main() -> Result<(), String> {
                         ("modal", b(home_modal.is_some() || save_panel.is_some() || unsaved.is_some()).to_string()),
                         ("locked", b(locked).to_string()),
                         ("zoom", b(zoom.is_some()).to_string()),
+                        ("windows", desk.as_ref().map_or(0, |d| d.len()).to_string()),
                     ];
                     let line = state.iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>().join(" ");
                     let desc = if let Screen::App(a) = &screen { a.describe().to_lowercase() } else { String::new() };
@@ -617,6 +725,249 @@ fn main() -> Result<(), String> {
             }
         }
 
+        // ---- gamepad: the stick moves the pointer; the buttons are keys, or the on-screen keyboard's ----
+        if desk.is_none() && !full {
+            harbour_shell::grid::set_surface(desk_size.0, desk_size.1);
+        }
+        {
+            use harbour_shell::launcher::osk::{Out as OskOut, Osk, Pad};
+            let now = Instant::now();
+            let dt = now.duration_since(stick_t).as_secs_f32().min(0.1);
+            stick_t = now;
+            let key = |k: Keycode, down: bool| if down { Input::Key { key: k, mods: Mod::NOMOD, repeat: false } } else { Input::KeyUp { key: k } };
+            if let Some(k) = osk.as_mut() {
+                k.set_ime(!ime.mode().is_direct());
+            }
+            // Where the pointer is on the whole picture, following this frame's moves (for clicks on the keyboard).
+            let mut at = if desk.is_some() || full { dcur } else { cursor };
+            let mut out = Vec::with_capacity(inputs.len());
+            for i in std::mem::take(&mut inputs) {
+                match i {
+                    Input::Stick { x, y } => stick = (x, y),
+                    Input::MouseMove { dx, dy } => {
+                        at = (at.0 + dx, at.1 + dy);
+                        out.push(i);
+                    }
+                    Input::MouseButton { button: 0, down: true } if !locked && osk.is_some() && harbour_shell::grid::with_surface(desk_size, || Osk::rect().contains_point(at)) => {
+                        dirty = true;
+                        let r = harbour_shell::grid::with_surface(desk_size, || osk.as_mut().map(|k| k.click(at.0, at.1)));
+                        match r {
+                            Some(OskOut::Send(v)) => out.extend(v),
+                            Some(OskOut::Close) => osk = None,
+                            _ => {}
+                        }
+                    }
+                    Input::Pad { pad, down } if osk.is_some() && !locked => {
+                        dirty = true;
+                        if down {
+                            match osk.as_mut().map(|k| k.pad(pad)) {
+                                Some(OskOut::Send(v)) => out.extend(v),
+                                Some(OskOut::Close) => osk = None,
+                                _ => {}
+                            }
+                        }
+                    }
+                    Input::Pad { pad, down } => {
+                        dirty = true;
+                        match pad {
+                            Pad::Up => out.push(key(Keycode::Up, down)),
+                            Pad::Down => out.push(key(Keycode::Down, down)),
+                            Pad::Left => out.push(key(Keycode::Left, down)),
+                            Pad::Right => out.push(key(Keycode::Right, down)),
+                            // A clicks while the stick's pointer shows; otherwise it is Return.
+                            Pad::A => {
+                                if down {
+                                    pad_a_click = now < pad_pointer_until;
+                                }
+                                out.push(if pad_a_click { Input::MouseButton { button: 0, down } } else { key(Keycode::Return, down) });
+                            }
+                            Pad::Stick => out.push(Input::MouseButton { button: 0, down }),
+                            // B is Esc: held, it leaves the app like Esc held.
+                            Pad::B => out.push(key(Keycode::Escape, down)),
+                            Pad::Y => out.push(Input::MouseButton { button: 1, down }),
+                            Pad::L | Pad::R if down => {
+                                let mods = if pad == Pad::L { Mod::LSHIFTMOD } else { Mod::NOMOD };
+                                out.push(Input::Key { key: Keycode::Tab, mods, repeat: false });
+                                out.push(Input::KeyUp { key: Keycode::Tab });
+                            }
+                            Pad::X if down && !locked => osk = Some(Osk::new(!ime.mode().is_direct())),
+                            Pad::Start if down => out.push(Input::Menu),
+                            // Select: the Harbour menu (the app menu, then Left to the menu beside it).
+                            Pad::Select if down => {
+                                out.push(Input::Menu);
+                                out.push(key(Keycode::Left, true));
+                                out.push(key(Keycode::Left, false));
+                            }
+                            _ => {}
+                        }
+                    }
+                    other => out.push(other),
+                }
+            }
+            inputs = out;
+            // The stick: a dead zone, then speed growing with the push (up to about 400 px/s).
+            let (sx, sy) = (stick.0 as f32 / 1000.0, stick.1 as f32 / 1000.0);
+            let m = (sx * sx + sy * sy).sqrt();
+            if m > 0.18 {
+                let speed = 30.0 + 370.0 * ((m - 0.18) / 0.82).min(1.0).powi(2);
+                stick_frac.0 += sx / m * speed * dt;
+                stick_frac.1 += sy / m * speed * dt;
+                let (dx, dy) = (stick_frac.0.trunc() as i32, stick_frac.1.trunc() as i32);
+                stick_frac.0 -= dx as f32;
+                stick_frac.1 -= dy as f32;
+                if dx != 0 || dy != 0 {
+                    inputs.push(Input::MouseMove { dx, dy });
+                }
+                pad_pointer_until = now + Duration::from_secs(3);
+                dirty = true;
+            } else {
+                stick_frac = (0.0, 0.0);
+            }
+        }
+
+        // ---- desk: the pointer moves on the desk; presses focus, move, resize and close windows ----
+        let mut desk_close: Option<WinId> = None;
+        // When the screens below get window coordinates: the window's corner on the desk, so a menu
+        // they open at the pointer (a right click) is moved onto the desk, where menus are drawn.
+        let mut menu_shift: Option<(i32, i32)> = None;
+        let mut menu_before = true;
+        // A click on a title bar: that window's menu opens at the click (desk coordinates).
+        let mut desk_menu_at: Option<(i32, i32)> = None;
+        if let Some(d) = desk.as_mut() {
+            d.reserve_right = harbour_shell::grid::with_surface(d.size, || home.desk_icons_w());
+            let mut kept = Vec::with_capacity(inputs.len());
+            // The moves handed on: the screens below add them to `cursor` themselves.
+            let mut passed = (0, 0);
+            for i in std::mem::take(&mut inputs) {
+                match i {
+                    Input::MouseMove { dx, dy } => {
+                        dcur = ((dcur.0 + dx).clamp(0, d.size.0 - 1), (dcur.1 + dy).clamp(0, d.size.1 - 1));
+                        cursor_until = Some(Instant::now() + CURSOR_HIDE);
+                        dirty = true;
+                        if !d.motion(dcur.0, dcur.1) {
+                            passed = (passed.0 + dx, passed.1 + dy);
+                            kept.push(i);
+                        }
+                    }
+                    // While a menu is open every press goes to it (it closes on a press outside).
+                    Input::MouseButton { button: 0, down: true } if !locked && app_menu.is_none() => {
+                        dirty = true;
+                        match d.press(dcur.0, dcur.1) {
+                            Press::Pass(..) | Press::Desk | Press::Bar => kept.push(i),
+                            Press::Focus(_) | Press::Taken => {}
+                        }
+                    }
+                    Input::MouseButton { button: 0, down: false } if !locked => match d.release(dcur.0, dcur.1) {
+                        Release::Pass => kept.push(i),
+                        Release::Close(id) => desk_close = Some(id),
+                        Release::Title(x, y) => desk_menu_at = Some((x, y)),
+                        Release::Taken => {}
+                    },
+                    Input::MouseButton { down: true, .. } | Input::MouseWheel { .. } if !locked && app_menu.is_none() => match d.hit(dcur.0, dcur.1) {
+                        Some(id) if Some(id) == d.focused() => kept.push(i),
+                        Some(id) if matches!(i, Input::MouseButton { .. }) => {
+                            d.raise(id);
+                            dirty = true;
+                        }
+                        Some(_) => {}
+                        None => {
+                            if matches!(i, Input::MouseButton { .. }) {
+                                d.focus_desk();
+                            }
+                            kept.push(i);
+                        }
+                    },
+                    Input::Key { key: Keycode::Backquote, mods, .. } if !locked && mods.intersects(Mod::LCTRLMOD | Mod::RCTRLMOD) => {
+                        d.cycle();
+                        dirty = true;
+                    }
+                    other => kept.push(other),
+                }
+            }
+            inputs = kept;
+            // The close box: that window comes to the front, then quits as from its menu's Quit.
+            if let Some(id) = desk_close {
+                d.raise(id);
+            }
+            // Focus moved: the focused window's screen comes into `screen`, the old one into its slot.
+            let want = d.focused();
+            if want != fid {
+                let incoming = match want {
+                    Some(id) => d.get_mut(id).and_then(|w| w.slot.take()),
+                    None => Some(Screen::Home),
+                };
+                if let Some(inc) = incoming {
+                    let out = std::mem::replace(&mut screen, inc);
+                    if let Some(w) = fid.and_then(|f| d.get_mut(f)) {
+                        w.slot = Some(out);
+                    }
+                    fid = want;
+                    prev_home = matches!(screen, Screen::Home);
+                    app_menu = None;
+                    dirty = true;
+                }
+            }
+            // Coordinates: a window's own while the pointer is over the focused window; the desk's for
+            // Home, the desk's strip and its menus. Decided by where the pointer ends this frame; the
+            // start is set back by the moves handed on, so it ends there.
+            let d0 = (dcur.0 - passed.0, dcur.1 - passed.1);
+            let over_bar = dcur.1 < chrome::BAR_H;
+            match d.focused_rect() {
+                Some(r) if app_menu.is_none() && !over_bar => {
+                    harbour_shell::grid::set_surface(r.width() as i32, r.height() as i32);
+                    cursor = (d0.0 - r.x(), d0.1 - r.y());
+                    menu_shift = Some((r.x(), r.y()));
+                }
+                // The desk's strip and the menus that drop from it are laid out on the whole desk.
+                Some(_) => {
+                    harbour_shell::grid::set_surface(d.size.0, d.size.1);
+                    cursor = d0;
+                }
+                None => {
+                    harbour_shell::grid::set_surface(d.size.0, d.size.1);
+                    cursor = d0;
+                }
+            }
+            if let Some((x, y)) = desk_menu_at.filter(|_| desk_close.is_none()) {
+                harbour_shell::grid::set_surface(d.size.0, d.size.1);
+                let mut m = open_menu(&screen, &home, None);
+                m.origin = Some((x, y));
+                app_menu = Some(m);
+                dirty = true;
+            }
+            if desk_close.is_some() {
+                let mut m = open_menu(&screen, &home, None);
+                m.cursor = m.items.len().saturating_sub(1);
+                app_menu = Some(m);
+                inputs.insert(0, Input::Key { key: Keycode::Return, mods: Mod::NOMOD, repeat: false });
+            }
+            menu_before = app_menu.is_some();
+        }
+
+        // ---- full: one screen over a bigger picture; a fixed-size screen sits in the middle ----
+        let full_vp = if full { full_viewport(&screen, locked, desk_size) } else { None };
+        if full {
+            let mut passed = (0, 0);
+            for i in &inputs {
+                if let Input::MouseMove { dx, dy } = i {
+                    dcur = ((dcur.0 + dx).clamp(0, desk_size.0 - 1), (dcur.1 + dy).clamp(0, desk_size.1 - 1));
+                    passed = (passed.0 + dx, passed.1 + dy);
+                }
+            }
+            let o = full_vp.map_or((0, 0), |r| (r.x(), r.y()));
+            cursor = (dcur.0 - passed.0 - o.0, dcur.1 - passed.1 - o.1);
+            match full_vp {
+                Some(r) => harbour_shell::grid::set_surface(r.width() as i32, r.height() as i32),
+                None => harbour_shell::grid::set_surface(desk_size.0, desk_size.1),
+            };
+        }
+
+        // ---- the keyboard's room: a screen that lays itself out ends above the on-screen keyboard ----
+        let osk_cut = osk_room(osk.is_some(), desk.is_some(), locked, &screen, desk_size);
+        if osk_cut > 0 {
+            harbour_shell::grid::set_surface(desk_size.0, desk_size.1 - osk_cut);
+        }
+
         // ---- the install card: over everything, it takes every key, typed text and click ----
         if installer.is_none() {
             if let Some(req) = INSTALL_REQ.lock().unwrap().take() {
@@ -634,8 +985,8 @@ fn main() -> Result<(), String> {
                     Input::Text(t) => inst.text(&t),
                     Input::MouseButton { button: 0, down: true } => out = inst.click(cursor.0, cursor.1),
                     Input::MouseMove { dx, dy } => {
-                        cursor.0 = (cursor.0 + dx).clamp(0, SCREEN_W as i32 - 1);
-                        cursor.1 = (cursor.1 + dy).clamp(0, SCREEN_H as i32 - 1);
+                        cursor.0 = (cursor.0 + dx).clamp(0, chrome::screen_w() as i32 - 1);
+                        cursor.1 = (cursor.1 + dy).clamp(0, chrome::screen_h() as i32 - 1);
                         cursor_until = Some(Instant::now() + Duration::from_secs(3));
                     }
                     other @ (Input::Quit | Input::Media(_)) => rest.push(other),
@@ -679,8 +1030,8 @@ fn main() -> Result<(), String> {
                         Input::MouseButton { button: 1, down: true } | Input::Menu => close = true,
                         Input::MouseWheel { dy } => h.wheel(dy),
                         Input::MouseMove { dx, dy } => {
-                            cursor.0 = (cursor.0 + dx).clamp(0, SCREEN_W as i32 - 1);
-                            cursor.1 = (cursor.1 + dy).clamp(0, SCREEN_H as i32 - 1);
+                            cursor.0 = (cursor.0 + dx).clamp(0, chrome::screen_w() as i32 - 1);
+                            cursor.1 = (cursor.1 + dy).clamp(0, chrome::screen_h() as i32 - 1);
                             cursor_until = Some(Instant::now() + Duration::from_secs(3));
                         }
                         other @ (Input::Quit | Input::Media(_)) => rest.push(other),
@@ -710,8 +1061,8 @@ fn main() -> Result<(), String> {
                 match input {
                     Input::MouseMove { dx, dy } => {
                         last_mouse_move = Instant::now();
-                        cursor.0 = (cursor.0 + dx).clamp(0, SCREEN_W as i32 - 1);
-                        cursor.1 = (cursor.1 + dy).clamp(0, SCREEN_H as i32 - 1);
+                        cursor.0 = (cursor.0 + dx).clamp(0, chrome::screen_w() as i32 - 1);
+                        cursor.1 = (cursor.1 + dy).clamp(0, chrome::screen_h() as i32 - 1);
                         if agent_open && !locked && zoom.is_none() && app_menu.is_none() && home_modal.is_none() {
                             if let Some(ag) = agent.as_mut() {
                                 let ctx = Ctx { fs: &fs, tm: &tm, sys: sys.as_ref(), now: chrono::Local::now() };
@@ -775,14 +1126,37 @@ fn main() -> Result<(), String> {
                             }
                             continue;
                         }
+                        // The status items at the right of the strip (input method, sound, internet, network,
+                        // battery, clock) each open a small menu under themselves.
+                        if button == 0 && app_menu.is_none() && !agent_open && cursor.1 < chrome::BAR_H {
+                            let bar = desk.as_ref().map(|d| d.size).unwrap_or((harbour_shell::grid::sw(), harbour_shell::grid::sh()));
+                            let mut st = status.lock().map(|s| s.clone()).unwrap_or_default();
+                            st.time = chrono::Local::now().format("%H:%M").to_string();
+                            let text_screen = agent_open || matches!(screen, Screen::Editor | Screen::Terminal(_) | Screen::Settings(_) | Screen::App(_));
+                            st.ime = ime.indicator(text_screen).to_string();
+                            let hit = harbour_shell::grid::with_surface(bar, || chrome::status_hit(&fs, &st, cursor.0));
+                            if let Some((item, x)) = hit {
+                                app_menu = Some(harbour_shell::grid::with_surface(bar, || status_menu(item, &st, x, ime.enabled())));
+                                continue;
+                            }
+                        }
                         // The Harbour anchor at the far left opens the system menu; the app name next to it
                         // opens the app menu (Quit etc.), like Alt.
                         if button == 0 && app_menu.is_none() && !agent_open && cursor.1 < chrome::BAR_H && cursor.0 < 20 {
-                            app_menu = Some(system_menu(&screen));
+                            let mut m = system_menu(&screen);
+                            if desk.is_some() {
+                                m.origin = Some((cursor.0.max(0), chrome::BAR_H));
+                            }
+                            app_menu = Some(m);
                             continue;
                         }
                         if button == 0 && app_menu.is_none() && cursor.1 < chrome::BAR_H && cursor.0 < 150 {
-                            app_menu = Some(open_menu(&screen, &home, agent_open.then(|| agent.as_deref()).flatten()));
+                            let mut m = open_menu(&screen, &home, agent_open.then(|| agent.as_deref()).flatten());
+                            // On a desk the menu opens where the strip was clicked.
+                            if desk.is_some() {
+                                m.origin = Some((cursor.0, chrome::BAR_H));
+                            }
+                            app_menu = Some(m);
                             continue;
                         }
                         if agent_open && button == 0 {
@@ -812,7 +1186,7 @@ fn main() -> Result<(), String> {
                                     }
                                 }
                                 Screen::Calculator => {
-                                    if calc.click(cursor.0, cursor.1, 0, chrome::BAR_H, SCREEN_W) == CalcEvent::SettingsChanged {
+                                    if calc.click(cursor.0, cursor.1, 0, chrome::BAR_H, chrome::screen_w()) == CalcEvent::SettingsChanged {
                                         let (rpn, rad, fmt) = calc.settings.to_ints();
                                         if let Ok(mut c) = cfg.lock() {
                                             c.set_int("harbour_calc_rpn", rpn);
@@ -823,7 +1197,7 @@ fn main() -> Result<(), String> {
                                     }
                                 }
                                 Screen::Editor => editor.click(cursor.0, cursor.1, &fs),
-                                Screen::Clock => expanded.push(key(if cursor.0 < SCREEN_W as i32 / 2 { Keycode::Left } else { Keycode::Right })),
+                                Screen::Clock => expanded.push(key(if cursor.0 < chrome::screen_w() as i32 / 2 { Keycode::Left } else { Keycode::Right })),
                                 Screen::Settings(st) => {
                                     left_held = true;
                                     let clicks = if is_double_click(last_click, usize::MAX, cursor.0, cursor.1) { 2 } else { 1 };
@@ -1285,6 +1659,42 @@ fn main() -> Result<(), String> {
                                 if matches!(screen, Screen::Home) { String::new() } else { harbour_shell::launcher::widgets::QUIT_ID.to_string() }
                             } else { id };
                             if id.is_empty() {
+                            } else if let Some(act) = id.strip_prefix("st_") {
+                                // The status menus: open an app or a Settings section (on a desk in a window
+                                // of its own), switch Wi-Fi, set the volume, switch the input method.
+                                let opens = act.starts_with("app_") || act.starts_with("set_");
+                                if opens {
+                                    agent_open = false;
+                                    desk_to_home(&mut desk, &mut fid, &mut screen, &mut prev_home);
+                                }
+                                if let Some(name) = act.strip_prefix("app_") {
+                                    pending_launch = resolve_target(name, &apps).map(|(t, _)| t);
+                                } else if let Some(section) = act.strip_prefix("set_") {
+                                    if let Screen::Settings(s) = &mut screen { s.flush(); }
+                                    let mut st = Box::new(Settings::new(sys.clone(), cfg.clone(), order_path.clone(), app_refs(&apps)));
+                                    st.open_section(section);
+                                    screen = Screen::Settings(st);
+                                } else {
+                                    match act {
+                                        "wifi_toggle" => {
+                                            let on = !status.lock().map(|s| s.wifi_radio).unwrap_or(true);
+                                            let sys2 = sys.clone();
+                                            std::thread::spawn(move || {
+                                                let _ = sys2.wifi_set_radio(on);
+                                            });
+                                        }
+                                        "vol_up" => toast = Some(media(&sys, &cfg, &mut vol, MediaKey::VolumeUp)),
+                                        "vol_down" => toast = Some(media(&sys, &cfg, &mut vol, MediaKey::VolumeDown)),
+                                        "mute" => toast = Some(media(&sys, &cfg, &mut vol, MediaKey::Mute)),
+                                        "ime_toggle" | "ime_kana" => {
+                                            let mods = if act == "ime_kana" { Mod::LCTRLMOD | Mod::LSHIFTMOD } else { Mod::LCTRLMOD };
+                                            deferred.push(Input::Key { key: Keycode::Space, mods, repeat: false });
+                                            deferred.push(Input::KeyUp { key: Keycode::Space });
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                                dirty = true;
                             } else if let Some(act) = id.strip_prefix("sys_") {
                                 use harbour_shell::launcher::settings::SystemPage;
                                 if let Screen::Settings(s) = &mut screen { s.flush(); }
@@ -1297,7 +1707,13 @@ fn main() -> Result<(), String> {
                                 };
                                 if act == "help" {
                                     let (name, rows) = screen_help(&screen, agent_open);
-                                    help = Some(harbour_shell::launcher::help::HelpView::new(&name, rows));
+                                    if desk.is_some() {
+                                        // On a desk Help is a window of its own, beside the screen it explains.
+                                        desk_to_home(&mut desk, &mut fid, &mut screen, &mut prev_home);
+                                        screen = Screen::App(Box::new(harbour_shell::launcher::help::HelpApp::new(&name, rows)));
+                                    } else {
+                                        help = Some(harbour_shell::launcher::help::HelpView::new(&name, rows));
+                                    }
                                 } else if act == "lock" {
                                     locked = true;
                                 } else if act == "agent" {
@@ -1432,7 +1848,7 @@ fn main() -> Result<(), String> {
             match input {
                 Input::Quit => break 'main,
                 // Pointer input was already turned into selections / keys above.
-                Input::KeyUp { .. } | Input::MouseMove { .. } | Input::MouseButton { .. } | Input::MouseWheel { .. } => {}
+                Input::KeyUp { .. } | Input::MouseMove { .. } | Input::MouseButton { .. } | Input::MouseWheel { .. } | Input::Pad { .. } | Input::Stick { .. } => {}
                 // Hold Sym (push-to-talk) talks to Muse while the Agent panel is open; elsewhere it is ignored.
                 Input::Voice(down) => {
                     if agent_open {
@@ -1481,7 +1897,7 @@ fn main() -> Result<(), String> {
                         let ctx = Ctx { fs: &fs, tm: &tm, sys: sys.as_ref(), now: chrono::Local::now() };
                         let action = a.key(key, mods, repeat, &ctx);
                         // The app's own Esc-at-top-level "Quit" is ignored: hold Esc or use the menu.
-                        let action = if key == Keycode::Escape && action == AppAction::Quit { AppAction::None } else { action };
+                        let action = if key == Keycode::Escape && action == AppAction::Quit && !a.esc_closes() { AppAction::None } else { action };
                         apply_app_action(action, &mut screen, &workdir, &shared, &mut toast);
                     }
                     Screen::Home => {
@@ -1531,7 +1947,7 @@ fn main() -> Result<(), String> {
                             run_external(&fs, &tm, &entry, &workdir, &shared, &mut canvas, &mut fb, &rx, &mut toast, &mut dirty, &mut last_input);
                         }
                         SettingsEvent::Exit => {
-                            std::thread::sleep(Duration::from_millis(1500));
+                            harbour_shell::rt::sleep(Duration::from_millis(1500));
                             break 'main;
                         }
                     },
@@ -1850,6 +2266,22 @@ fn main() -> Result<(), String> {
                 dirty = true;
             }
         }
+        if let Some(d) = desk.as_mut() {
+            // The windows behind keep running (a clock, a download, a graph).
+            for w in d.windows_mut() {
+                let size = (w.rect.width() as i32, w.rect.height() as i32);
+                match &mut w.slot {
+                    Some(Screen::App(a)) => {
+                        let ctx = harbour_shell::launcher::app::Ctx { fs: &fs, tm: &tm, sys: sys.as_ref(), now: chrono::Local::now() };
+                        if harbour_shell::grid::with_surface(size, || a.tick(&ctx)) {
+                            dirty = true;
+                        }
+                    }
+                    Some(Screen::Settings(s)) => s.tick(),
+                    _ => {}
+                }
+            }
+        }
         match &mut screen {
             Screen::App(a) => {
                 let ctx = harbour_shell::launcher::app::Ctx { fs: &fs, tm: &tm, sys: sys.as_ref(), now: chrono::Local::now() };
@@ -1925,7 +2357,8 @@ fn main() -> Result<(), String> {
             }
         }
         // Screen timeout (official `dark_time`, seconds; 0 = never).
-        let mut dark = cfg.lock().map(|c| c.get_int("dark_time", 30)).unwrap_or(0);
+        // A desk is a computer's screen: Harbour does not turn it off.
+        let mut dark = if desk.is_some() { 0 } else { cfg.lock().map(|c| c.get_int("dark_time", 30)).unwrap_or(0) };
         if locked {
             // The lock screen goes dark sooner (`harbour_lock_dark`, seconds, default 8; 0 = follow
             // dark_time), and even when the normal screen timeout is "never".
@@ -1934,7 +2367,7 @@ fn main() -> Result<(), String> {
                 dark = if dark > 0 { dark.min(lock_dark) } else { lock_dark };
             }
         }
-        if dark > 0 && screen_off_prev.is_none() && fade.is_none() && last_input.elapsed() > Duration::from_secs(dark as u64) && script.is_none() {
+        if dark > 0 && desk.is_none() && screen_off_prev.is_none() && fade.is_none() && last_input.elapsed() > Duration::from_secs(dark as u64) && script.is_none() {
             if let Some((v, _)) = sys.brightness() {
                 if v > 0 {
                     println!("[screen] off after {} s idle (locked: {locked})", dark);
@@ -1957,7 +2390,7 @@ fn main() -> Result<(), String> {
                     f.invalidate();
                     let _ = push_frame(&canvas, f);
                 }
-                std::thread::sleep(Duration::from_millis(60));
+                harbour_shell::rt::sleep(Duration::from_millis(60));
                 let _ = sys.set_brightness(0);
             } else {
                 // The fade is only the backlight ramping down (cheap); redrawing the LCD for
@@ -1980,7 +2413,61 @@ fn main() -> Result<(), String> {
                 }
             }
         }
-        if zoom.is_none() {
+        // A menu a window's screen opened at the pointer this frame: from window to desk coordinates.
+        if let (Some((ox, oy)), false, Some(m)) = (menu_shift, menu_before, app_menu.as_mut()) {
+            if let Some((x, y)) = m.origin {
+                m.origin = Some((x + ox, y + oy));
+            }
+        }
+        if let Some(d) = desk.as_mut() {
+            // On a desk an app opened from Home gets a window of its own (zooming out of its icon),
+            // and an app that goes back to Home closes its window (zooming back).
+            let now_home = matches!(screen, Screen::Home);
+            if prev_home && !now_home {
+                let flexible = screen_flexible(&screen);
+                let size = d.initial_size(flexible);
+                let id = d.open(size, flexible, None);
+                fid = Some(id);
+                if let Some(w) = d.get(id) {
+                    let from = harbour_shell::grid::with_surface(d.size, || home.selected_icon_rect());
+                    desk_zoom = Some((0.0, from, harbour_shell::launcher::desk::outer(w.rect), Some(id)));
+                }
+                force_full = true;
+                dirty = true;
+            } else if !prev_home && now_home {
+                if let Some(f) = fid.take() {
+                    if let Some(w) = d.get(f) {
+                        let to = harbour_shell::grid::with_surface(d.size, || home.selected_icon_rect());
+                        desk_zoom = Some((0.0, harbour_shell::launcher::desk::outer(w.rect), to, None));
+                    }
+                    d.close(f);
+                }
+                // The window under it (if any) takes the focus.
+                if let Some(next) = d.windows().last().map(|w| w.id) {
+                    d.raise(next);
+                    if let Some(inc) = d.get_mut(next).and_then(|w| w.slot.take()) {
+                        screen = inc;
+                        fid = Some(next);
+                    }
+                } else {
+                    d.focus_desk();
+                }
+                force_full = true;
+                dirty = true;
+            }
+            prev_home = matches!(screen, Screen::Home);
+            match d.focused_rect() {
+                Some(r) => harbour_shell::grid::set_surface(r.width() as i32, r.height() as i32),
+                None => harbour_shell::grid::set_surface(d.size.0, d.size.1),
+            };
+            if let Some(z) = desk_zoom.as_mut() {
+                z.0 += 0.12;
+                dirty = true;
+                if z.0 >= 1.0 {
+                    desk_zoom = None;
+                }
+            }
+        } else if zoom.is_none() {
             let now_home = matches!(screen, Screen::Home);
             if prev_home && !now_home {
                 let target = std::mem::replace(&mut screen, Screen::Home);
@@ -1997,9 +2484,101 @@ fn main() -> Result<(), String> {
         if screen_off_prev.is_some() {
             dirty = false; // the panel is black: nothing to draw
         }
+        if os_cursor && (tm.get_color("foreground"), tm.get_color("widget_face_active")) != cursor_colors {
+            cursor_colors = (tm.get_color("foreground"), tm.get_color("widget_face_active"));
+            os_cursor_keep = make_os_cursor(&tm, scale).or(os_cursor_keep);
+        }
         if dirty {
             dirty = false;
-            chrome::draw_desktop(&mut canvas, &tm);
+            let mut desk_status: Option<(StatusView, String)> = None;
+            // On a desk the lock screen is drawn this many times bigger (1 otherwise).
+            let mut lock_zoom = 1;
+            // On a desk: the desk with Home's icons, the windows behind, then the focused window through
+            // a viewport (the code below draws it as if it were the whole screen).
+            let showing = desk_zoom.and_then(|z| z.3);
+            let base_vp: Option<sdl2::rect::Rect> = match desk.as_mut() {
+                Some(d) => {
+                    canvas.set_viewport(None);
+                    let bar_style = cfg.lock().map(|c| c.get_int("harbour_statusbar", 0)).unwrap_or(0).clamp(0, 2) as u8;
+                    harbour_shell::grid::with_surface(d.size, || {
+                        chrome::draw_desktop(&mut canvas, &tm);
+                        if !locked {
+                            home.draw(&mut canvas, &mut assets, &fs, &tm);
+                        }
+                    });
+                    if locked {
+                        // The lock screen is drawn for 320 x 170: on the desk it is shown as big as
+                        // whole-number scaling allows, in the middle.
+                        let (w, h) = (SCREEN_W as i32, SCREEN_H as i32);
+                        let k = (d.size.0 / w).min(d.size.1 / h).max(1);
+                        lock_zoom = k;
+                        let _ = canvas.set_scale((scale as i32 * k) as f32, (scale as i32 * k) as f32);
+                        let r = sdl2::rect::Rect::new((d.size.0 / k - w) / 2, (d.size.1 / k - h) / 2, w as u32, h as u32);
+                        canvas.set_viewport(r);
+                        harbour_shell::grid::set_surface(w, h);
+                        Some(r)
+                    } else {
+                        for w in d.windows_mut() {
+                            if Some(w.id) == fid || Some(w.id) == showing {
+                                continue;
+                            }
+                            draw_window_frame(&mut canvas, &tm, w.rect, false);
+                            canvas.set_viewport(w.rect);
+                            let size = (w.rect.width() as i32, w.rect.height() as i32);
+                            if let Some(sc) = w.slot.as_mut() {
+                                harbour_shell::grid::with_surface(size, || {
+                                    let ctx = Ctx { fs: &fs, tm: &tm, sys: sys.as_ref(), now: chrono::Local::now() };
+                                    draw_back_window(&mut canvas, &mut assets, &ctx, sc, &mut home, &mut calc, &mut world, &snake, &mut editor, bar_style);
+                                });
+                            }
+                            canvas.set_viewport(None);
+                            if w.flexible {
+                                draw_resize_mark(&mut canvas, &tm, w.rect);
+                            }
+                        }
+                        match d.focused_rect() {
+                            Some(r) => {
+                                if fid != showing {
+                                    draw_window_frame(&mut canvas, &tm, r, true);
+                                }
+                                canvas.set_viewport(r);
+                                harbour_shell::grid::set_surface(r.width() as i32, r.height() as i32);
+                                Some(r)
+                            }
+                            None => {
+                                harbour_shell::grid::set_surface(d.size.0, d.size.1);
+                                Some(sdl2::rect::Rect::new(0, 0, d.size.0 as u32, d.size.1 as u32))
+                            }
+                        }
+                    }
+                }
+                None => None,
+            };
+            // Full: the picture's background, then the fixed-size screen in the middle.
+            let full_vp = if full { full_viewport(&screen, locked, desk_size) } else { None };
+            if full {
+                canvas.set_viewport(None);
+                harbour_shell::grid::set_surface(desk_size.0, desk_size.1);
+                if let Some(r) = full_vp {
+                    chrome::draw_desktop(&mut canvas, &tm);
+                    canvas.set_viewport(r);
+                    harbour_shell::grid::set_surface(r.width() as i32, r.height() as i32);
+                }
+            }
+            if desk.is_none() && !full {
+                harbour_shell::grid::set_surface(desk_size.0, desk_size.1);
+            }
+            let osk_cut = osk_room(osk.is_some(), desk.is_some(), locked, &screen, desk_size);
+            if osk_cut > 0 {
+                harbour_shell::grid::set_surface(desk_size.0, desk_size.1 - osk_cut);
+            }
+            // Home on a desk is already drawn under the windows; a window still zooming open is not
+            // drawn yet.
+            let desk_home = desk.is_some() && fid.is_none() && !locked;
+            let hidden = desk.is_some() && showing.is_some() && fid == showing;
+            if !desk_home && !hidden {
+                chrome::draw_desktop(&mut canvas, &tm);
+            }
             if locked {
                 let st = status.lock().map(|s| s.clone()).unwrap_or_default();
                 let mut st = st;
@@ -2030,11 +2609,20 @@ fn main() -> Result<(), String> {
                     Screen::Terminal(_) => harbour_shell::launcher::i18n::app_name("terminal"),
                     Screen::App(a) => fit_title(&fs, &a.title()),
                 } };
-                chrome::draw_menu_bar(&mut canvas, &mut assets, &fs, &tm, &context, &st);
-                { match &mut screen {
+                if desk.is_some() {
+                    // The desk's strip carries the menus and the status; a window gets a title bar.
+                    desk_status = Some((st.clone(), context.clone()));
+                    if !desk_home && !hidden {
+                        let hover = desk.as_ref().zip(fid).is_some_and(|(d, f)| harbour_shell::launcher::desk::on_close_box(d, f, dcur.0, dcur.1));
+                        draw_title_bar(&mut canvas, &fs, &tm, &context, true, hover);
+                    }
+                } else {
+                    chrome::draw_menu_bar(&mut canvas, &mut assets, &fs, &tm, &context, &st);
+                }
+                if !desk_home && !hidden { match &mut screen {
                     Screen::Home => home.draw(&mut canvas, &mut assets, &fs, &tm),
                     Screen::Settings(s) => s.draw(&mut canvas, &fs, &tm),
-                    Screen::Calculator => calc.draw(&mut canvas, &fs, &tm, 0, chrome::BAR_H, SCREEN_W, SCREEN_H - chrome::BAR_H as u32),
+                    Screen::Calculator => calc.draw(&mut canvas, &fs, &tm, 0, chrome::BAR_H, chrome::screen_w(), chrome::screen_h() - chrome::BAR_H as u32),
                     Screen::Clock => world.draw(&mut canvas, &mut assets, &fs, &tm, chrono::Local::now()),
                     Screen::Snake => {
                         let title = format!("Snake - {}", snake.footer_text());
@@ -2049,7 +2637,7 @@ fn main() -> Result<(), String> {
                         let title = if editor.is_dirty() { "Text Editor *" } else { "Text Editor" };
                         let _ = title;
                         // Framed like the Terminal: the text area is the frame's content rectangle.
-                        harbour_shell::ui::fill_rect(&mut canvas, sdl2::rect::Rect::new(0, chrome::BAR_H, SCREEN_W, SCREEN_H - chrome::BAR_H as u32), tm.get_color("home_bg"));
+                        harbour_shell::ui::fill_rect(&mut canvas, sdl2::rect::Rect::new(0, chrome::BAR_H, chrome::screen_w(), chrome::screen_h() - chrome::BAR_H as u32), tm.get_color("home_bg"));
                         harbour_shell::grid::draw_app_frame(&mut canvas, harbour_shell::grid::app_frame().y(), tm.get_color("foreground"), None);
                         let r = harbour_shell::grid::app_content();
                         editor.set_view(r.width(), r.height());
@@ -2060,18 +2648,22 @@ fn main() -> Result<(), String> {
                     let e = 1.0 - (1.0 - agent_prog).powi(2);
                     let off = ((1.0 - e) * harbour_shell::launcher::agent::app::PANEL_W as f32).round() as i32;
                     let ctx = harbour_shell::launcher::app::Ctx { fs: &fs, tm: &tm, sys: sys.as_ref(), now: chrono::Local::now() };
-                    if off > 0 {
-                        canvas.set_viewport(sdl2::rect::Rect::new(off, 0, (SCREEN_W as i32 - off) as u32, SCREEN_H));
+                    // The panel is drawn for 320 x 170 at the right of the screen (or window).
+                    let (bx, by) = base_vp.map(|r| (r.x() + r.width() as i32 - SCREEN_W as i32, r.y())).unwrap_or((0, 0));
+                    if off > 0 || base_vp.is_some() {
+                        canvas.set_viewport(sdl2::rect::Rect::new(bx + off, by, (SCREEN_W as i32 - off) as u32, SCREEN_H));
                     }
                     if let Some(ag) = agent.as_mut() {
-                        ag.draw(&mut canvas, &mut assets, &ctx);
+                        harbour_shell::grid::with_surface((SCREEN_W as i32, SCREEN_H as i32), || ag.draw(&mut canvas, &mut assets, &ctx));
                     }
-                    if off > 0 {
-                        canvas.set_viewport(None);
+                    if off > 0 || base_vp.is_some() {
+                        canvas.set_viewport(base_vp);
                     }
                 }
-                if let Some(m) = &app_menu {
-                    m.draw(&mut canvas, &fs, &tm);
+                if desk.is_none() {
+                    if let Some(m) = &app_menu {
+                        m.draw(&mut canvas, &fs, &tm);
+                    }
                 }
                 if let Some(card) = &unsaved {
                     card.draw(&mut canvas, &fs, &tm);
@@ -2088,10 +2680,10 @@ fn main() -> Result<(), String> {
                 if ime.is_composing() {
                     // Over the Agent panel the line stays inside it; elsewhere it spans the screen.
                     let area = if agent_open && agent_prog > 0.0 {
-                        let x = SCREEN_W as i32 - harbour_shell::launcher::agent::app::PANEL_W;
-                        sdl2::rect::Rect::new(x, 0, harbour_shell::launcher::agent::app::PANEL_W as u32, SCREEN_H)
+                        let x = chrome::screen_w() as i32 - harbour_shell::launcher::agent::app::PANEL_W;
+                        sdl2::rect::Rect::new(x, 0, harbour_shell::launcher::agent::app::PANEL_W as u32, chrome::screen_h())
                     } else {
-                        sdl2::rect::Rect::new(0, 0, SCREEN_W, SCREEN_H)
+                        sdl2::rect::Rect::new(0, 0, chrome::screen_w(), chrome::screen_h())
                     };
                     ime.draw(&mut canvas, &fs, &tm, area);
                 }
@@ -2123,9 +2715,65 @@ fn main() -> Result<(), String> {
             if let Some(inst) = &installer {
                 inst.draw(&mut canvas, &fs, &tm);
             }
-            chrome::draw_corners(&mut canvas, &tm);
-            if cursor_until.is_some() && !locked && !matches!(&screen, Screen::App(a) if a.hides_pointer()) {
-                chrome::draw_cursor(&mut canvas, &tm, cursor.0, cursor.1);
+            // The on-screen keyboard, across the bottom of the whole picture.
+            if let Some(k) = osk.as_ref().filter(|_| !locked) {
+                canvas.set_viewport(None);
+                harbour_shell::grid::with_surface(desk_size, || {
+                    // The band under a screen that ends above the keyboard.
+                    if osk_cut > 0 {
+                        harbour_shell::ui::fill_rect(&mut canvas, sdl2::rect::Rect::new(0, desk_size.1 - osk_cut, desk_size.0 as u32, osk_cut as u32), tm.get_color("home_bg"));
+                    }
+                    k.draw(&mut canvas, &fs, &tm);
+                    // What the input method is composing shows just above the keyboard (a screen that
+                    // ends above the keyboard shows it itself).
+                    if ime.is_composing() && osk_cut == 0 {
+                        let top = harbour_shell::launcher::osk::Osk::rect().y();
+                        ime.draw(&mut canvas, &fs, &tm, sdl2::rect::Rect::new(0, 0, desk_size.0 as u32, top as u32));
+                    }
+                });
+            }
+            if let Some(d) = desk.as_ref() {
+                // The desk's strip: the anchor, the focused screen's name (its menus open from here)
+                // and the status. Then the menus, the zoom and the pointer, all on the desk.
+                canvas.set_viewport(None);
+                if lock_zoom > 1 {
+                    let _ = canvas.set_scale(scale as f32, scale as f32);
+                }
+                let (mut st, context) = desk_status.take().unwrap_or_default();
+                st.time = chrono::Local::now().format("%H:%M").to_string();
+                let win_size = (harbour_shell::grid::sw(), harbour_shell::grid::sh());
+                if let Some(w) = fid.and_then(|f| d.get(f)).filter(|w| w.flexible && !locked && Some(w.id) != showing) {
+                    draw_resize_mark(&mut canvas, &tm, w.rect);
+                }
+                harbour_shell::grid::with_surface(d.size, || {
+                    if !locked {
+                        chrome::draw_menu_bar(&mut canvas, &mut assets, &fs, &tm, &context, &st);
+                    }
+                    if let Some(m) = &app_menu {
+                        m.draw(&mut canvas, &fs, &tm);
+                    }
+                    if let Some((t, from, to, _)) = desk_zoom {
+                        chrome::draw_zoom(&mut canvas, &tm, from, to, t.min(1.0));
+                    }
+                    chrome::draw_corners(&mut canvas, &tm);
+                });
+                if !os_cursor && cursor_until.is_some() && !matches!(&screen, Screen::App(a) if a.hides_pointer() && !locked) {
+                    chrome::draw_cursor(&mut canvas, &tm, dcur.0, dcur.1);
+                }
+                harbour_shell::grid::set_surface(win_size.0, win_size.1);
+            } else if full {
+                // The pointer is drawn on the whole picture.
+                canvas.set_viewport(None);
+                harbour_shell::grid::set_surface(desk_size.0, desk_size.1);
+                chrome::draw_corners(&mut canvas, &tm);
+                if !os_cursor && cursor_until.is_some() && !locked && !matches!(&screen, Screen::App(a) if a.hides_pointer()) {
+                    chrome::draw_cursor(&mut canvas, &tm, dcur.0, dcur.1);
+                }
+            } else {
+                chrome::draw_corners(&mut canvas, &tm);
+                if !os_cursor && cursor_until.is_some() && !locked && !matches!(&screen, Screen::App(a) if a.hides_pointer()) {
+                    chrome::draw_cursor(&mut canvas, &tm, cursor.0, cursor.1);
+                }
             }
             canvas.present();
             if let Some(r) = rec.as_mut() {
@@ -2173,7 +2821,7 @@ fn main() -> Result<(), String> {
             r.tick();
         }
         let frame = if rec.is_some() { frame.min(16) } else { frame };
-        std::thread::sleep(Duration::from_millis(frame));
+        harbour_shell::rt::sleep(Duration::from_millis(frame));
     }
 
     if let Some(r) = rec.as_mut() {
@@ -2275,11 +2923,13 @@ fn reachable() -> bool {
 
 fn spawn_status(sys: Arc<dyn Backend>, status: Arc<Mutex<StatusView>>) {
     let mock = std::env::var("HARBOUR_MOCK").is_ok();
-    std::thread::spawn(move || loop {
+    // The web build has no threads: read the (pretend) status once.
+    let once = harbour_shell::rt::WEB;
+    let run = move || loop {
         let b = sys.battery();
         let w = sys.wifi_status();
         let eth = sys.eth_ip().is_some();
-        let online = mock || reachable();
+        let online = mock || once || reachable();
         let vol = sys.volume();
         if let Ok(mut s) = status.lock() {
             s.battery = b.percent;
@@ -2290,8 +2940,12 @@ fn spawn_status(sys: Arc<dyn Backend>, status: Arc<Mutex<StatusView>>) {
             s.online = online;
             s.volume = vol;
         }
+        if once {
+            break;
+        }
         std::thread::sleep(Duration::from_secs(2));
-    });
+    };
+    harbour_shell::rt::spawn(run);
 }
 
 /// Hardware media keys: volume / mute / brightness with an on-screen toast.
@@ -2440,13 +3094,249 @@ fn draw_app_footer(c: &mut Canvas<Window>, fs: &FontSystem, tm: &ThemeManager, t
     harbour_shell::ui::fill_rect(c, chrome::app_rect(), tm.get_color("home_bg"));
     // Under the menu strip's 1 px gap down to y 168, the last row the framed screens use.
     let top = harbour_shell::grid::BAR_H + harbour_shell::grid::WINDOW_INSET;
-    let inner = Rect::new(harbour_shell::grid::MARGIN, top, (SCREEN_W as i32 - 2 * harbour_shell::grid::MARGIN) as u32, (harbour_shell::grid::APP_FRAME_BOTTOM + 1 - top) as u32);
+    let inner = Rect::new(harbour_shell::grid::MARGIN, top, (chrome::screen_w() as i32 - 2 * harbour_shell::grid::MARGIN) as u32, (harbour_shell::grid::frame_bottom() + 1 - top) as u32);
     let content = inner;
     body(c, content.x(), content.y(), content.width(), content.height());
     chrome::draw_command_bar(c, fs, tm, &inner, status, hint);
 }
 
 /// Copy the rendered frame to the LCD as RGB565.
+/// A status item's menu, opened under it (`x`: the item's left edge on the strip).
+fn status_menu(item: chrome::StatusItem, st: &StatusView, x: i32, ime_on: bool) -> harbour_shell::launcher::widgets::AppMenu {
+    use chrome::StatusItem;
+    use harbour_shell::launcher::i18n::tr;
+    use harbour_shell::launcher::widgets::{AppMenu, MenuItem};
+    let info = |t: String| MenuItem::new("st_info", t);
+    let items = match item {
+        StatusItem::Clock => vec![
+            info(chrono::Local::now().format("%a %e %b %Y").to_string()),
+            MenuItem::new("st_app_clock", harbour_shell::launcher::i18n::app_name("clock")),
+            MenuItem::new("st_app_calendar", harbour_shell::launcher::i18n::app_name("calendar")),
+            MenuItem::new("st_app_timer", harbour_shell::launcher::i18n::app_name("timer")),
+        ],
+        StatusItem::Battery => vec![
+            info(match (st.battery, st.charging) {
+                (Some(p), true) => format!("{} {p}%", tr("Charging")),
+                (Some(p), false) => format!("{} {p}%", tr("Battery")),
+                (None, _) => tr("Charging").to_string(),
+            }),
+            MenuItem::new("st_app_monitor", harbour_shell::launcher::i18n::app_name("monitor")),
+            MenuItem::new("st_set_system", "System Settings..."),
+        ],
+        StatusItem::Network => vec![
+            info(if st.ethernet { tr("Ethernet").to_string() } else if st.wifi_radio { format!("Wi-Fi {}", st.wifi.map(|w| format!("{w}%")).unwrap_or_default()) } else { tr("Wi-Fi off").to_string() }),
+            MenuItem::new("st_wifi_toggle", if st.wifi_radio { "Turn Wi-Fi Off" } else { "Turn Wi-Fi On" }),
+            MenuItem::new("st_set_network", "Network Settings..."),
+            MenuItem::new("st_app_interceptor", harbour_shell::launcher::i18n::app_name("interceptor")),
+        ],
+        StatusItem::Internet => vec![
+            info(tr(if st.online { "Online" } else { "Offline" }).to_string()),
+            MenuItem::new("st_app_browser", harbour_shell::launcher::i18n::app_name("browser")),
+            MenuItem::new("st_app_infoscope", harbour_shell::launcher::i18n::app_name("infoscope")),
+            MenuItem::new("st_set_network", "Network Settings..."),
+        ],
+        StatusItem::Speaker => {
+            let (v, muted) = st.volume.unwrap_or((0, false));
+            vec![
+                info(if muted { tr("Muted").to_string() } else { format!("{} {v}%", tr("Volume")) }),
+                MenuItem::new("st_vol_up", "Louder"),
+                MenuItem::new("st_vol_down", "Quieter"),
+                MenuItem::new("st_mute", if muted { "Unmute" } else { "Mute" }),
+                MenuItem::new("st_set_sound", "Sound Settings..."),
+            ]
+        }
+        StatusItem::Ime => vec![
+            info(tr(if ime_on { "Japanese input" } else { "Japanese input off" }).to_string()),
+            MenuItem::new("st_ime_toggle", "Japanese / English (Ctrl+Space)"),
+            MenuItem::new("st_ime_kana", "Hiragana / Katakana (Ctrl+Shift+Space)"),
+        ],
+    };
+    // The first row says how things are; the selection starts on the first thing to do.
+    let mut m = AppMenu::context(items, x, chrome::BAR_H);
+    m.cursor = 1;
+    m
+}
+
+/// On a desk, before opening something from a menu: Home takes the focus (the focused window keeps
+/// its screen), so what opens gets a window of its own instead of replacing that window's screen.
+fn desk_to_home(desk: &mut Option<Desk<Screen>>, fid: &mut Option<WinId>, screen: &mut Screen, prev_home: &mut bool) {
+    let Some(d) = desk.as_mut() else { return };
+    if let Some(f) = fid.take() {
+        let out = std::mem::replace(screen, Screen::Home);
+        if let Some(w) = d.get_mut(f) {
+            w.slot = Some(out);
+        }
+    }
+    d.focus_desk();
+    *prev_home = true;
+}
+
+/// The system cursor in Harbour's arrow (`chrome::CURSOR_ART`), `scale` times bigger like the
+/// window. None when the system cannot make one (the drawn pointer is used then).
+fn make_os_cursor(tm: &ThemeManager, scale: u32) -> Option<sdl2::mouse::Cursor> {
+    let (w, h) = (12 * scale, 16 * scale);
+    let mut surf = Surface::new(w, h, PixelFormatEnum::ARGB8888).ok()?;
+    let pitch = surf.pitch() as usize;
+    let (ink, edge) = (tm.get_color("foreground"), tm.get_color("widget_face_active"));
+    surf.with_lock_mut(|px| {
+        for (row, line) in chrome::CURSOR_ART.iter().enumerate() {
+            for (col, ch) in line.bytes().enumerate() {
+                let c = match ch {
+                    b'X' => edge,
+                    b'O' => ink,
+                    _ => continue,
+                };
+                for dy in 0..scale as usize {
+                    for dx in 0..scale as usize {
+                        let (x, y) = (col * scale as usize + dx, row * scale as usize + dy);
+                        let i = y * pitch + x * 4;
+                        px[i..i + 4].copy_from_slice(&[c.b, c.g, c.r, 255]);
+                    }
+                }
+            }
+        }
+    });
+    let cursor = sdl2::mouse::Cursor::from_surface(surf, 0, 0).ok()?;
+    cursor.set();
+    Some(cursor)
+}
+
+/// `HARBOUR_SCREEN`: "480x272" -> (480, 272); never under 320 x 170.
+fn parse_size(v: &str) -> Option<(i32, i32)> {
+    let (w, h) = v.trim().split_once(['x', 'X'])?;
+    let (w, h) = (w.trim().parse::<i32>().ok()?, h.trim().parse::<i32>().ok()?);
+    Some((w.clamp(SCREEN_W as i32, 8192), h.clamp(SCREEN_H as i32, 8192)))
+}
+
+/// The on-screen keyboard's room: how much lower a screen that lays itself out (and Home) becomes
+/// while the keyboard is open, so nothing it shows is hidden behind it (0: no keyboard, a desk, the
+/// lock screen or a fixed-size screen, which the keyboard just covers).
+fn osk_room(open: bool, desk: bool, locked: bool, screen: &Screen, picture: (i32, i32)) -> i32 {
+    if !open || desk || locked || !(matches!(screen, Screen::Home) || screen_flexible(screen)) {
+        return 0;
+    }
+    harbour_shell::grid::with_surface(picture, || harbour_shell::launcher::osk::Osk::rect().height() as i32 + 2)
+}
+
+/// Full mode: where a screen that is always 320 x 170 (or the lock screen) is drawn, in the middle
+/// of the picture; None for one that lays itself out over the whole picture (Home too).
+fn full_viewport(screen: &Screen, locked: bool, size: (i32, i32)) -> Option<Rect> {
+    if !locked && (matches!(screen, Screen::Home) || screen_flexible(screen)) {
+        return None;
+    }
+    let (w, h) = (SCREEN_W as i32, SCREEN_H as i32);
+    Some(Rect::new((size.0 - w) / 2, (size.1 - h) / 2, w as u32, h as u32))
+}
+
+/// On a desk: does this screen lay itself out from its window (so the window can be resized)?
+fn screen_flexible(screen: &Screen) -> bool {
+    match screen {
+        Screen::App(a) => a.sizing() == harbour_shell::launcher::app::Sizing::Flexible,
+        Screen::Settings(_) | Screen::Editor | Screen::Terminal(_) => true,
+        Screen::Home | Screen::Calculator | Screen::Clock | Screen::Snake => false,
+    }
+}
+
+/// A window's frame on the desk: a 1 px line around its inside and a 1 px shadow; the focused
+/// window's line is the ink colour, the others' the softer line colour.
+fn draw_window_frame(c: &mut Canvas<Window>, tm: &ThemeManager, r: Rect, focused: bool) {
+    use harbour_shell::launcher::desk::outer;
+    let o = outer(r);
+    let line = if focused { tm.get_color("foreground") } else { tm.get_color("line") };
+    let shadow = tm.get_color("widget_shadow");
+    harbour_shell::ui::fill_rect(c, Rect::new(o.x() + 1, o.bottom() - 1, o.width() - 1, 1), shadow);
+    harbour_shell::ui::fill_rect(c, Rect::new(o.right() - 1, o.y() + 1, 1, o.height() - 1), shadow);
+    harbour_shell::ui::draw_rect(c, Rect::new(o.x(), o.y(), o.width() - 1, o.height() - 1), line);
+}
+
+/// A window's title bar on a desk (its top 16 px row): a close box at the left and the name in the
+/// middle; the focused window's bar has a 1 px dither band on both sides of the name. The close box
+/// shows a cross while the pointer is on it.
+fn draw_title_bar(c: &mut Canvas<Window>, fs: &FontSystem, tm: &ThemeManager, title: &str, focused: bool, close_hover: bool) {
+    use harbour_shell::launcher::desk::CLOSE_BOX;
+    let w = chrome::screen_w() as i32;
+    let ink = tm.get_color("foreground");
+    let paper = tm.get_color("topbar_bg");
+    harbour_shell::ui::fill_rect(c, Rect::new(0, 0, w as u32, chrome::BAR_H as u32), paper);
+    harbour_shell::ui::line(c, 0, chrome::BAR_H - 1, w - 1, chrome::BAR_H - 1, ink);
+    let text = chrome::fit_display_text(fs, title, w - 2 * (CLOSE_BOX.0 + CLOSE_BOX.2 + 12));
+    let tw = fs.measure_display_text(&text);
+    let tx = (w - tw) / 2;
+    if focused {
+        // A 1 px dither band from the close box to the name and on to the right edge.
+        let (x, y, s) = CLOSE_BOX;
+        let band = |c: &mut Canvas<Window>, x0: i32, x1: i32| {
+            if x1 > x0 {
+                harbour_shell::dither::fill(c, Rect::new(x0, 3, (x1 - x0) as u32, 10), ink, harbour_shell::dither::Pattern::Half);
+            }
+        };
+        band(c, x + s + 3, tx - 5);
+        band(c, tx + tw + 5, w - 3);
+        harbour_shell::ui::draw_rect(c, Rect::new(x, y, s as u32, s as u32), ink);
+        if close_hover {
+            // Under the pointer the box shows what it does: a cross.
+            harbour_shell::ui::line(c, x + 2, y + 2, x + s - 3, y + s - 3, ink);
+            harbour_shell::ui::line(c, x + s - 3, y + 2, x + 2, y + s - 3, ink);
+        }
+    }
+    fs.draw_display_text(c, tx, 1, &text, if focused { ink } else { harbour_shell::launcher::widgets::secondary_ink(tm) });
+}
+
+/// The resize mark of a flexible window: a small solid triangle in its bottom-right corner (the
+/// grip it is resized from), drawn in desk coordinates.
+fn draw_resize_mark(c: &mut Canvas<Window>, tm: &ThemeManager, r: Rect) {
+    let ink = tm.get_color("foreground");
+    let (x1, y1) = (r.right() - 2, r.bottom() - 2);
+    for k in 0..6 {
+        harbour_shell::ui::line(c, x1 - k, y1 - 5 + k, x1, y1 - 5 + k, ink);
+    }
+}
+
+/// A window behind the focused one, drawn through its viewport: its title strip and its screen.
+#[allow(clippy::too_many_arguments)]
+fn draw_back_window(
+    c: &mut Canvas<Window>,
+    assets: &mut harbour_shell::assets::AssetStore,
+    ctx: &Ctx,
+    screen: &mut Screen,
+    home: &mut Home,
+    calc: &mut Calc,
+    world: &mut WorldClock,
+    snake: &SnakeState,
+    editor: &mut TextEditor,
+    bar_style: u8,
+) {
+    let (fs, tm) = (ctx.fs, ctx.tm);
+    chrome::draw_desktop(c, tm);
+    let title = match screen {
+        Screen::Home => if home.context().is_empty() { "Harbour".to_string() } else { home.context().to_string() },
+        Screen::Settings(s) => harbour_shell::launcher::i18n::tr_s(&s.title()),
+        Screen::Calculator => harbour_shell::launcher::i18n::app_name("calculator"),
+        Screen::Clock => harbour_shell::launcher::i18n::tr("World Clock").to_string(),
+        Screen::Snake => "Snake".to_string(),
+        Screen::Editor => harbour_shell::launcher::i18n::app_name("texteditor"),
+        Screen::Terminal(_) => harbour_shell::launcher::i18n::app_name("terminal"),
+        Screen::App(a) => fit_title(fs, &a.title()),
+    };
+    let _ = bar_style;
+    draw_title_bar(c, fs, tm, &title, false, false);
+    match screen {
+        Screen::Home => {}
+        Screen::Settings(s) => s.draw(c, fs, tm),
+        Screen::Calculator => calc.draw(c, fs, tm, 0, chrome::BAR_H, chrome::screen_w(), chrome::screen_h() - chrome::BAR_H as u32),
+        Screen::Clock => world.draw(c, assets, fs, tm, ctx.now),
+        Screen::Snake => draw_app(c, fs, tm, "Snake", "", |c, x, y, w, h| snake.draw(c, fs, tm, x, y, w, h)),
+        Screen::App(a) => a.draw(c, assets, ctx),
+        Screen::Terminal(t) => t.draw(c, fs, tm),
+        Screen::Editor => {
+            harbour_shell::ui::fill_rect(c, Rect::new(0, chrome::BAR_H, chrome::screen_w(), chrome::screen_h() - chrome::BAR_H as u32), tm.get_color("home_bg"));
+            harbour_shell::grid::draw_app_frame(c, harbour_shell::grid::app_frame().y(), tm.get_color("foreground"), None);
+            let r = harbour_shell::grid::app_content();
+            editor.draw(c, fs, tm, r.x(), r.y(), r.width(), r.height())
+        }
+    }
+}
+
 fn push_frame(canvas: &Canvas<Window>, fb: &mut Fb) -> Result<(), String> {
     let t0 = Instant::now();
     let px = canvas.read_pixels(None, PixelFormatEnum::RGB565)?;
@@ -2492,6 +3382,14 @@ fn fb_stats_add(read: Duration, present: Duration, sent: usize, backend: &str) {
 
 fn save_shot(canvas: &Canvas<Window>, path: &str) -> Result<(), String> {
     let (w, h) = canvas.output_size()?;
+    // A grey or 1-bit panel (HARBOUR_PANEL): the shot shows what that panel would.
+    let kind = harbour_shell::platform::display::PanelKind::from_env(harbour_shell::platform::display::PanelKind::Color);
+    if kind != harbour_shell::platform::display::PanelKind::Color {
+        let mut px = canvas.read_pixels(None, PixelFormatEnum::RGB565)?;
+        harbour_shell::platform::display::tone(&mut px, w as usize, h as usize, kind);
+        let surf = Surface::from_data(&mut px, w, h, w * 2, PixelFormatEnum::RGB565)?;
+        return surf.save_bmp(path);
+    }
     let mut px = canvas.read_pixels(None, PixelFormatEnum::ARGB8888)?;
     let surf = Surface::from_data(&mut px, w, h, w * 4, PixelFormatEnum::ARGB8888)?;
     surf.save_bmp(path)
@@ -2676,6 +3574,26 @@ impl Script {
                 Some(key) => ScriptStep::Input(vec![Input::Key { key, mods: Mod::NOMOD, repeat: true }]),
                 None => ScriptStep::Idle,
             };
+        }
+        // pad:a (press and release a gamepad button), stick:x:y (hold the stick; stick:0:0 lets go).
+        if let Some(name) = tok.strip_prefix("pad:") {
+            return match harbour_shell::launcher::osk::Pad::from_name(name) {
+                Some(pad) => {
+                    self.resume = Instant::now() + Duration::from_millis(60);
+                    ScriptStep::Input(vec![Input::Pad { pad, down: true }, Input::Pad { pad, down: false }])
+                }
+                None => {
+                    eprintln!("script: unknown key {tok:?}");
+                    ScriptStep::Idle
+                }
+            };
+        }
+        if let Some(rest) = tok.strip_prefix("stick:") {
+            let v: Vec<i16> = rest.split(':').filter_map(|p| p.parse().ok()).collect();
+            if let [x, y] = v[..] {
+                return ScriptStep::Input(vec![Input::Stick { x, y }]);
+            }
+            return ScriptStep::Idle;
         }
         if tok == "menu" {
             return ScriptStep::Input(vec![Input::Menu]);
@@ -2891,6 +3809,10 @@ fn screen_uses_tab(screen: &Screen) -> bool {
 
 /// Open or close the Agent panel (Tab Tab, Alt+Tab, Harbour menu > Agent). Off in Settings: a toast.
 fn toggle_agent(open: &mut bool, agent: &mut Option<Box<AgentApp>>, cfg: &Arc<Mutex<Config>>, toast: &mut Option<Toast>) {
+    if harbour_shell::rt::WEB {
+        *toast = Some(Toast { text: "No Agent in the web demo".to_string(), fraction: None, until: Instant::now() + Duration::from_millis(1500) });
+        return;
+    }
     if !*open && !agent::history::load_state(&agent::config::data_dir()).enabled {
         *toast = Some(Toast { text: "Agent is off (Settings)".to_string(), fraction: None, until: Instant::now() + Duration::from_millis(1500) });
         return;

@@ -17,6 +17,26 @@ PALETTES = {
     "mobile": ("Mobile", ["#0C1511", "#2A4B3D", "#7E955B", "#B1C594", "#EBEEC0"]),
     # phosphor green: Invert gives the classic green-on-black terminal look
     "terminal": ("Terminal", ["#010A02", "#0B3D1A", "#1FA043", "#59F07F", "#D3FFDF"]),
+    # Grey panels (HARBOUR_PANEL=gray or an 8-bit grey driver): five greys. Not offered on colour screens.
+    "gray": ("Gray", ["#000000", "#404040", "#808080", "#C0C0C0", "#FFFFFF"]),
+    # Black-and-white panels (Sharp memory LCDs): the panel shows black, white and an ordered dither
+    # for the tones between (platform::display::tone). Text and rules are solid black, the paper
+    # solid white; plates and the desk are light dithers. Not offered on colour screens.
+    "mono": ("1-bit", ["#000000", "#000000", "#9A9A9A", "#E4E4E4", "#FFFFFF"]),
+}
+
+# Roles that differ from the five-tone rules: on a 1-bit panel text in a mid tone would break up in
+# the dither, so every text and rule role is the ink; the selection is inverted (black plate).
+MONO_ROLES = {
+    "secondary": "black",
+    "muted": "black",
+    "line": "black",
+    "text_faint": "black",
+    "widget_outline_dim": "black",
+    "titlebar_stripe_a": "black",
+    "select_bg": "black",
+    "select_fg": "white",
+    "tile_sel_bg": "mid",
 }
 
 
@@ -77,6 +97,12 @@ def theme(name, title, tones, invert):
         f'  tile_sel_bg: "{muted}"   # Home: the selected tile is only a mid-tone plate; icon and name keep their colours',
         f'  tile_sel_fg: "{ink}"',
     ]
+    if name == "mono":
+        tone = {"black": black, "white": white, "mid": b}
+        for i, l in enumerate(lines):
+            key = l.strip().split(":")[0]
+            if key in MONO_ROLES:
+                lines[i] = f'  {key}: "{tone[MONO_ROLES[key]]}"'
     return n, "\n".join(lines) + "\n"
 
 

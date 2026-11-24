@@ -158,6 +158,81 @@ composing it takes Esc and Tab (Tab commits), so the host's Tab gestures and the
 
 Gesture code: `platform::keys::{TabGesture, HoldKey, DoubleTap}` (unit tests there); end-to-end checks in `tests/keymap_headless.rs`.
 
+## Desk: bigger screens (`src/launcher/desk.rs`)
+Harbour is drawn for the Cardputer Zero's 320 x 170. On a bigger screen (`HARBOUR_SCREEN=WxH`) the host shows a
+**desk** instead of one full-screen app. On 320 x 170 there is no desk and nothing changes.
+* **Home is the desk.** Its icons stand on the desk's background in columns from the right edge, top to bottom (each
+  name on a small paper plate); Up/Down move in a column, Left/Right to the next column. A press on the empty desk gives
+  Home the keyboard. There is no list view and no scrolling on the desk.
+* **The desk's strip is the menu bar.** The anchor (Harbour menu), the focused screen's name (its app menu) and the
+  status icons; menus drop from it. It belongs to the focused window, or to Home. Each status item opens its own
+  menu: the clock (date, World Clock, Calendar, Timer), the battery (Monitor, System settings), the network (Wi-Fi on /
+  off, Network settings, Interceptor), the internet (Browser, Infoscope), the speaker (louder, quieter, mute, Sound
+  settings) and the input method (Japanese / English, Hiragana / Katakana). (On the Cardputer Zero's strip too.)
+* **Every other screen is a window.** An app opened from Home gets one, zooming out of its icon (cascading 16 px right
+  and down); going back to Home (Quit, Esc held, the close box) closes it, zooming back into the icon, and the window
+  under it takes the focus. A window's top 16 px row is its **title bar**: a close box at the left and the name in the
+  middle, with a 1 px dither band either side of the name while it has the focus (the close box shows a cross under
+  the pointer; a click on the bar opens the window's menu where it was clicked, as do the desk strip's menus); a flexible window shows a small
+  solid triangle in its bottom-right corner, where it is resized from. Windows have a 1 px frame and a 1 px shadow.
+* **Two kinds of app** (`LauncherApp::sizing`):
+  * `Fixed` (the default): drawn pixel by pixel for 320 x 170, always that size. Calculator, World Clock, Timer, Snake,
+    Radio, Camera, Monitor, Music, Voice Memo.
+  * `Flexible`: laid out from the surface (`grid::sw()` / `grid::sh()`, `grid::scroll_x()`, `grid::frame_bottom()`,
+    `grid::app_frame()`...), never under 320 x 170. They open at about two thirds of the desk and resize from the
+    window's bottom-right corner. Browser, Calendar, Infoscope, Interceptor, Files, Sheet, Images, Paint (the sheet's view fills the
+    window), Settings, Text Editor, Terminal.
+  * Rule for a flexible app: anything that depends on the screen size is computed when drawing or handling input
+    (a small `fn`, not a `const`); at 320 x 170 it gives exactly the old numbers.
+* **Pointer:** a press on a window behind brings it to the front (that press only focuses). Drag a window by its title
+  bar; drag the bottom-right corner of a flexible window to resize it. Windows stay on the desk.
+* **Keys** go to the focused window (or Home). Ctrl+` steps through the windows and Home.
+* Windows behind keep running (they are ticked and redrawn), so a clock or a graph stays live.
+* Help (Harbour menu) opens in a window of its own beside the screen it explains (`help::HelpApp`, flexible); a short
+  Esc closes it (`LauncherApp::esc_closes`). On the Cardputer Zero it stays the full-screen overlay.
+
+## Other screens (`src/platform/display.rs`)
+Harbour runs on any Linux device with a DRM (or 16-bit fbdev) screen; the picture is still drawn in Harbour pixels.
+* **Scale.** The panel's size and physical size give a whole-number scale, so a Harbour pixel comes out about 1/160"
+  (without the physical size: one per 360 panel rows), never leaving less than 320 x 170 (`choose_scale`). The picture
+  is centred on the panel with black around it. `HARBOUR_SCALE` forces the scale, `HARBOUR_ROTATE=90|180|270` turns it
+  for a panel mounted on its side.
+* **Mode** (from the picture size): exactly 320 x 170 = the Cardputer Zero, one full-screen app; 560 x 300 or more =
+  the **desk** (above); anything between = **full**: one screen at a time over the whole picture: Home's grid gets more
+  columns and rows, a flexible app the whole picture, a fixed one sits in the middle at 320 x 170.
+  `HARBOUR_MODE=desk|full` forces one.
+* **Grey and black-and-white panels.** A driver that only takes 8-bit grey, or a Sharp memory LCD (and kin), gets the
+  Gray or 1-bit theme (`assets/themes/theme-gray.yaml`, `theme-mono.yaml`; the colour themes are not offered; Invert
+  still works). A 1-bit panel is sent black and white: dark tones solid black, light tones solid white, the tones
+  between an ordered dither (`display::tone`), so text and rules stay whole. `HARBOUR_PANEL=color|gray|mono` overrides
+  the guess (also for headless screenshots).
+* Examples (by their published specs): uConsole 1280 x 720 at 2x = 640 x 360, desk; DevTerm 1280 x 480 at 1x, desk;
+  HackberryPi 720 x 720 at 2x = 360 x 360, full; Beepy 400 x 240 1-bit, full; an HDMI monitor, desk.
+
+## Gamepad and on-screen keyboard (`src/platform/gamepad.rs`, `src/launcher/osk.rs`)
+For handhelds with only a gamepad (Anbernic and kin) and for USB / Bluetooth pads (SDL's game controllers in a desktop
+window). `HARBOUR_PAD_LAYOUT=nintendo` takes the right face button as A (default: the bottom one).
+* The left stick moves the pointer (a dead zone, then faster the further it is pushed). While the pointer shows (3 s
+  after the stick last moved) A clicks; otherwise A is Return. The stick pressed in clicks, Y right-clicks (context menu).
+* D-pad = arrows, B = Esc (held: leave the app), L / R = previous / next tab, Start = app menu, Select = Harbour menu,
+  X = the on-screen keyboard.
+* **On-screen keyboard:** four rows of 16 px keys across the bottom and nothing else (71 px; space, return, delete and
+  the arrows are the gamepad's buttons). Pages, X in turn: lower case, upper case, symbols with Japanese punctuation,
+  kana (Japanese input goes on with the kana page and off after it). The d-pad walks the keys, A types, B deletes,
+  L / R move the text cursor, Y is a space, Start is Return, Select closes it; a click on a key types it. A screen that
+  lays itself out (and Home) ends above the keyboard while it is open, so nothing is hidden behind it (the surface may
+  then be as low as `grid::MIN_SURFACE_H`); a fixed-size screen is just covered. The gamepad and keyboard keys are in
+  Help. Letters go out as a key and its text like a real keyboard's, so romaji becomes kana when
+  Japanese input is on; what is being composed shows just above the keyboard. Labels are centred inside their line.
+* **Kana page:** the twelve-key layout of handheld consoles, あ か さ / た な は / ま や ら / ゛゜小 わ(をんー)
+  、。？(！「」・), three keys per row on six of the ten columns. The other four show the column of the key: where the tapping is, dark on a plate, the rest faint
+  (あ い **う** え お after three presses). Pressing the same key again (without moving) steps through its column (か き
+  く け こ); ゛゜小 turns the last kana into its voiced, half-voiced
+  or small form (か が, は ば ぱ, つ っ づ). Kana go out as their romaji, so the input method composes them and Space
+  (Y) converts as usual.
+* Script tokens: `pad:a` (up, down, left, right, a, b, x, y, l, r, start, select, stick), `stick:x:y` (-1000..1000;
+  `stick:0:0` lets go).
+
 ## App contract (`src/launcher/app.rs`)
 * Esc short = back (closes a dialog or page); it does not leave the app from the top level. Esc long (0.9 s) = leave from anywhere, with a gauge; the menu's Quit does the same.
 * Alt tapped alone = app menu (Sym/Shift/Fn are hardware toggles) (entries + "Quit"); Ctrl+Tab also works. Right click = same menu. A single Tab and a short Esc stay free for apps (see Keys above); an app that uses Tab says so with `wants_tab`.

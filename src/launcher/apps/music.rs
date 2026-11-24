@@ -8,6 +8,10 @@
 //! List: Up/Down select, Enter plays, Esc quits (and stops). Now Playing:
 //! Space or Enter pause, Left/Right previous/next, Esc back to the list (the
 //! music keeps playing). Volume stays on the host media keys.
+//!
+//! E (or the menu) opens the equalizer ([`music_eq`]): five bands and presets, kept in the
+//! config file. ffplay cannot change its filters while it runs, so a change restarts it at the
+//! current position once the knobs have been still for a moment.
 
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -29,7 +33,9 @@ use crate::grid;
 use crate::launcher::app::{AppAction, Ctx, LauncherApp};
 use crate::launcher::apps::tone;
 use crate::launcher::widgets::{self, contains, MenuItem, PointerEvent, SbPart, ScrollBar};
+use crate::launcher::apps::music_eq::{self, Eq};
 use crate::platform::keys::arrow_alias;
+use crate::system::config::{self, Config};
 use crate::ui;
 
 pub const EXTENSIONS: [&str; 5] = ["mp3", "flac", "ogg", "wav", "m4a"];
@@ -53,7 +59,8 @@ pub trait Proc {
 
 /// How tracks are played and measured; replaced by a mock in tests.
 pub trait Audio {
-    fn spawn(&self, path: &Path) -> Result<Box<dyn Proc>, String>;
+    /// Play `path` from `from`, through the ffmpeg filter chain `af` when there is one.
+    fn spawn(&self, path: &Path, from: Duration, af: Option<&str>) -> Result<Box<dyn Proc>, String>;
     fn duration(&self, path: &Path) -> Option<Duration>;
 }
 
@@ -111,11 +118,18 @@ impl Drop for FfProc {
 }
 
 impl Audio for Ffplay {
-    fn spawn(&self, path: &Path) -> Result<Box<dyn Proc>, String> {
+    fn spawn(&self, path: &Path, from: Duration, af: Option<&str>) -> Result<Box<dyn Proc>, String> {
         // `-loglevel info` makes ffplay print its status line on stderr; the first line with a
         // real clock value means the audio is running.
-        let mut child = Command::new("ffplay")
-            .args(["-nodisp", "-autoexit", "-loglevel", "info"])
+        let mut cmd = Command::new("ffplay");
+        cmd.args(["-nodisp", "-autoexit", "-loglevel", "info"]);
+        if !from.is_zero() {
+            cmd.arg("-ss").arg(format!("{:.3}", from.as_secs_f64()));
+        }
+        if let Some(af) = af {
+            cmd.arg("-af").arg(af);
+        }
+        let mut child = cmd
             .arg(path)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -954,15 +968,20 @@ pub struct Timeline {
     started: Instant,
     paused_total: Duration,
     paused_at: Option<Instant>,
+    /// Where in the track the clock started (a restart part-way through).
+    offset: Duration,
 }
 
 impl Timeline {
     pub fn new(now: Instant) -> Self {
-        Timeline { started: now, paused_total: Duration::ZERO, paused_at: None }
+        Self::starting_at(now, Duration::ZERO)
+    }
+    pub fn starting_at(now: Instant, offset: Duration) -> Self {
+        Timeline { started: now, paused_total: Duration::ZERO, paused_at: None, offset }
     }
     pub fn elapsed(&self, now: Instant) -> Duration {
         let end = self.paused_at.unwrap_or(now);
-        end.saturating_duration_since(self.started).saturating_sub(self.paused_total)
+        self.offset + end.saturating_duration_since(self.started).saturating_sub(self.paused_total)
     }
     pub fn pause(&mut self, now: Instant) {
         self.paused_at.get_or_insert(now);
@@ -995,13 +1014,21 @@ struct Playing {
     total: Option<Duration>,
     /// Audio is really running (until then: "Starting..." and the clock does not run).
     ready: bool,
+    /// Where in the track this process started.
+    from: Duration,
+    /// The equalizer this process plays with.
+    eq: Eq,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Screen {
     List,
     Now,
+    Eq,
 }
+
+/// How long the EQ knobs must be still before ffplay is restarted with the new filters.
+const EQ_SETTLE: Duration = Duration::from_millis(450);
 
 pub struct Music {
     audio: Box<dyn Audio>,
@@ -1027,6 +1054,15 @@ pub struct Music {
     disk: Option<PathBuf>,
     // The library loading in the background (None when finished).
     loader: Option<(Receiver<library::LoadMsg>, Arc<library::Progress>)>,
+    // Equalizer: the settings, when they last changed, unsaved, and the EQ screen's state.
+    eq: Eq,
+    eq_changed: Option<Instant>,
+    eq_dirty: bool,
+    cfg_path: Option<PathBuf>,
+    /// 0 = the preset row, 1..=5 = the bands.
+    eq_focus: usize,
+    eq_back: Screen,
+    eq_drag: Option<usize>,
 }
 
 pub fn make() -> Box<dyn LauncherApp> {
@@ -1043,6 +1079,7 @@ pub fn make() -> Box<dyn LauncherApp> {
     m.async_meta = true;
     m.audio = Box::new(Ffplay { min_start: if mock { Duration::from_millis(3000) } else { Duration::ZERO } });
     m.mock = mock;
+    m.use_config(config::default_path());
     Box::new(m)
 }
 
@@ -1058,7 +1095,104 @@ impl Music {
     pub fn new(audio: Box<dyn Audio>, tracks: Vec<Track>) -> Self {
         Music { audio, tracks, cursor: 0, scroll: 0, screen: Screen::List, playing: None, error: None, sb_drag: false,
             cache: Default::default(), mock: false, async_meta: false, rx: None, dur_rx: None, born: Instant::now(), serial: 0, meta: None, art_runs: None, _img: None,
-            cover_stage: Default::default(), disk: None, loader: None }
+            cover_stage: Default::default(), disk: None, loader: None,
+            eq: Eq::default(), eq_changed: None, eq_dirty: false, cfg_path: None, eq_focus: 1, eq_back: Screen::List, eq_drag: None }
+    }
+
+    /// Read the equalizer from the config file and save changes there.
+    pub fn use_config(&mut self, path: PathBuf) {
+        self.eq = Eq::load(&Config::load(path.clone()));
+        self.cfg_path = Some(path);
+    }
+
+    fn save_eq(&mut self) {
+        if !self.eq_dirty {
+            return;
+        }
+        self.eq_dirty = false;
+        let Some(p) = self.cfg_path.clone() else { return };
+        let mut cfg = Config::load(p);
+        self.eq.store(&mut cfg);
+        let _ = cfg.save(); // a read-only or foreign config is left alone
+    }
+
+    fn set_eq(&mut self, e: Eq, now: Instant) {
+        if e != self.eq {
+            self.eq = e;
+            self.eq_changed = Some(now);
+            self.eq_dirty = true;
+        }
+    }
+
+    fn nudge_band(&mut self, band: usize, delta: i32, now: Instant) {
+        let mut e = self.eq;
+        e.set(band, e.gains[band] as i32 + delta);
+        self.set_eq(e, now);
+    }
+
+    /// Step through the presets (from Custom: to the nearest one in that direction).
+    fn cycle_preset(&mut self, delta: isize, now: Instant) {
+        let n = music_eq::PRESETS.len() as isize;
+        let next = match self.eq.preset() {
+            Some(i) => (i as isize + delta).rem_euclid(n),
+            None if delta > 0 => 0,
+            None => n - 1,
+        };
+        self.set_eq(Eq { gains: music_eq::PRESETS[next as usize].1 }, now);
+    }
+
+    fn open_eq(&mut self) {
+        if self.screen != Screen::Eq {
+            self.eq_back = self.screen;
+            self.screen = Screen::Eq;
+        }
+    }
+
+    fn close_eq(&mut self) {
+        self.screen = self.eq_back;
+        self.eq_drag = None;
+        self.save_eq();
+    }
+
+    /// Restart the playing track at its position when the equalizer has changed and been still
+    /// for [`EQ_SETTLE`]. True when it restarted.
+    fn apply_eq(&mut self, now: Instant) -> bool {
+        let Some(changed) = self.eq_changed else { return false };
+        if now.saturating_duration_since(changed) < EQ_SETTLE {
+            return false;
+        }
+        self.eq_changed = None;
+        let eq = self.eq;
+        let Some(p) = &mut self.playing else { return false };
+        if p.eq == eq {
+            return false;
+        }
+        let at = if p.ready { p.time.elapsed(now) } else { p.from };
+        let at = p.total.map_or(at, |t| at.min(t));
+        let path = self.tracks[p.index].path.clone();
+        match self.audio.spawn(&path, at, eq.ffmpeg_filter().as_deref()) {
+            Ok(mut proc) => {
+                p.proc.stop();
+                let paused = p.time.paused();
+                if paused {
+                    proc.pause();
+                }
+                p.proc = proc;
+                p.from = at;
+                p.eq = eq;
+                // The old sound stops now; the clock waits for the new one but shows `at`.
+                p.ready = false;
+                p.time = Timeline::starting_at(now, at);
+                if paused {
+                    p.time.pause(now);
+                }
+                true
+            }
+            Err(e) => {
+                self.error = Some(e);
+                true
+            }
+        }
     }
 
     fn follow(&mut self) {
@@ -1074,11 +1208,13 @@ impl Music {
     fn play(&mut self, index: usize, now: Instant) {
         self.stop();
         let Some(t) = self.tracks.get(index) else { return };
-        match self.audio.spawn(&t.path) {
+        let eq = self.eq;
+        match self.audio.spawn(&t.path, Duration::ZERO, eq.ffmpeg_filter().as_deref()) {
             Ok(proc) => {
                 // The real ffprobe takes over a second: it runs on a thread when async_meta is on.
                 let total = if self.async_meta { None } else { self.audio.duration(&t.path) };
-                self.playing = Some(Playing { index, proc, time: Timeline::new(now), total, ready: false });
+                self.eq_changed = None;
+                self.playing = Some(Playing { index, proc, time: Timeline::new(now), total, ready: false, from: Duration::ZERO, eq });
                 self.error = None;
                 self.start_meta(index);
             }
@@ -1221,7 +1357,7 @@ impl Music {
                 // Sound starts now: the elapsed time counts from here.
                 p.ready = true;
                 let was_paused = p.time.paused();
-                p.time = Timeline::new(now);
+                p.time = Timeline::starting_at(now, p.from);
                 if was_paused {
                     p.time.pause(now);
                 }
@@ -1232,7 +1368,11 @@ impl Music {
         let (idx, last) = (p.index, p.index + 1 >= self.tracks.len());
         if last {
             self.stop();
-            self.screen = Screen::List;
+            if self.screen == Screen::Now {
+                self.screen = Screen::List;
+            } else {
+                self.eq_back = Screen::List;
+            }
         } else {
             self.cursor = idx + 1;
             self.follow();
@@ -1257,6 +1397,7 @@ impl Music {
 
 impl Drop for Music {
     fn drop(&mut self) {
+        self.save_eq();
         self.stop();
     }
 }

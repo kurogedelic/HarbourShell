@@ -46,6 +46,20 @@ pub fn global_rows() -> Vec<HelpRow> {
         HelpRow::Section("Tabbed screens".into()),
         k("Tab / Shift+Tab", "Next / previous tab"),
         k("Left / Right", "Next / previous tab"),
+        HelpRow::Section("Gamepad".into()),
+        k("Stick", "Pointer"),
+        k("A", "Return; click while the pointer shows"),
+        k("B", "Back (hold: Home)"),
+        k("Y", "Right click"),
+        k("L / R", "Previous / next tab"),
+        k("Start / Select", "App menu / Harbour menu"),
+        k("X", "On-screen keyboard"),
+        HelpRow::Section("On-screen keyboard".into()),
+        k("D-pad, A", "Choose a key, type it"),
+        k("B / Y", "Delete / space"),
+        k("L / R", "Move the text cursor"),
+        k("X", "Next page (kana last)"),
+        k("Start / Select", "Return / close"),
         HelpRow::Section("Mouse".into()),
         k("Click", "Select; double click opens"),
         k("Right click", "App menu"),
@@ -57,6 +71,8 @@ pub struct HelpView {
     pub title: String,
     rows: Vec<HelpRow>,
     scroll: usize,
+    /// The "Help  <screen>" band above the rows (in a window the title bar says it already).
+    band: bool,
 }
 
 const ROW: i32 = 16;
@@ -64,19 +80,7 @@ const TOP: i32 = grid::BAR_H;
 const KEY_W: i32 = 112;
 
 fn body_rect() -> Rect {
-    Rect::new(0, TOP, grid::SCREEN_W as u32, (grid::APP_FRAME_BOTTOM + 1 - TOP) as u32)
-}
-
-fn list_top() -> i32 {
-    TOP + ROW
-}
-
-fn visible() -> usize {
-    ((grid::APP_FRAME_BOTTOM + 1 - list_top()) / ROW) as usize
-}
-
-fn sb_rect() -> Rect {
-    Rect::new(grid::SCROLL_X, list_top() + 1, grid::SCROLL_W as u32, (grid::APP_FRAME_BOTTOM - list_top() - 1) as u32)
+    Rect::new(0, TOP, grid::sw() as u32, (grid::frame_bottom() + 1 - TOP) as u32)
 }
 
 impl HelpView {
@@ -88,7 +92,20 @@ impl HelpView {
             rows.extend(app_rows.into_iter().map(|(a, b)| HelpRow::Key(a, b)));
         }
         rows.extend(global_rows());
-        Self { title: app.to_string(), rows, scroll: 0 }
+        Self { title: app.to_string(), rows, scroll: 0, band: true }
+    }
+
+    fn list_top(&self) -> i32 {
+        TOP + if self.band { ROW } else { 2 }
+    }
+
+    fn visible(&self) -> usize {
+        ((grid::frame_bottom() + 1 - self.list_top()) / ROW) as usize
+    }
+
+    fn sb_rect(&self) -> Rect {
+        let top = self.list_top();
+        Rect::new(grid::scroll_x(), top + 1, grid::SCROLL_W as u32, (grid::frame_bottom() - top - 1) as u32)
     }
 
     pub fn rows(&self) -> &[HelpRow] {
@@ -96,7 +113,7 @@ impl HelpView {
     }
 
     fn max_scroll(&self) -> usize {
-        self.rows.len().saturating_sub(visible())
+        self.rows.len().saturating_sub(self.visible())
     }
 
     fn scroll_by(&mut self, d: isize) {
@@ -109,8 +126,8 @@ impl HelpView {
             Keycode::Escape | Keycode::Return | Keycode::KpEnter => return true,
             Keycode::Up => self.scroll_by(-1),
             Keycode::Down => self.scroll_by(1),
-            Keycode::PageUp | Keycode::Left => self.scroll_by(-(visible() as isize)),
-            Keycode::PageDown | Keycode::Right | Keycode::Space => self.scroll_by(visible() as isize),
+            Keycode::PageUp | Keycode::Left => self.scroll_by(-(self.visible() as isize)),
+            Keycode::PageDown | Keycode::Right | Keycode::Space => self.scroll_by(self.visible() as isize),
             Keycode::Home => self.scroll = 0,
             Keycode::End => self.scroll = self.max_scroll(),
             _ => {}
@@ -124,7 +141,7 @@ impl HelpView {
 
     /// A press: the scroll bar pages / jumps; elsewhere nothing (Esc or Return closes).
     pub fn click(&mut self, x: i32, y: i32) {
-        let sb = ScrollBar::new(sb_rect(), self.rows.len(), visible(), self.scroll);
+        let sb = ScrollBar::new(self.sb_rect(), self.rows.len(), self.visible(), self.scroll);
         if let Some((off, _)) = sb.press(x, y) {
             self.scroll = off.min(self.max_scroll());
         }
@@ -136,14 +153,20 @@ impl HelpView {
         let band = tm.get_color("line");
         ui::fill_rect(c, body_rect(), tm.get_color("home_bg"));
         // Title band.
-        let t = Rect::new(grid::MARGIN, TOP, (grid::SCREEN_W - 2 * grid::MARGIN) as u32, ROW as u32);
-        ui::fill_rect(c, t, band);
-        ui::line(c, t.x(), t.bottom() - 1, t.right() - 1, t.bottom() - 1, ink);
-        let title = format!("{}  {}", i18n::tr("Help"), i18n::tr_s(&self.title));
-        fs.draw_text(c, t.x() + 4, t.y() + 2, &chrome::fit_text(fs, &title, t.width() as i32 - 8), ink);
-        let w = grid::SCROLL_X - 4 - grid::MARGIN;
-        for (k, row) in self.rows.iter().skip(self.scroll).take(visible()).enumerate() {
-            let r = Rect::new(grid::MARGIN, list_top() + k as i32 * ROW, w as u32, ROW as u32);
+        if self.band {
+            let t = Rect::new(grid::MARGIN, TOP, (grid::sw() - 2 * grid::MARGIN) as u32, ROW as u32);
+            ui::fill_rect(c, t, band);
+            ui::line(c, t.x(), t.bottom() - 1, t.right() - 1, t.bottom() - 1, ink);
+            let title = format!("{}  {}", i18n::tr("Help"), i18n::tr_s(&self.title));
+            fs.draw_text(c, t.x() + 4, t.y() + 2, &chrome::fit_text(fs, &title, t.width() as i32 - 8), ink);
+        } else {
+            // In a window: the rows' frame gets its top line instead.
+            let w = grid::scroll_x() - 4 - grid::MARGIN;
+            ui::line(c, grid::MARGIN, self.list_top() - 1, grid::MARGIN + w - 1, self.list_top() - 1, band);
+        }
+        let w = grid::scroll_x() - 4 - grid::MARGIN;
+        for (k, row) in self.rows.iter().skip(self.scroll).take(self.visible()).enumerate() {
+            let r = Rect::new(grid::MARGIN, self.list_top() + k as i32 * ROW, w as u32, ROW as u32);
             match row {
                 HelpRow::Section(s) => {
                     ui::fill_rect(c, r, tm.get_color("surface_alt"));
@@ -158,11 +181,64 @@ impl HelpView {
             ui::line(c, r.x(), r.bottom() - 1, r.right() - 1, r.bottom() - 1, band);
         }
         // Frame sides and bottom, like the framed app screens.
-        let f = Rect::new(grid::MARGIN, list_top(), w as u32, (grid::APP_FRAME_BOTTOM + 1 - list_top()) as u32);
+        let f = Rect::new(grid::MARGIN, self.list_top(), w as u32, (grid::frame_bottom() + 1 - self.list_top()) as u32);
         ui::line(c, f.x(), f.y(), f.x(), f.bottom() - 1, band);
         ui::line(c, f.right() - 1, f.y(), f.right() - 1, f.bottom() - 1, band);
         ui::line(c, f.x(), f.bottom() - 1, f.right() - 1, f.bottom() - 1, band);
-        ScrollBar::new(sb_rect(), self.rows.len(), visible(), self.scroll).draw(c, tm, None);
+        ScrollBar::new(self.sb_rect(), self.rows.len(), self.visible(), self.scroll).draw(c, tm, None);
+    }
+}
+
+/// Help as an app of its own: on a desk it opens in a window, beside the screen it explains.
+pub struct HelpApp {
+    view: HelpView,
+}
+
+impl HelpApp {
+    pub fn new(app: &str, app_rows: Vec<(String, String)>) -> Self {
+        let mut view = HelpView::new(app, app_rows);
+        view.band = false;
+        Self { view }
+    }
+}
+
+impl crate::launcher::app::LauncherApp for HelpApp {
+    fn title(&self) -> String {
+        format!("{}: {}", i18n::tr("Help"), i18n::tr_s(&self.view.title))
+    }
+
+    fn key(&mut self, key: Keycode, _mods: sdl2::keyboard::Mod, _repeat: bool, _ctx: &crate::launcher::app::Ctx) -> crate::launcher::app::AppAction {
+        if self.view.key(crate::platform::keys::arrow_alias(key)) {
+            crate::launcher::app::AppAction::Quit
+        } else {
+            crate::launcher::app::AppAction::None
+        }
+    }
+
+    fn pointer(&mut self, ev: crate::launcher::widgets::PointerEvent, _ctx: &crate::launcher::app::Ctx) -> crate::launcher::app::AppAction {
+        use crate::launcher::widgets::PointerEvent;
+        match ev {
+            PointerEvent::Down { x, y, button: 0, .. } => self.view.click(x, y),
+            PointerEvent::Wheel { dy, .. } => self.view.wheel(dy),
+            _ => {}
+        }
+        crate::launcher::app::AppAction::None
+    }
+
+    fn esc_closes(&self) -> bool {
+        true
+    }
+
+    fn describe(&self) -> String {
+        format!("Help for {}: {} rows", self.view.title, self.view.rows().len())
+    }
+
+    fn sizing(&self) -> crate::launcher::app::Sizing {
+        crate::launcher::app::Sizing::Flexible
+    }
+
+    fn draw(&mut self, c: &mut Canvas<Window>, _assets: &mut crate::assets::AssetStore, ctx: &crate::launcher::app::Ctx) {
+        self.view.draw(c, ctx.fs, ctx.tm);
     }
 }
 
@@ -203,11 +279,11 @@ mod tests {
         h.key(Keycode::Up);
         assert_eq!(h.scroll, 0);
         h.key(Keycode::End);
-        assert_eq!(h.scroll, h.rows.len() - visible());
+        assert_eq!(h.scroll, h.rows.len() - h.visible());
         h.key(Keycode::PageDown);
-        assert_eq!(h.scroll, h.rows.len() - visible());
+        assert_eq!(h.scroll, h.rows.len() - h.visible());
         h.wheel(1);
-        assert_eq!(h.scroll, h.rows.len() - visible() - 1);
+        assert_eq!(h.scroll, h.rows.len() - h.visible() - 1);
         assert!(!h.key(Keycode::Down));
         assert!(h.key(Keycode::Escape));
     }

@@ -44,9 +44,12 @@ const MAX_DEPTH: usize = 4;
 /// y 166 (the frame's bottom line is y 168, as on the other framed screens): (3, 19, 314, 148).
 pub const AREA_X: i32 = 3;
 pub const AREA_Y: i32 = grid::BAR_H + 3;
-pub const AREA_W: i32 = grid::SCREEN_W - 2 * AREA_X;
-pub const AREA_H: i32 = grid::APP_FRAME_BOTTOM - 1 - AREA_Y;
-
+pub fn area_w() -> i32 {
+    grid::sw() - 2 * AREA_X
+}
+pub fn area_h() -> i32 {
+    grid::frame_bottom() - 1 - AREA_Y
+}
 pub fn is_image(p: &Path) -> bool {
     p.extension().and_then(|e| e.to_str()).map(|e| EXTENSIONS.contains(&e.to_ascii_lowercase().as_str())).unwrap_or(false)
 }
@@ -131,7 +134,7 @@ pub struct Picture {
 
 /// Decode a file and scale it to fit the area.
 pub fn load(path: &Path) -> Result<Picture, String> {
-    from_surface(Surface::from_file(path)?, AREA_W as u32, AREA_H as u32)
+    from_surface(Surface::from_file(path)?, area_w() as u32, area_h() as u32)
 }
 
 /// Decode in-memory image data (an embedded cover) and scale it to fit `max_w` x `max_h`.
@@ -310,6 +313,10 @@ impl ImageViewer {
 }
 
 impl LauncherApp for ImageViewer {
+    fn sizing(&self) -> crate::launcher::app::Sizing {
+        crate::launcher::app::Sizing::Flexible
+    }
+
     fn help(&self) -> Vec<(String, String)> {
         let k = |a: &str, b: &str| (a.to_string(), b.to_string());
         vec![
@@ -408,9 +415,9 @@ impl LauncherApp for ImageViewer {
         match ev {
             PointerEvent::Wheel { dy, .. } => self.step(if dy > 0 { -1 } else { 1 }),
             PointerEvent::Down { x, y, button: 0, .. } if contains(grid::app_frame(), x, y) => {
-                if x < grid::SCREEN_W / 3 {
+                if x < grid::sw() / 3 {
                     self.step(-1)
-                } else if x >= grid::SCREEN_W * 2 / 3 {
+                } else if x >= grid::sw() * 2 / 3 {
                     self.step(1)
                 } else {
                     self.toggle_mono()
@@ -437,8 +444,8 @@ impl LauncherApp for ImageViewer {
         let ink = tm.get_color("foreground");
         let paper = if self.mono { tm.get_color("home_bg") } else { Color::RGB(0, 0, 0) };
         let faint = crate::launcher::widgets::secondary_ink(tm);
-        let area = Rect::new(AREA_X, AREA_Y, AREA_W as u32, AREA_H as u32);
-        ui::fill_rect(c, Rect::new(0, grid::BAR_H, grid::SCREEN_W as u32, (grid::SCREEN_H - grid::BAR_H) as u32), if self.mono { paper } else { tm.get_color("home_bg") });
+        let area = Rect::new(AREA_X, AREA_Y, area_w() as u32, area_h() as u32);
+        ui::fill_rect(c, Rect::new(0, grid::BAR_H, grid::sw() as u32, (grid::sh() - grid::BAR_H) as u32), if self.mono { paper } else { tm.get_color("home_bg") });
         grid::draw_app_frame(c, grid::app_frame().y(), ink, None);
 
         if self.files.is_empty() {
@@ -450,10 +457,10 @@ impl LauncherApp for ImageViewer {
         }
         match self.pic.as_ref().unwrap() {
             Err(e) => {
-                fs.draw_text(c, grid::MARGIN + 6, grid::BAR_H + grid::MARGIN + 4, &chrome::fit_text(fs, &crate::launcher::i18n::tr_s(&format!("Cannot open: {e}")), AREA_W - 20), faint);
+                fs.draw_text(c, grid::MARGIN + 6, grid::BAR_H + grid::MARGIN + 4, &chrome::fit_text(fs, &crate::launcher::i18n::tr_s(&format!("Cannot open: {e}")), area_w() - 20), faint);
             }
             Ok(p) => {
-                let (ox, oy) = (area.x() + (AREA_W - p.w as i32) / 2, area.y() + (AREA_H - p.h as i32) / 2);
+                let (ox, oy) = (area.x() + (area_w() - p.w as i32) / 2, area.y() + (area_h() - p.h as i32) / 2);
                 if self.runs.as_ref().map(|r| r.0) != Some(self.mono) {
                     self.runs = Some((self.mono, build_runs(p, self.mono, ox, oy)));
                 }
@@ -473,7 +480,7 @@ impl LauncherApp for ImageViewer {
         }
         if self.caption_until.is_some() {
             let name = self.files[self.index].file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-            let text = chrome::fit_text(fs, &format!("{}/{}  {}", self.index + 1, self.files.len(), name), AREA_W - 16);
+            let text = chrome::fit_text(fs, &format!("{}/{}  {}", self.index + 1, self.files.len(), name), area_w() - 16);
             let w = fs.measure_text(&text) + 8;
             let r = Rect::new(4, grid::CONTENT_BOTTOM - 20, w as u32, 16);
             ui::fill_rect(c, r, tm.get_color("home_bg"));
@@ -494,8 +501,8 @@ mod tests {
     fn the_picture_area_keeps_1_px_clear_of_the_frame_on_every_side() {
         let f = grid::app_frame_inner();
         let inset = Rect::new(f.x() + 1, f.y() + 1, f.width() - 2, f.height() - 2);
-        assert_eq!(inset, Rect::new(AREA_X, AREA_Y, AREA_W as u32, AREA_H as u32));
-        assert_eq!(AREA_Y + AREA_H, grid::APP_FRAME_BOTTOM - 1, "last row y 166, the frame's line on y 168");
+        assert_eq!(inset, Rect::new(AREA_X, AREA_Y, area_w() as u32, area_h() as u32));
+        assert_eq!(AREA_Y + area_h(), grid::frame_bottom() - 1, "last row y 166, the frame's line on y 168");
     }
 
     #[test]
@@ -571,7 +578,7 @@ mod tests {
         std::fs::write(&path, f).unwrap();
         let p = load(&path).unwrap();
         let _ = std::fs::remove_file(&path);
-        assert_eq!((p.w, p.h), (AREA_W as u32, 1));
+        assert_eq!((p.w, p.h), (area_w() as u32, 1));
         assert_eq!(&p.rgb[0..3], &[255, 0, 0], "left is red");
         assert_eq!(&p.rgb[(p.w as usize - 1) * 3..p.w as usize * 3], &[0, 0, 255], "right is blue");
     }

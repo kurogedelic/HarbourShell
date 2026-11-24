@@ -116,6 +116,18 @@ pub trait LauncherApp {
         false
     }
 
+    /// How the app's window may be sized on a desk (a screen bigger than 320 x 170). On the
+    /// Cardputer Zero every app is full screen and this is not asked.
+    fn sizing(&self) -> Sizing {
+        Sizing::Fixed
+    }
+
+    /// True for a screen a short Esc closes (Help in its window); an app's Esc-at-top-level Quit is
+    /// otherwise ignored (hold Esc or use the menu).
+    fn esc_closes(&self) -> bool {
+        false
+    }
+
     /// True for apps whose Tab key matters (the host then needs Ctrl+Tab for the menu).
     fn wants_tab(&self) -> bool {
         false
@@ -124,6 +136,15 @@ pub trait LauncherApp {
     /// Draw everything below the menu strip (the host draws the strip, the
     /// desktop backdrop, the app menu and toasts).
     fn draw(&mut self, c: &mut Canvas<Window>, assets: &mut AssetStore, ctx: &Ctx);
+}
+
+/// How an app's window may be sized on a desk ([`crate::launcher::desk`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Sizing {
+    /// Drawn pixel by pixel for 320 x 170 (it reads the `grid` constants): always that size.
+    Fixed,
+    /// Lays itself out from the surface (`grid::sw()` / `grid::sh()`): any size from 320 x 170 up.
+    Flexible,
 }
 
 /// A registered app: how to start it. Its name, Japanese name and icon live in its package,

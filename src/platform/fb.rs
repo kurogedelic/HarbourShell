@@ -139,6 +139,9 @@ impl crate::platform::display::Display for Framebuffer {
     fn taken_over(&self) -> bool {
         Framebuffer::taken_over(self)
     }
+    fn size(&self) -> (usize, usize) {
+        (self.width, self.height)
+    }
     fn backend(&self) -> &'static str {
         "fbdev"
     }

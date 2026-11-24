@@ -27,7 +27,7 @@ use crate::ui;
 
 /// Dim everything behind a dialog with a light dither.
 fn dim_backdrop(c: &mut Canvas<Window>, tm: &ThemeManager) {
-    let r = Rect::new(0, grid::BAR_H, grid::SCREEN_W as u32, (grid::SCREEN_H - grid::BAR_H) as u32);
+    let r = Rect::new(0, grid::BAR_H, grid::sw() as u32, (grid::sh() - grid::BAR_H) as u32);
     dither::fill(c, r, tm.get_color("widget_shadow"), Pattern::Eighth);
 }
 
@@ -41,7 +41,7 @@ fn frame(c: &mut Canvas<Window>, tm: &ThemeManager, r: Rect) {
 /// system icon is there (its 42 px would otherwise squeeze the text).
 fn alert_card(icon: AlertIcon, h: u32) -> Rect {
     let w = if sysicon::available(icon) { 304u32 } else { 272 };
-    Rect::new((grid::SCREEN_W as i32 - w as i32) / 2, grid::BAR_H + (grid::SCREEN_H - grid::BAR_H - h as i32) / 2, w, h)
+    Rect::new((grid::sw() as i32 - w as i32) / 2, grid::BAR_H + (grid::sh() - grid::BAR_H - h as i32) / 2, w, h)
 }
 
 fn card_icon(c: &mut Canvas<Window>, tm: &ThemeManager, r: Rect, icon: AlertIcon) -> i32 {
@@ -400,7 +400,7 @@ impl SavePanel {
     // ---- geometry (also used for clicks)
     fn panel_rect() -> Rect {
         let (w, h) = (292u32, 142u32);
-        Rect::new((grid::SCREEN_W as i32 - w as i32) / 2, grid::BAR_H + (grid::SCREEN_H - grid::BAR_H - h as i32) / 2, w, h)
+        Rect::new((grid::sw() as i32 - w as i32) / 2, grid::BAR_H + (grid::sh() - grid::BAR_H - h as i32) / 2, w, h)
     }
     fn name_rect(p: Rect) -> Rect {
         Rect::new(p.x() + 66, p.y() + 8, p.width() - 66 - 10, crate::launcher::widgets::FIELD_H as u32)
@@ -576,7 +576,7 @@ impl NamePrompt {
 
     fn card_rect() -> Rect {
         let (w, h) = (272u32, 88u32);
-        Rect::new((grid::SCREEN_W as i32 - w as i32) / 2, grid::BAR_H + (grid::SCREEN_H - grid::BAR_H - h as i32) / 2, w, h)
+        Rect::new((grid::sw() as i32 - w as i32) / 2, grid::BAR_H + (grid::sh() - grid::BAR_H - h as i32) / 2, w, h)
     }
 
     fn field_rect(r: Rect) -> Rect {
@@ -763,7 +763,7 @@ impl ListPicker {
 
     fn card_rect() -> Rect {
         let (w, h) = (240u32, 128u32);
-        Rect::new((grid::SCREEN_W as i32 - w as i32) / 2, grid::BAR_H + (grid::SCREEN_H - grid::BAR_H - h as i32) / 2, w, h)
+        Rect::new((grid::sw() as i32 - w as i32) / 2, grid::BAR_H + (grid::sh() - grid::BAR_H - h as i32) / 2, w, h)
     }
 
     fn list_rect(r: Rect) -> Rect {
@@ -969,7 +969,7 @@ mod tests {
     fn the_save_panel_has_16_px_rows_and_fits_on_the_screen() {
         let p = SavePanel::panel_rect();
         assert!(p.y() >= grid::BAR_H, "clear of the status bar");
-        assert!(p.bottom() + 1 <= grid::SCREEN_H, "panel and its 1 px shadow fit");
+        assert!(p.bottom() + 1 <= grid::sh(), "panel and its 1 px shadow fit");
         let l = SavePanel::list_rect(p);
         assert_eq!(l.height() as i32, ROWS as i32 * 16 + 2);
         let [cancel, _] = SavePanel::button_rects(p);
@@ -1111,7 +1111,7 @@ mod tests {
         // Wide with an icon, as before without: either way it fits on the screen with room to spare.
         let r = alert_card(AlertIcon::Caution, 92);
         assert!(r.width() == 272 || r.width() == 304);
-        assert!(r.x() >= 8 && r.right() <= grid::SCREEN_W - 8);
+        assert!(r.x() >= 8 && r.right() <= grid::sw() - 8);
     }
 
     #[test]

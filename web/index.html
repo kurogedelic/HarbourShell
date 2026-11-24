@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Harbour Shell</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  body { display: flex; align-items: center; justify-content: center; }
+  canvas { display: block; image-rendering: pixelated; image-rendering: crisp-edges; outline: none; }
+  #note { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+          color: #ccc; font: 13px/1.5 ui-monospace, Menlo, monospace; text-align: center; pointer-events: none; }
+</style>
+</head>
+<body>
+<canvas id="canvas" tabindex="0" oncontextmenu="event.preventDefault()"></canvas>
+<div id="note">Harbour Shell<br>loading…</div>
+<script>
+  // Keep the last frame readable (saving the canvas as a picture, automated checks).
+  var getContext = HTMLCanvasElement.prototype.getContext;
+  HTMLCanvasElement.prototype.getContext = function (kind, attrs) {
+    if (/webgl/.test(kind)) attrs = Object.assign({}, attrs, { preserveDrawingBuffer: true });
+    return getContext.call(this, kind, attrs);
+  };
+  var note = document.getElementById('note');
+  var canvas = document.getElementById('canvas');
+  var Module = {
+    canvas: canvas,
+    print: function (t) { console.log(t); },
+    printErr: function (t) { console.log(t); },
+    setStatus: function (t) { if (t) note.innerHTML = 'Harbour Shell<br>' + t.replace(/\(.*\)/, ''); },
+    onRuntimeInitialized: function () { note.style.display = 'none'; canvas.focus(); },
+    onAbort: function (w) { note.style.display = 'flex'; note.textContent = 'Harbour Shell stopped: ' + w; },
+  };
+  canvas.addEventListener('mousedown', function () { canvas.focus(); });
+  // The picture size is chosen when the page opens; after a big resize, start again at the new size.
+  var opened = [innerWidth, innerHeight], timer = 0;
+  addEventListener('resize', function () {
+    clearTimeout(timer);
+    timer = setTimeout(function () {
+      if (!new URLSearchParams(location.search).get('size') &&
+          (Math.abs(innerWidth - opened[0]) > 80 || Math.abs(innerHeight - opened[1]) > 80)) location.reload();
+    }, 600);
+  });
+</script>
+<script src="harbour-shell.js"></script>
+</body>
+</html>

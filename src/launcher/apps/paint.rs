@@ -43,21 +43,39 @@ const TOOL_ROWS: i32 = 6;
 /// Top of the tool strip (its cells start 1 px lower).
 const STRIP_Y: i32 = grid::BAR_H;
 /// The pattern swatch and the size / fill cells under the tools share what is left down to y 168
-/// (2 x 22 px), so the strip has no empty band at the bottom.
+/// on the 320 x 170 screen (2 x 22 px), so the strip has no empty band at the bottom there. It is
+/// worked out from the design height, not the window's: in a bigger window the cells keep their
+/// size and place, and only the sheet grows.
 const SWATCH_H: i32 = (grid::APP_FRAME_BOTTOM + 1 - (STRIP_Y + 1 + TOOL_ROWS * CELL_H)) / 2;
-/// The visible sheet sits inside a 1 px frame (`frame_rect`, x 39..312, y 17..162): 1 px right of
-/// the strip's rule (x 37), 1 px below the menu strip. Right of it the vertical scroll bar
-/// (x 315..318, y 18..161), under it the horizontal one
-/// (y 164..167, near the screen's bottom like the framed apps), each 1-2 px away from the line.
-/// The sheet's frame stays square: it does not reach the screen's corners.
+/// The visible sheet sits inside a 1 px frame (`frame_rect`, x 39..312, y 17..162 at 320 x 170):
+/// 1 px right of the strip's rule (x 37), 1 px below the menu strip. Right of it the vertical
+/// scroll bar (x 315..318, y 18..161), under it the horizontal one (y 164..167, near the screen's
+/// bottom like the framed apps), each 1-2 px away from the line. The sheet's frame stays square:
+/// it does not reach the screen's corners. The view's top-left corner is fixed; its size follows
+/// the surface (a window on a desk), so the bars and the view are small fns read at draw and
+/// input time alike.
 const VX: i32 = STRIP_W + 2;
 const VY: i32 = grid::BAR_H + 2;
-const VW: i32 = 272;
-const VH: i32 = 144;
-const VBAR_X: i32 = grid::SCREEN_W - 1 - grid::SCROLL_W;
+
+/// Left edge of the vertical scroll bar: 1 px in from the surface's right edge.
+fn vbar_x() -> i32 {
+    grid::sw() - 1 - grid::SCROLL_W
+}
+
+/// Width of the visible sheet: up to 2 px of gap and the frame before the vertical bar
+/// (272 at 320 x 170).
+fn vw() -> i32 {
+    vbar_x() - 3 - VX
+}
+
+/// Height of the visible sheet: the frame and 1 px of gap above the horizontal bar
+/// (144 at 320 x 170).
+fn vh() -> i32 {
+    Paint::hbar_rect().y() - 2 - VY
+}
 
 fn frame_rect() -> Rect {
-    Rect::new(VX - 1, VY - 1, (VW + 2) as u32, (VH + 2) as u32)
+    Rect::new(VX - 1, VY - 1, (vw() + 2) as u32, (vh() + 2) as u32)
 }
 const SIZES: [i32; 4] = [1, 2, 4, 6];
 const ZOOMS: [i32; 3] = [1, 2, 4];
@@ -249,7 +267,7 @@ impl Paint {
     // ------------------------------------------------------------------ view
 
     fn max_scroll(&self) -> (i32, i32) {
-        ((self.bm.w as i32 - VW / self.zoom).max(0), (self.bm.h as i32 - VH / self.zoom).max(0))
+        ((self.bm.w as i32 - vw() / self.zoom).max(0), (self.bm.h as i32 - vh() / self.zoom).max(0))
     }
 
     fn clamp_scroll(&mut self) {
@@ -262,10 +280,10 @@ impl Paint {
         if z == self.zoom || !ZOOMS.contains(&z) {
             return;
         }
-        let (cx, cy) = (self.sx + VW / (2 * self.zoom), self.sy + VH / (2 * self.zoom));
+        let (cx, cy) = (self.sx + vw() / (2 * self.zoom), self.sy + vh() / (2 * self.zoom));
         self.zoom = z;
-        self.sx = cx - VW / (2 * z);
-        self.sy = cy - VH / (2 * z);
+        self.sx = cx - vw() / (2 * z);
+        self.sy = cy - vh() / (2 * z);
         self.clamp_scroll();
     }
 
@@ -273,12 +291,16 @@ impl Paint {
         (self.sx + (x - VX).div_euclid(self.zoom), self.sy + (y - VY).div_euclid(self.zoom))
     }
 
-    fn in_view(x: i32, y: i32) -> bool {
-        contains(Rect::new(VX, VY, VW as u32, VH as u32), x, y)
+    /// The part of the view the sheet covers. In a big window (or with a small picture) the view can
+    /// be larger than the sheet; a press or a drag past the sheet's edge then stays on the sheet.
+    fn shown(&self) -> Rect {
+        let w = vw().min((self.bm.w as i32 - self.sx) * self.zoom).max(1);
+        let h = vh().min((self.bm.h as i32 - self.sy) * self.zoom).max(1);
+        Rect::new(VX, VY, w as u32, h as u32)
     }
 
     fn follow_cursor(&mut self) {
-        let (cw, ch) = (VW / self.zoom, VH / self.zoom);
+        let (cw, ch) = (vw() / self.zoom, vh() / self.zoom);
         let (cx, cy) = self.cursor;
         if cx < self.sx {
             self.sx = cx;
@@ -906,16 +928,16 @@ impl Paint {
     }
 
     fn vbar(&self) -> ScrollBar {
-        ScrollBar::new(Rect::new(VBAR_X, VY, grid::SCROLL_W as u32, VH as u32), self.bm.h, (VH / self.zoom) as usize, self.sy as usize)
+        ScrollBar::new(Rect::new(vbar_x(), VY, grid::SCROLL_W as u32, vh() as u32), self.bm.h, (vh() / self.zoom) as usize, self.sy as usize)
     }
 
     fn hbar_rect() -> Rect {
-        Rect::new(VX, grid::APP_FRAME_BOTTOM - 4, VW as u32, 4)
+        Rect::new(VX, grid::frame_bottom() - 4, vw() as u32, 4)
     }
 
     fn hbar_set(&mut self, x: i32) {
         let (mx, _) = self.max_scroll();
-        self.sx = ((x - VX) * mx / VW.max(1)).clamp(0, mx);
+        self.sx = ((x - VX) * mx / vw().max(1)).clamp(0, mx);
     }
 
     // ------------------------------------------------------------------ keyboard cursor
@@ -1068,6 +1090,11 @@ impl LauncherApp for Paint {
         false
     }
 
+    /// The tool strip keeps its place on the left; the sheet's view fills the rest of the window.
+    fn sizing(&self) -> crate::launcher::app::Sizing {
+        crate::launcher::app::Sizing::Flexible
+    }
+
     fn describe(&self) -> String {
         format!(
             "Paint: {} tool, pattern {}, {} x {} sheet, zoom {}x, {}{}",
@@ -1169,6 +1196,7 @@ impl LauncherApp for Paint {
     }
 
     fn pointer(&mut self, ev: PointerEvent, ctx: &Ctx) -> AppAction {
+        self.clamp_scroll();
         if self.modal.is_some() {
             if let PointerEvent::Down { x, y, button: 0, .. } = ev {
                 return self.modal_click(x, y, ctx);
@@ -1203,7 +1231,7 @@ impl LauncherApp for Paint {
                 } else if contains(Self::hbar_rect(), x, y) {
                     self.hbar = true;
                     self.hbar_set(x);
-                } else if Self::in_view(x, y) {
+                } else if contains(self.shown(), x, y) {
                     let p = self.to_sheet(x, y);
                     self.cursor = p;
                     self.begin(p);
@@ -1221,7 +1249,8 @@ impl LauncherApp for Paint {
                     self.sy -= dy / self.zoom;
                     self.clamp_scroll();
                 } else if self.stroke.is_some() {
-                    let p = self.to_sheet(x.clamp(VX, VX + VW - 1), y.clamp(VY, VY + VH - 1));
+                    let s = self.shown();
+                    let p = self.to_sheet(x.clamp(VX, s.right() - 1), y.clamp(VY, s.bottom() - 1));
                     self.cursor = p;
                     self.drag(p);
                 }
@@ -1249,6 +1278,9 @@ impl LauncherApp for Paint {
         let ink = tm.get_color("foreground");
         let paper = tm.get_color("home_bg");
         let ink_bit = self.ink();
+        // The window may have been resized since the last frame: a bigger view can show more of the
+        // sheet, so the scroll position is pulled back into range before anything is placed.
+        self.clamp_scroll();
 
         // Text is rasterised with the launcher's own font before anything else is painted.
         if let Some(t) = self.text.as_mut().filter(|t| t.dirty) {
@@ -1273,14 +1305,14 @@ impl LauncherApp for Paint {
         }
 
         // Backdrop and tool strip.
-        ui::fill_rect(c, Rect::new(0, grid::BAR_H, grid::SCREEN_W as u32, (grid::SCREEN_H - grid::BAR_H) as u32), paper);
+        ui::fill_rect(c, Rect::new(0, grid::BAR_H, grid::sw() as u32, (grid::sh() - grid::BAR_H) as u32), paper);
         self.draw_strip(c, ctx, assets, ink, paper);
         c.set_draw_color(ink);
-        let _ = c.draw_line((STRIP_W - 1, STRIP_Y + 1), (STRIP_W - 1, grid::APP_FRAME_BOTTOM));
+        let _ = c.draw_line((STRIP_W - 1, STRIP_Y + 1), (STRIP_W - 1, grid::frame_bottom()));
         ui::draw_rect(c, frame_rect(), ink);
 
         // The sheet.
-        let view = Rect::new(VX, VY, VW as u32, VH as u32);
+        let view = Rect::new(VX, VY, vw() as u32, vh() as u32);
         c.set_clip_rect(view);
         // The canvas is the theme's white (a lighter sheet than the desktop around it). Invert themes
         // lift "icon_white" to a dark tone; there the plain light tone is used.
@@ -1303,11 +1335,11 @@ impl LauncherApp for Paint {
         c.set_draw_color(ink);
         let _ = c.draw_rect(hb);
         let (mx, _) = self.max_scroll();
-        if mx > 0 {
-            let len = (VW * (VW / self.zoom) / self.bm.w as i32).clamp(8, VW);
-            let x = VX + (VW - len) * self.sx / mx;
-            ui::fill_rect(c, Rect::new(x, hb.y(), len as u32, 4), ink);
-        }
+        // When the whole width is in view (a big window or a narrow picture) the thumb fills the bar,
+        // as the vertical bar's does.
+        let len = (vw() * (vw() / self.zoom) / self.bm.w as i32).clamp(8, vw());
+        let x = if mx > 0 { VX + (vw() - len) * self.sx / mx } else { VX };
+        ui::fill_rect(c, Rect::new(x, hb.y(), len as u32, 4), ink);
 
         if self.popup.is_some() {
             self.draw_popup(c, ctx, ink, paper);
@@ -1338,9 +1370,9 @@ impl Paint {
 
     fn draw_sheet(&self, c: &mut Canvas<Window>, ink: Color, paper: Color, grid_col: Color) {
         let z = self.zoom;
-        let (cols, rows) = ((VW / z + 1).min(self.bm.w as i32 - self.sx), (VH / z + 1).min(self.bm.h as i32 - self.sy));
+        let (cols, rows) = ((vw() / z + 1).min(self.bm.w as i32 - self.sx), (vh() / z + 1).min(self.bm.h as i32 - self.sy));
         c.set_draw_color(paper);
-        let _ = c.fill_rect(Rect::new(VX, VY, VW as u32, VH as u32));
+        let _ = c.fill_rect(Rect::new(VX, VY, vw() as u32, vh() as u32));
         for ry in 0..rows {
             let sy = self.sy + ry;
             let mut rx = 0;
@@ -1365,11 +1397,11 @@ impl Paint {
         let (ex, ey) = (VX + (self.bm.w as i32 - self.sx) * z, VY + (self.bm.h as i32 - self.sy) * z);
         c.set_draw_color(ink);
         // They stop 1 px short of the view's edges so they never run into the frame.
-        if ex < VX + VW {
-            let _ = c.draw_line((ex, VY + 1), (ex, ey.min(VY + VH - 2)));
+        if ex < VX + vw() {
+            let _ = c.draw_line((ex, VY + 1), (ex, ey.min(VY + vh() - 2)));
         }
-        if ey < VY + VH {
-            let _ = c.draw_line((VX + 1, ey), (ex.min(VX + VW - 2), ey));
+        if ey < VY + vh() {
+            let _ = c.draw_line((VX + 1, ey), (ex.min(VX + vw() - 2), ey));
         }
     }
 
@@ -1582,8 +1614,76 @@ mod tests {
         assert_eq!(f.x(), STRIP_W + 1, "1 px right of the strip's rule");
         assert_eq!(hb.y(), f.bottom() + 1, "1 px under the sheet's frame");
         assert_eq!(hb.bottom(), grid::APP_FRAME_BOTTOM, "the bar's last row is y 167, above the framed apps' bottom line");
-        let vb = Rect::new(VBAR_X, VY, grid::SCROLL_W as u32, VH as u32);
+        let vb = Rect::new(vbar_x(), VY, grid::SCROLL_W as u32, vh() as u32);
         assert!(vb.x() >= f.right() + 2 && vb.bottom() <= grid::app_content().bottom(), "clear of the frame and of the horizontal bar");
+    }
+
+    #[test]
+    fn at_320_x_170_the_view_keeps_its_drawn_numbers() {
+        grid::with_surface((grid::SCREEN_W, grid::SCREEN_H), || {
+            assert_eq!((vw(), vh(), vbar_x()), (272, 144, 315));
+            assert_eq!(frame_rect(), Rect::new(39, 17, 274, 146));
+            assert_eq!(Paint::hbar_rect(), Rect::new(40, 164, 272, 4));
+            assert_eq!(SWATCH_H, 22);
+            let p = Paint::new(std::env::temp_dir());
+            assert_eq!(p.max_scroll(), (512 - 272, 342 - 144));
+            assert_eq!(p.shown(), Rect::new(VX, VY, 272, 144), "the default sheet covers the whole view");
+        });
+    }
+
+    #[test]
+    fn a_bigger_window_grows_the_view_and_keeps_the_strip() {
+        let small = grid::with_surface((grid::SCREEN_W, grid::SCREEN_H), || (tool_cell(11), pattern_cell(), fill_cell()));
+        grid::with_surface((640, 340), || {
+            assert_eq!((tool_cell(11), pattern_cell(), fill_cell()), small, "the cells keep their size and place");
+            assert_eq!((vw(), vh()), (640 - 48, 340 - 26));
+            let (f, hb) = (frame_rect(), Paint::hbar_rect());
+            assert_eq!(hb.y(), f.bottom() + 1);
+            assert_eq!(hb.bottom(), grid::frame_bottom());
+            assert!(vbar_x() >= f.right() + 2 && vbar_x() + grid::SCROLL_W < grid::sw());
+            // 592 px is wider than the 512 px sheet: no sideways scrolling, and the view only takes
+            // presses where the sheet is.
+            let p = Paint::new(std::env::temp_dir());
+            assert_eq!(p.max_scroll(), (0, 342 - 314));
+            assert_eq!(p.shown(), Rect::new(VX, VY, 512, 314));
+        });
+        // Big enough for the whole sheet: nothing scrolls, both bars show everything.
+        grid::with_surface((800, 480), || {
+            let p = Paint::new(std::env::temp_dir());
+            assert_eq!(p.max_scroll(), (0, 0));
+            assert!(!p.vbar().needed());
+            assert_eq!(p.shown(), Rect::new(VX, VY, 512, 342));
+        });
+    }
+
+    #[test]
+    fn in_a_big_window_drawing_and_scrolling_follow_the_bigger_view() {
+        grid::with_surface((800, 480), || {
+            run(|p, ctx| {
+                // A stroke near the sheet's far corner lands there, and a drag past the sheet's edge
+                // stops on it.
+                p.pointer(down(VX + 500, VY + 330), ctx);
+                p.pointer(drag(VX + 700, VY + 330), ctx);
+                p.pointer(up(VX + 700, VY + 330), ctx);
+                assert!(p.bm.get(500, 330) && p.bm.get(511, 330));
+                assert_eq!(p.bm.ink_count(), 12);
+                // A press beside the sheet (inside the view) draws nothing.
+                p.pointer(down(VX + 600, VY + 100), ctx);
+                p.pointer(up(VX + 600, VY + 100), ctx);
+                assert_eq!(p.bm.ink_count(), 12);
+                // At 2x the sheet no longer fits: the keyboard cursor scrolls it as far as the bigger
+                // view allows, and a window grown to fit the whole sheet then pulls the scroll back into range.
+                key(p, ctx, Keycode::Num2);
+                p.cursor = (511, 341);
+                p.kb_move(0, 0);
+                assert_eq!((p.sx, p.sy), (512 - vw() / 2, 342 - vh() / 2));
+                assert_eq!(p.to_sheet(VX + vw() - 1, VY + vh() - 1), (511, 341));
+                grid::with_surface((1200, 800), || {
+                    p.pointer(up(0, 0), ctx);
+                    assert_eq!((p.sx, p.sy), (0, 0));
+                });
+            });
+        });
     }
     use crate::font::FontSystem;
     use crate::system::mock::MockBackend;

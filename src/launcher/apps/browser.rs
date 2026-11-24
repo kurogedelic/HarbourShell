@@ -65,7 +65,9 @@ const FRAME_TOP_BAR: i32 = TOOL_Y + grid::ROW_H + 1;
 const FRAME_TOP: i32 = grid::BAR_H + 1;
 /// The page fills the frame's inside left of the scroll bar (which keeps 1 px to the page and the line).
 const VIEW_X: i32 = 3;
-const VIEW_W: i32 = grid::SCROLL_X - 1 - VIEW_X;
+fn view_w() -> i32 {
+    grid::scroll_x() - 1 - VIEW_X
+}
 const PAGE_X: i32 = VIEW_X + 2;
 /// Space above the first line.
 const PAGE_Y: i32 = 2;
@@ -76,7 +78,7 @@ fn back_r() -> Rect { Rect::new(grid::MARGIN, TOOL_Y, BTN_W as u32, grid::BTN_H_
 fn fwd_r() -> Rect { Rect::new(grid::MARGIN + BTN_W + 2, TOOL_Y, BTN_W as u32, grid::BTN_H_SM as u32) }
 fn reload_r() -> Rect { Rect::new(grid::MARGIN + 2 * (BTN_W + 2), TOOL_Y, BTN_W as u32, grid::BTN_H_SM as u32) }
 const ADDR_X: i32 = grid::MARGIN + 3 * (BTN_W + 2) + 2;
-fn addr_r() -> Rect { Rect::new(ADDR_X, TOOL_Y, (grid::SCROLL_X + grid::SCROLL_W - ADDR_X) as u32, grid::BTN_H_SM as u32) }
+fn addr_r() -> Rect { Rect::new(ADDR_X, TOOL_Y, (grid::scroll_x() + grid::SCROLL_W - ADDR_X) as u32, grid::BTN_H_SM as u32) }
 
 /// 9 x 9 toolbar glyphs ('#' = ink), drawn centred on their buttons.
 const ICON_BACK: [&str; 9] = [
@@ -416,11 +418,11 @@ impl Browser {
     }
 
     fn view_r(&self) -> Rect {
-        Rect::new(VIEW_X, self.vy(), VIEW_W as u32, self.vh() as u32)
+        Rect::new(VIEW_X, self.vy(), view_w() as u32, self.vh() as u32)
     }
 
     fn sb_r(&self) -> Rect {
-        Rect::new(grid::SCROLL_X, self.vy() + 1, grid::SCROLL_W as u32, (self.vh() - 2) as u32)
+        Rect::new(grid::scroll_x(), self.vy() + 1, grid::SCROLL_W as u32, (self.vh() - 2) as u32)
     }
 
     fn set_show_bar(&mut self, on: bool) {
@@ -730,7 +732,7 @@ impl Browser {
     // ---- images
 
     fn open_viewer(&mut self, u: String, bytes: Vec<u8>) {
-        let r = imageviewer::decode_bytes(&bytes, VIEW_W as u32, self.vh() as u32).map(|p| {
+        let r = imageviewer::decode_bytes(&bytes, view_w() as u32, self.vh() as u32).map(|p| {
             let runs = tone::build(&p, tone::DEFAULT, 0, 0);
             (p.w as i32, p.h as i32, runs)
         });
@@ -892,7 +894,7 @@ impl Browser {
                     if let Some(old) = self.img_job.take() {
                         old.cancel.store(true, Ordering::Relaxed);
                     }
-                    self.img_job = Some(ImgJob { url: String::from("#viewer"), max: (VIEW_W, self.vh()), cancel, rx });
+                    self.img_job = Some(ImgJob { url: String::from("#viewer"), max: (view_w(), self.vh()), cancel, rx });
                 }
             }
             Focus::Field(fi) => {
@@ -1024,6 +1026,10 @@ fn byte_at(s: &str, chars: usize) -> usize {
 // ------------------------------------------------------------------------------ the app
 
 impl LauncherApp for Browser {
+    fn sizing(&self) -> crate::launcher::app::Sizing {
+        crate::launcher::app::Sizing::Flexible
+    }
+
     fn title(&self) -> String {
         crate::launcher::i18n::app_name("browser")
     }
@@ -1450,10 +1456,10 @@ impl LauncherApp for Browser {
         if let Some((_, state)) = &self.viewer {
             match state {
                 Some(Ok((w, h, runs))) => {
-                    let (ox, oy) = (view.x() + (VIEW_W - w) / 2, view.y() + (self.vh() - h) / 2);
+                    let (ox, oy) = (view.x() + (view_w() - w) / 2, view.y() + (self.vh() - h) / 2);
                     draw_runs(c, runs, ox, oy, &tone::theme_ramp(tm));
                 }
-                Some(Err(e)) => fs.draw_text(c, view.x() + 6, view.y() + 6, &chrome::fit_text(fs, &i18n::tr_s(&format!("Cannot show picture: {e}")), VIEW_W - 12), faint),
+                Some(Err(e)) => fs.draw_text(c, view.x() + 6, view.y() + 6, &chrome::fit_text(fs, &i18n::tr_s(&format!("Cannot show picture: {e}")), view_w() - 12), faint),
                 None => fs.draw_text(c, view.x() + 6, view.y() + 6, i18n::tr("Loading picture..."), faint),
             }
         } else if let Some(p) = &self.page {
@@ -1560,7 +1566,7 @@ impl LauncherApp for Browser {
         // ---- loading gauge over the page's top edge while the toolbar (and its Stop button) is hidden:
         // 2 px in the blank space above the first line, filled as far as the download got.
         if let (false, Some(l)) = (self.bar(), &self.loading) {
-            let g = Rect::new(VIEW_X + 1, self.vy() + 1, (VIEW_W - 2) as u32, 2);
+            let g = Rect::new(VIEW_X + 1, self.vy() + 1, (view_w() - 2) as u32, 2);
             ui::fill_rect(c, g, paper);
             match l.progress.load(Ordering::Relaxed) {
                 fetch::UNKNOWN => {
@@ -1577,7 +1583,7 @@ impl LauncherApp for Browser {
 
         // ---- transient status: a line over the bottom of the page, only while there is something to say
         // 1 px in from the frame and the scroll bar, so its rule touches neither.
-        let strip = Rect::new(VIEW_X + 1, self.vy() + self.vh() - grid::ROW_H, (VIEW_W - 2) as u32, grid::ROW_H as u32);
+        let strip = Rect::new(VIEW_X + 1, self.vy() + self.vh() - grid::ROW_H, (view_w() - 2) as u32, grid::ROW_H as u32);
         let target = self.hover.or_else(|| self.selected()).and_then(|f| self.page.as_ref().map(|p| match f {
             Focus::Link(l) => url::display(&p.links[l as usize]),
             Focus::Field(k) => match p.fields[k as usize].kind {
@@ -1617,7 +1623,7 @@ impl LauncherApp for Browser {
         // ---- page info card (opened from the menu)
         if self.info {
             if let Some(p) = &self.page {
-                let card = Rect::new(VIEW_X + 8, self.vy() + 8, (VIEW_W - 16) as u32, (self.vh() - 16) as u32);
+                let card = Rect::new(VIEW_X + 8, self.vy() + 8, (view_w() - 16) as u32, (self.vh() - 16) as u32);
                 ui::fill_rect(c, card, paper);
                 ui::draw_rect(c, card, ink);
                 let room = card.width() as i32 - 12;
@@ -1764,18 +1770,18 @@ mod tests {
         for bar in [false, true] {
             b.show_bar = bar;
             let f = b.frame_r();
-            assert_eq!(f.bottom(), grid::APP_FRAME_BOTTOM + 1, "the frame runs down to y 168");
+            assert_eq!(f.bottom(), grid::frame_bottom() + 1, "the frame runs down to y 168");
             if bar {
                 assert_eq!(f.y(), back_r().bottom() + 1, "1 px between the toolbar and the frame");
             } else {
                 assert_eq!(f.y(), grid::app_frame().y(), "without the toolbar the frame starts where every app's does");
             }
             let ct = grid::app_content_from(f.y());
-            assert_eq!((VIEW_X, b.vy(), VIEW_X + VIEW_W, b.vy() + b.vh()), (ct.x(), f.y() + 1, b.sb_r().x() - 1, ct.bottom()));
+            assert_eq!((VIEW_X, b.vy(), VIEW_X + view_w(), b.vy() + b.vh()), (ct.x(), f.y() + 1, b.sb_r().x() - 1, ct.bottom()));
             assert!(b.sb_r().right() <= ct.right() && b.sb_r().bottom() < ct.bottom(), "the scroll bar keeps clear of the line and its corners");
         }
-        assert_eq!(VIEW_W - 4, load::WIDTH, "the layout width is unchanged");
-        assert!(addr_r().right() <= grid::SCROLL_X + grid::SCROLL_W && reload_r().right() + 2 < addr_r().x());
+        assert_eq!(view_w() - 4, load::WIDTH, "the layout width is unchanged");
+        assert!(addr_r().right() <= grid::scroll_x() + grid::SCROLL_W && reload_r().right() + 2 < addr_r().x());
     }
 
     #[test]

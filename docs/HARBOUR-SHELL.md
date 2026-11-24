@@ -125,6 +125,7 @@ directory is removed during a user-install upgrade.
 ## Develop on a Mac
 ```sh
 HARBOUR_MOCK=1 cargo run --bin harbour-shell                  # window (3x), mock hardware
+HARBOUR_SCREEN=800x480 HARBOUR_SCALE=2 HARBOUR_MOCK=1 cargo run --bin harbour-shell   # a desk with windows (docs/DESIGN.md "Desk")
 HARBOUR_HEADLESS=1 HARBOUR_MOCK=1 HARBOUR_SHOT_DIR=/tmp/shots \
   HARBOUR_SCRIPT="shot:home,Right,Return,wait:300,shot:settings" cargo run --bin harbour-shell   # scripted BMP frames
 cargo test --lib                                                  # 263 tests
@@ -136,10 +137,20 @@ Script tokens (comma separated): key names, `ctrl+key`, `alt+key`, `shift+key`, 
 `editor`, `terminal`, ... or the app name in lower case without spaces), `agent`, `menu`, `modal`, `locked`, `zoom` (0/1); a mismatch is
 printed and the run exits with status 3; `has=word` checks the app's own description), `state` (prints them), `rep:Key` (one auto-repeat press). `cargo test --test keymap_headless` runs the key scheme this way.
 
-Environment: `HARBOUR_FB`, `HARBOUR_HEADLESS`, `HARBOUR_MOCK`, `HARBOUR_SCALE`, `HARBOUR_SCRIPT`, `HARBOUR_SHOT_DIR`, `HARBOUR_APP_DIR`, `HARBOUR_ROOT`,
+Environment: `HARBOUR_FB`, `HARBOUR_HEADLESS`, `HARBOUR_MOCK`, `HARBOUR_SCALE`, `HARBOUR_SCREEN=WxH` (a bigger screen: the desk or full mode), `HARBOUR_MODE=desk|full`, `HARBOUR_PANEL=color|gray|mono`,
+`HARBOUR_ROTATE=90|180|270`, `HARBOUR_SCRIPT`, `HARBOUR_SHOT_DIR`, `HARBOUR_APP_DIR`, `HARBOUR_ROOT`,
 `HARBOUR_DATA`, `HARBOUR_CONFIG`, `HARBOUR_ORDER_FILE`, `HARBOUR_EVDEV`, `HARBOUR_NO_EVDEV`, `HARBOUR_CURSOR=x,y`, `HARBOUR_START_LOCKED=1`,
 `HARBOUR_LAUNCH_SHOT=<file.bmp>` (saves the "Opening" screen).
 Headless runs also work on the device (real backend, no LCD): `HARBOUR_HEADLESS=1 HARBOUR_ROOT=~/harbour-shell ./bin/harbour-shell`.
+
+## Web demo
+
+`web/build.sh` builds Harbour Shell as a web page with Emscripten (SDL2 from the Emscripten ports) into `web/dist/`; `web/build.sh serve` also serves it on http://localhost:8017. It needs `emcc` and `rustup target add wasm32-unknown-emscripten`.
+
+- The page picks the picture size from the browser window (a desk when there is room). `?size=320x170` shows the Cardputer Zero's screen, `?scale=N` forces the zoom, `?mode=desk|full` and `?lang=ja` work like `HARBOUR_MODE` and `LANG`, and `?script=...` drives it like `HARBOUR_SCRIPT`.
+- The hardware is pretend (`HARBOUR_MOCK`). The home folder is kept in the browser (IndexedDB), so notes, drawings and settings survive a reload.
+- There are no threads in the page: `rt::sleep` hands each frame back to the browser (Asyncify) and `rt::spawn` runs its work at once.
+- Left out: apps that need the network, a terminal, a camera or the sound device (Browser, Infoscope, Radio, Music, Voice Memo, Terminal, Interceptor, Monitor, Camera) and the Agent. The Japanese dictionary is never redistributed, so input is kana only.
 
 ## Japanese input (romaji to kana; kanji conversion with an optional, user-installed dictionary)
 

@@ -13,3 +13,4 @@ assets/icons-src/
 assets/statusbar-src/
 assets/images/icons/Test*.png
 demo/out/
+/web/dist/

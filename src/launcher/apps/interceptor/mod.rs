@@ -53,23 +53,44 @@ const TABS: [&str; 14] = ["ETH", "Wi-Fi", "BT", "BLE", "IR", "Grove", "USB", "Se
 /// Pages (one per tab).
 const NP: usize = TABS.len();
 /// The strip leaves 8 px at the right end for the pause mark.
-const TABS_ROOM: i32 = widgets::FOLDER_ROOM - 8;
-// One grid rule for every page: the tab strip is row 0 (y 16..32), the body is exactly
-// 8 rows of 16 px (y 36..164). A two-line item is 2 rows. The 5 px left under the last row
-// (y 164..168) belong to the body's frame, whose bottom line sits at y 168 like the framed
-// screens' (grid::APP_FRAME_BOTTOM), so no empty band is left below the screen.
+fn tabs_room() -> i32 {
+    widgets::folder_room() - 8
+}
+// One grid rule for every page: the tab strip is row 0 (y 16..32), the body is a whole number of
+// 16 px rows under it: 8 on the 320 x 170 screen (y 36..164). A two-line item is 2 rows. The px
+// left under the last row (y 164..168 there) belong to the body's frame, whose bottom line sits on
+// the surface's last row but one like the framed screens' (grid::frame_bottom()), so no empty band
+// is left below the screen. In a bigger window the body simply has more rows of the same pitch.
 const ROW: i32 = 16;
 /// The folder tab strip is 5 units high (the label needs room below the chamfered corners).
 const TABS_H: i32 = widgets::FOLDER_TABS_H;
 const BODY_Y: i32 = grid::BAR_H + TABS_H;
-/// 8 whole rows fit under the strip (y 36..164).
-const BODY_ROWS: i32 = 8;
-const BODY_H: i32 = BODY_ROWS * ROW;
-/// Where the body's frame ends (exclusive): its bottom line is on y 168.
-const BODY_END: i32 = grid::APP_FRAME_BOTTOM + 1;
+/// Whole rows that fit under the strip and above the frame's bottom line, which they never touch
+/// (8 on 320 x 170: y 36..164).
+fn body_rows() -> i32 {
+    (body_end() - 1 - BODY_Y) / ROW
+}
+fn body_h() -> i32 {
+    body_rows() * ROW
+}
+/// Where the body's frame ends (exclusive): its bottom line is on y 168 on 320 x 170.
+fn body_end() -> i32 {
+    grid::frame_bottom() + 1
+}
 const LIST_X: i32 = grid::MARGIN;
-const LIST_W: i32 = grid::SCROLL_X - 4 - LIST_X;
-const HIST_LEN: usize = 72;
+fn list_w() -> i32 {
+    grid::scroll_x() - 4 - LIST_X
+}
+/// The list width on the 320 x 170 screen, which the fixed column positions were drawn for.
+const LIST_W_DESIGN: i32 = grid::SCROLL_X - 4 - LIST_X;
+/// Pixels the list is wider than on the 320 x 170 screen: what a page hands to the columns that
+/// can use more room (names, values, graphs). 0 on the design screen.
+fn extra_w() -> i32 {
+    list_w() - LIST_W_DESIGN
+}
+/// ETH history samples (one a second) kept: enough for the widest graph a window can have (a
+/// wider graph shows a longer past).
+const HIST_CAP: usize = 1024;
 const LOG_CAP: usize = 300;
 const PAGE_ETH: usize = 0;
 const PAGE_WIFI: usize = 1;
@@ -275,7 +296,7 @@ impl Eth {
             self.rx_rate = rate(prx, c.rx, dt);
             self.tx_rate = rate(ptx, c.tx, dt);
             self.hist.push_back((self.rx_rate as f32, self.tx_rate as f32));
-            while self.hist.len() > HIST_LEN {
+            while self.hist.len() > HIST_CAP {
                 self.hist.pop_front();
             }
         }
@@ -718,7 +739,14 @@ struct DevView {
 impl DevView {
     fn new(src: Box<dyn DevSource>) -> Self {
         let roots = src.categories();
-        Self { src, tree: TreeList::new(roots, BODY_ROWS as usize), last_marquee: None }
+        Self { src, tree: TreeList::new(roots, body_rows() as usize), last_marquee: None }
+    }
+
+    /// Follow the surface (the window may have been resized): as many rows as the body holds,
+    /// property values as wide as the list.
+    fn fit(&mut self) {
+        self.tree.visible = body_rows() as usize;
+        self.tree.prop_w = widgets::PROP_ROW_W + extra_w();
     }
 }
 
@@ -737,12 +765,33 @@ impl ListGeom {
     /// The item under (x, y), if the point is on the list (not the scroll bar).
     fn row_at(&self, x: i32, y: i32) -> Option<usize> {
         let top = BODY_Y + self.first_row * ROW;
-        if x < LIST_X || x >= LIST_X + LIST_W || y < top {
+        if x < LIST_X || x >= LIST_X + list_w() || y < top {
             return None;
         }
         let n = ((y - top) / (ROW * self.item_rows)) as usize;
         (n < self.vis && self.start + n < self.total).then_some(self.start + n)
     }
+}
+
+/// Two-row BLE devices that fit under the header band.
+fn ble_vis() -> usize {
+    ((body_rows() - 1) / 2) as usize
+}
+
+/// The ETH page's key / value column (the graph takes the rest of the width).
+const ETH_COL_W: i32 = 150;
+
+/// The ETH graph: right of the key / value column up to the end of the list, from body row 1 down
+/// to 3 px above the last row's end (on 320 x 170: 144 x 109, 2 px per sample).
+fn eth_graph_rect() -> Rect {
+    let gx = LIST_X + ETH_COL_W + 8;
+    let gw = LIST_X + list_w() - 2 - gx;
+    Rect::new(gx, BODY_Y + ROW, gw as u32, ((body_rows() - 1) * ROW - 3) as u32)
+}
+
+/// Samples graph `g` has room for at 2 px each (72 on 320 x 170).
+fn eth_slots(g: Rect) -> usize {
+    (g.width() / 2) as usize
 }
 
 fn contains_pt(r: Rect, x: i32, y: i32) -> bool {
@@ -751,20 +800,20 @@ fn contains_pt(r: Rect, x: i32, y: i32) -> bool {
 
 /// 1 px under the tab strip's full-width rule, so the bar never touches it.
 fn body_scrollbar_rect() -> Rect {
-    Rect::new(grid::SCROLL_X, BODY_Y + 1, grid::SCROLL_W as u32, (BODY_END - BODY_Y - 1) as u32)
+    Rect::new(grid::scroll_x(), BODY_Y + 1, grid::SCROLL_W as u32, (body_end() - BODY_Y - 1) as u32)
 }
 
 fn tabs_strip(active: usize, first: usize) -> widgets::FolderScroll<'static> {
-    widgets::FolderScroll::new(&TABS, active, first, TABS_ROOM)
+    widgets::FolderScroll::new(&TABS, active, first, tabs_room())
 }
 
 fn dev_tree_rect() -> Rect {
-    Rect::new(LIST_X, BODY_Y, LIST_W as u32, BODY_H as u32)
+    Rect::new(LIST_X, BODY_Y, list_w() as u32, body_h() as u32)
 }
 
 /// The list area's outline: `w` wide, from the top of the body down to its frame line on y 168.
 fn body_frame(w: i32) -> Rect {
-    Rect::new(LIST_X, BODY_Y, w as u32, (BODY_END - BODY_Y) as u32)
+    Rect::new(LIST_X, BODY_Y, w as u32, (body_end() - BODY_Y) as u32)
 }
 
 // ======================================================================== MIDI
@@ -1928,7 +1977,7 @@ impl Interceptor {
             self.ports.leave(self.page);
         }
         self.page = p;
-        self.tab_first = widgets::FolderScroll::follow(&TABS, p, self.tab_first, TABS_ROOM);
+        self.tab_first = widgets::FolderScroll::follow(&TABS, p, self.tab_first, tabs_room());
         self.last_page_started = None;
         if self.worker.is_some() {
             self.worker = None;
@@ -1999,13 +2048,13 @@ impl Interceptor {
     /// (rows in the list, rows visible) of the current page; (0, 0) when it has no list.
     fn dims(&self) -> (usize, usize) {
         match self.page {
-            PAGE_BT => (self.bt_devs.len(), (BODY_ROWS - 1) as usize),
-            PAGE_BLE => (self.ble.devs.len(), 3),
-            PAGE_OSC if self.osc.table_view => (self.osc.table.map.len(), (BODY_ROWS - 2) as usize),
-            PAGE_OSC => (self.osc.log.len(), (BODY_ROWS - 2) as usize),
-            PAGE_IR if self.log_page() => (self.ir_log.len(), (BODY_ROWS - 1) as usize),
-            PAGE_MIDI => (self.midi.log.len(), (BODY_ROWS - 3) as usize),
-            PAGE_USB => (self.usb_rows().len(), (BODY_ROWS - 1) as usize),
+            PAGE_BT => (self.bt_devs.len(), (body_rows() - 1) as usize),
+            PAGE_BLE => (self.ble.devs.len(), ble_vis()),
+            PAGE_OSC if self.osc.table_view => (self.osc.table.map.len(), (body_rows() - 2) as usize),
+            PAGE_OSC => (self.osc.log.len(), (body_rows() - 2) as usize),
+            PAGE_IR if self.log_page() => (self.ir_log.len(), (body_rows() - 1) as usize),
+            PAGE_MIDI => (self.midi.log.len(), (body_rows() - 3) as usize),
+            PAGE_USB => (self.usb_rows().len(), (body_rows() - 1) as usize),
             p => self.ports.dims(p).map_or((0, 0), |(len, vis, _)| (len, vis)),
         }
     }
@@ -2121,6 +2170,7 @@ impl Interceptor {
     fn with_dev<R>(&mut self, f: impl FnOnce(&mut DevView, &UsbView) -> R) -> Option<R> {
         self.ensure_dev();
         let mut dv = self.dev.take()?;
+        dv.fit();
         let r = f(&mut dv, &self.usb);
         self.dev = Some(dv);
         Some(r)
@@ -2198,12 +2248,12 @@ struct Pal {
 
 /// Row `i` of the body (0..8), full list width.
 fn row_rect(i: i32) -> Rect {
-    Rect::new(LIST_X, BODY_Y + i * ROW, LIST_W as u32, ROW as u32)
+    Rect::new(LIST_X, BODY_Y + i * ROW, list_w() as u32, ROW as u32)
 }
 
 /// `n` rows starting at body row `i`.
 fn rows_rect(i: i32, n: i32) -> Rect {
-    Rect::new(LIST_X, BODY_Y + i * ROW, LIST_W as u32, (n * ROW) as u32)
+    Rect::new(LIST_X, BODY_Y + i * ROW, list_w() as u32, (n * ROW) as u32)
 }
 
 /// Zebra: odd items get the alt tone.
@@ -2282,7 +2332,7 @@ fn frame_sides(c: &mut Canvas<Window>, p: &Pal, r: Rect) {
 
 /// A column separator at `x`, from body row `first_row` down to the frame's bottom line.
 fn vsep(c: &mut Canvas<Window>, p: &Pal, x: i32, first_row: i32) {
-    ui::line(c, x, BODY_Y + first_row * ROW, x, BODY_END - 1, p.band);
+    ui::line(c, x, BODY_Y + first_row * ROW, x, body_end() - 1, p.band);
 }
 
 /// A column separator over `rows` filled rows from body row `first_row` only, so it does not run on
@@ -2291,7 +2341,7 @@ fn vsep_rows(c: &mut Canvas<Window>, p: &Pal, x: i32, first_row: i32, rows: usiz
     if rows == 0 {
         return;
     }
-    let end = (BODY_Y + (first_row + rows as i32) * ROW - 1).min(BODY_Y + BODY_H - 1);
+    let end = (BODY_Y + (first_row + rows as i32) * ROW - 1).min(BODY_Y + body_h() - 1);
     ui::line(c, x, BODY_Y + first_row * ROW, x, end, p.band);
 }
 
@@ -2311,12 +2361,16 @@ impl Interceptor {
         tabs_strip(self.page, self.tab_first).draw_strip(c, ctx.fs, ctx.tm);
         if self.paused {
             // Two thin bars in the free 4 px at the right end of the strip.
-            ui::fill_rect(c, Rect::new(grid::SCREEN_W - 10, grid::BAR_H + 6, 1, 8), p.ink);
-            ui::fill_rect(c, Rect::new(grid::SCREEN_W - 8, grid::BAR_H + 6, 1, 8), p.ink);
+            ui::fill_rect(c, Rect::new(grid::sw() - 10, grid::BAR_H + 6, 1, 8), p.ink);
+            ui::fill_rect(c, Rect::new(grid::sw() - 8, grid::BAR_H + 6, 1, 8), p.ink);
         }
     }
 
     fn draw_eth(&mut self, c: &mut Canvas<Window>, ctx: &Ctx, p: &Pal) {
+        let g = eth_graph_rect();
+        // The newest samples the graph has room for; Peak and the scale are of what is shown.
+        let slots = eth_slots(g);
+        let shown: Vec<(f32, f32)> = self.eth.hist.iter().skip(self.eth.hist.len().saturating_sub(slots)).copied().collect();
         let l = &self.eth.link;
         let rows: Vec<(&str, String)> = vec![
             ("Iface", self.eth.iface().to_string()),
@@ -2331,10 +2385,10 @@ impl Interceptor {
             ("MAC", l.mac.clone().unwrap_or_else(|| "-".into())),
             ("RX", fmt_rate(self.eth.rx_rate)),
             ("TX", fmt_rate(self.eth.tx_rate)),
-            ("Peak", fmt_rate(self.eth.hist.iter().fold(0.0f32, |m, (a, b)| m.max(*a).max(*b)) as f64)),
+            ("Peak", fmt_rate(shown.iter().fold(0.0f32, |m, (a, b)| m.max(*a).max(*b)) as f64)),
             ("Total", format!("{} / {}", fmt_bytes(self.eth.rx_total), fmt_bytes(self.eth.tx_total))),
         ];
-        let col_w = 150;
+        let col_w = ETH_COL_W;
         for (i, (k, v)) in rows.iter().enumerate() {
             let mut row = row_rect(i as i32);
             row.set_width(col_w as u32);
@@ -2346,24 +2400,21 @@ impl Interceptor {
         // The rule sits right of the longest key, so no value crosses it.
         vsep(c, p, LIST_X + 36, 0);
         // Right panel: label row, then the graph (RX solid, TX shaded) down to the last row.
-        let gx = LIST_X + col_w + 8;
-        let gw = (HIST_LEN * 2) as i32;
-        let max = nice_ceil(self.eth.hist.iter().fold(1024.0f32, |m, (a, b)| m.max(*a).max(*b)));
-        ctx.fs.draw_text(c, gx, BODY_Y + 1, "RX / TX", p.faint);
-        right_text(c, ctx, gx + gw, BODY_Y, &fmt_rate(max as f64), p.faint);
-        let g = Rect::new(gx, BODY_Y + ROW, gw as u32, (7 * ROW - 3) as u32);
+        let max = nice_ceil(shown.iter().fold(1024.0f32, |m, (a, b)| m.max(*a).max(*b)));
+        ctx.fs.draw_text(c, g.x(), BODY_Y + 1, "RX / TX", p.faint);
+        right_text(c, ctx, g.right(), BODY_Y, &fmt_rate(max as f64), p.faint);
         ui::fill_rect(c, g, p.paper);
         let h = g.height() as f32;
-        let off = HIST_LEN - self.eth.hist.len();
-        for (i, (rx, tx)) in self.eth.hist.iter().enumerate() {
-            let x = g.x() + ((off + i) * 2) as i32;
+        let off = slots - shown.len();
+        for (i, (rx, tx)) in shown.iter().enumerate() {
+            let (x, w) = (g.x() + ((off + i) * 2) as i32, 2);
             let th = ((tx / max) * h) as i32;
             let rh = ((rx / max) * h) as i32;
             if th > 0 {
-                dither::fill(c, Rect::new(x, g.bottom() - th, 2, th as u32), p.ink, Pattern::Half);
+                dither::fill(c, Rect::new(x, g.bottom() - th, w as u32, th as u32), p.ink, Pattern::Half);
             }
             if rh > 0 {
-                ui::fill_rect(c, Rect::new(x, g.bottom() - rh, 2, rh as u32), p.ink);
+                ui::fill_rect(c, Rect::new(x, g.bottom() - rh, w as u32, rh as u32), p.ink);
             }
         }
         ui::draw_rect(c, g, p.ink);
@@ -2381,10 +2432,10 @@ impl Interceptor {
         let mask = i18n::tr(if self.mask { "mask on" } else { "mask off" });
         let right = if ctrl.present && self.bt_state.is_none() { format!("{}  {}", if ctrl.powered { "ON" } else { "OFF" }, mask) } else { mask.to_string() };
         header_band(c, ctx, p, 0, &left, &right);
-        let vis = (BODY_ROWS - 1) as usize;
+        let vis = (body_rows() - 1) as usize;
         self.scroll[PAGE_BT] = self.scroll[PAGE_BT].min(self.bt_devs.len().saturating_sub(vis));
         if self.bt_devs.is_empty() && self.bt_state.is_none() {
-            text_row(c, ctx, LIST_X + 4, BODY_Y + ROW, LIST_W - 8, "No paired devices.", p.faint);
+            text_row(c, ctx, LIST_X + 4, BODY_Y + ROW, list_w() - 8, "No paired devices.", p.faint);
         }
         for (i, d) in self.bt_devs.iter().enumerate().skip(self.scroll[PAGE_BT]).take(vis) {
             let n = i - self.scroll[PAGE_BT];
@@ -2394,10 +2445,10 @@ impl Interceptor {
             let st = if d.connected { "connected" } else if d.paired { "paired" } else { "trusted" };
             let sw = ctx.fs.measure_text(st);
             let _ = sw;
-            text_data(c, ctx, row.x() + 4, row.y(), LIST_W - 84 - 8, &d.name, fg);
+            text_data(c, ctx, row.x() + 4, row.y(), list_w() - 84 - 8, &d.name, fg);
             right_text(c, ctx, row.right() - 4, row.y(), st, if d.connected { fg } else { sub });
         }
-        vsep_rows(c, p, LIST_X + LIST_W - 84, 1, self.bt_devs.len().saturating_sub(self.scroll[PAGE_BT]).min(vis));
+        vsep_rows(c, p, LIST_X + list_w() - 84, 1, self.bt_devs.len().saturating_sub(self.scroll[PAGE_BT]).min(vis));
         scrollbar(c, ctx, self.bt_devs.len(), vis, self.scroll[PAGE_BT]);
     }
 
@@ -2408,8 +2459,8 @@ impl Interceptor {
             None => format!("{}{} {}", i18n::tr(if self.paused { "Paused" } else { "Scanning" }), if self.mock { i18n::tr(" (demo)") } else { "" }, i18n::tr_s(&format!("{} devices", sorted.len()))),
         };
         header_band(c, ctx, p, 0, &head, if self.mask { "mask on" } else { "mask off" });
-        // 1 header row + 3 two-row devices (the last row stays free).
-        let vis = 3usize;
+        // 1 header row + two-row devices (3 on 320 x 170; an odd row left at the bottom stays free).
+        let vis = ble_vis();
         let total = sorted.len();
         self.scroll[PAGE_BLE] = self.scroll[PAGE_BLE].min(total.saturating_sub(vis));
         for (i, d) in sorted.iter().enumerate().skip(self.scroll[PAGE_BLE]).take(vis) {
@@ -2423,7 +2474,7 @@ impl Interceptor {
             let dw = ctx.fs.measure_text("-100");
             right_text(c, ctx, item.right() - 4, y, &dbm, fg);
             rssi_meter(c, ctx, item.right() - 4 - dw - 4 - 40, y, d.rssi);
-            text_data(c, ctx, x + 4, y, LIST_W - 8 - dw - 4 - 40 - 8, &name, fg);
+            text_data(c, ctx, x + 4, y, list_w() - 8 - dw - 4 - 40 - 8, &name, fg);
             let mut sub = String::new();
             if d.name.is_some() {
                 sub.push_str(&addr);
@@ -2434,7 +2485,7 @@ impl Interceptor {
                 sub.push(' ');
             }
             sub.push_str(&hex_str(&d.mfr, 12));
-            text_data(c, ctx, x + 4, y + ROW, LIST_W - 8, &sub, sub_fg);
+            text_data(c, ctx, x + 4, y + ROW, list_w() - 8, &sub, sub_fg);
         }
         scrollbar(c, ctx, total, vis, self.scroll[PAGE_BLE]);
     }
@@ -2453,14 +2504,14 @@ impl Interceptor {
         let r1 = row_rect(1);
         ui::fill_rect(c, r1, p.alt);
         let st = format!("{:.0} msg/s   {} {}   {} {}", o.table.total.rate(now), i18n::tr("dropped"), o.table.dropped, i18n::tr("total"), o.table.total.count);
-        text_row(c, ctx, r1.x() + 4, r1.y(), LIST_W - 56, &st, p.faint);
+        text_row(c, ctx, r1.x() + 4, r1.y(), list_w() - 56, &st, p.faint);
         right_text(c, ctx, r1.right() - 4, r1.y(), if o.table_view { "table" } else { "log" }, p.ink);
-        let vis = (BODY_ROWS - 2) as usize;
+        let vis = (body_rows() - 2) as usize;
         if !self.osc.table_view {
             let total = self.osc.log.len();
             self.scroll[PAGE_OSC] = self.scroll[PAGE_OSC].min(total.saturating_sub(vis));
             if total == 0 {
-                text_row(c, ctx, LIST_X + 4, BODY_Y + 2 * ROW, LIST_W - 8, "Waiting for OSC packets...", p.faint);
+                text_row(c, ctx, LIST_X + 4, BODY_Y + 2 * ROW, list_w() - 8, "Waiting for OSC packets...", p.faint);
             }
             let end = total - self.scroll[PAGE_OSC];
             let start = end.saturating_sub(vis);
@@ -2474,37 +2525,40 @@ impl Interceptor {
                 right_text(c, ctx, row.right() - 4, row.y(), &src, sub);
                 let text = if e.args.is_empty() { e.addr.clone() } else { format!("{}  {}", e.addr, e.args) };
                 let _ = sw;
-                text_data(c, ctx, row.x() + 40, row.y(), LIST_W - 40 - 62, &text, fg);
+                text_data(c, ctx, row.x() + 40, row.y(), list_w() - 40 - 62, &text, fg);
             }
             let shown = end - start;
             vsep_rows(c, p, LIST_X + 36, 2, shown);
-            vsep_rows(c, p, LIST_X + LIST_W - 58, 2, shown);
+            vsep_rows(c, p, LIST_X + list_w() - 58, 2, shown);
             scrollbar(c, ctx, total, vis, total.saturating_sub(vis).saturating_sub(self.scroll[PAGE_OSC]));
         } else {
             let rows: Vec<(&String, &osc::AddrStat)> = self.osc.table.map.iter().collect();
             let total = rows.len();
+            // Extra width goes half to the address, half to the last value.
+            let (ea, el) = (extra_w() / 2, extra_w() - extra_w() / 2);
+            let e = ea + el;
             self.scroll[PAGE_OSC] = self.scroll[PAGE_OSC].min(total.saturating_sub(vis));
             for (k, (addr, s)) in rows.iter().enumerate().skip(self.scroll[PAGE_OSC]).take(vis) {
                 let row = row_rect(2 + (k - self.scroll[PAGE_OSC]) as i32);
                 let (fg, sub) = row_style(c, ctx, p, row, k, k == self.cur[PAGE_OSC]);
                 let (x, y) = (row.x(), row.y());
-                text_data(c, ctx, x + 4, y, 82, addr, fg);
-                right_text(c, ctx, x + 122, y, &format!("{}", s.count), sub);
-                text_data(c, ctx, x + 130, y, 84, &s.last, fg);
-                right_text(c, ctx, x + 250, y, &format!("{:.0}/s", s.rate(now)), sub);
+                text_data(c, ctx, x + 4, y, 82 + ea, addr, fg);
+                right_text(c, ctx, x + 122 + ea, y, &format!("{}", s.count), sub);
+                text_data(c, ctx, x + 130 + ea, y, 84 + el, &s.last, fg);
+                right_text(c, ctx, x + 250 + e, y, &format!("{:.0}/s", s.rate(now)), sub);
                 let h = s.history(now);
                 let m = h.iter().copied().max().unwrap_or(0).max(1) as i32;
                 for (j, v) in h.iter().enumerate() {
                     let bh = (*v as i32 * 10 / m).max(if *v > 0 { 1 } else { 0 });
                     if bh > 0 {
-                        ui::fill_rect(c, Rect::new(x + 254 + j as i32 * 3, y + 13 - bh, 2, bh as u32), fg);
+                        ui::fill_rect(c, Rect::new(x + 254 + e + j as i32 * 3, y + 13 - bh, 2, bh as u32), fg);
                     }
                 }
             }
             if total == 0 {
-                text_row(c, ctx, LIST_X + 4, BODY_Y + 2 * ROW, LIST_W - 8, "No addresses yet.", p.faint);
+                text_row(c, ctx, LIST_X + 4, BODY_Y + 2 * ROW, list_w() - 8, "No addresses yet.", p.faint);
             }
-            for x in [90, 126, 218, 252] {
+            for x in [90 + ea, 126 + ea, 218 + e, 252 + e] {
                 vsep(c, p, LIST_X + x, 2);
             }
             scrollbar(c, ctx, total, vis, self.scroll[PAGE_OSC]);
@@ -2515,10 +2569,10 @@ impl Interceptor {
         match &self.ir_hw {
             IrHw::None(lines) => {
                 header_band(c, ctx, p, 0, "No IR receiver found", "");
-                for (i, l) in lines.iter().enumerate().take((BODY_ROWS - 1) as usize) {
+                for (i, l) in lines.iter().enumerate().take((body_rows() - 1) as usize) {
                     let row = row_rect(1 + i as i32);
                     zebra(c, p, row, i + 1);
-                    text_row(c, ctx, row.x() + 4, row.y(), LIST_W - 8, l, p.faint);
+                    text_row(c, ctx, row.x() + 4, row.y(), list_w() - 8, l, p.faint);
                 }
             }
             IrHw::Rx(path) => {
@@ -2526,7 +2580,7 @@ impl Interceptor {
                 let strip = row_rect(0);
                 ui::fill_rect(c, strip, p.paper);
                 if let Some(e) = &self.ir_err {
-                    text_row(c, ctx, strip.x() + 4, strip.y(), LIST_W - 8, e, p.faint);
+                    text_row(c, ctx, strip.x() + 4, strip.y(), list_w() - 8, e, p.faint);
                 } else if let Some(f) = self.ir_log.back() {
                     let total: u32 = f.edges.iter().sum::<u32>().max(1);
                     let scale = (strip.width() - 8) as f32 / total as f32;
@@ -2539,9 +2593,9 @@ impl Interceptor {
                         x += w;
                     }
                 } else {
-                    text_row(c, ctx, strip.x() + 4, strip.y(), LIST_W - 8, &format!("Point a remote at the receiver ({})", path.trim_start_matches("/dev/")), p.faint);
+                    text_row(c, ctx, strip.x() + 4, strip.y(), list_w() - 8, &format!("Point a remote at the receiver ({})", path.trim_start_matches("/dev/")), p.faint);
                 }
-                let vis = (BODY_ROWS - 1) as usize;
+                let vis = (body_rows() - 1) as usize;
                 let total = self.ir_log.len();
                 self.scroll[PAGE_IR] = self.scroll[PAGE_IR].min(total.saturating_sub(vis));
                 let end = total - self.scroll[PAGE_IR];
@@ -2549,10 +2603,10 @@ impl Interceptor {
                 for (k, f) in self.ir_log.iter().enumerate().skip(start).take(end - start) {
                     let row = row_rect(1 + (k - start) as i32);
                     let (fg, sub) = row_style(c, ctx, p, row, k, k == self.cur[PAGE_IR]);
-                    text_data(c, ctx, row.x() + 4, row.y(), LIST_W - 68, &f.decoded, fg);
+                    text_data(c, ctx, row.x() + 4, row.y(), list_w() - 68, &f.decoded, fg);
                     right_text(c, ctx, row.right() - 4, row.y(), &format!("{} edges", f.edges.len()), sub);
                 }
-                vsep_rows(c, p, LIST_X + LIST_W - 62, 1, end - start);
+                vsep_rows(c, p, LIST_X + list_w() - 62, 1, end - start);
                 scrollbar(c, ctx, total, vis, total.saturating_sub(vis).saturating_sub(self.scroll[PAGE_IR]));
             }
         }
@@ -2561,6 +2615,7 @@ impl Interceptor {
     fn draw_dev(&mut self, c: &mut Canvas<Window>, ctx: &Ctx, p: &Pal) {
         let mask = self.mask;
         let Some(dv) = self.dev.as_mut() else { return };
+        dv.fit();
         dv.tree.sync();
         // Addresses show masked or not as the setting says (the rows keep the real text).
         for r in dv.tree.rows.iter_mut().filter(|r| r.secret) {
@@ -2569,16 +2624,18 @@ impl Interceptor {
         let tree_rect = dev_tree_rect();
         dv.tree.draw(c, ctx.fs, ctx.tm, tree_rect);
         dv.tree.scrollbar(body_scrollbar_rect()).draw(c, ctx.tm, None);
-        frame_sides(c, p, body_frame(LIST_W));
+        frame_sides(c, p, body_frame(list_w()));
     }
 
     fn draw_midi(&mut self, c: &mut Canvas<Window>, ctx: &Ctx, p: &Pal) {
         // Rows 0..3 (48 px): 4 px margin, piano C1..B6 (20), 4 px gap, 16 channel pads (16), 4 px margin.
         const FIRST: u8 = 24;
         const LAST: u8 = 95;
-        let kw = 7;
         let nwhite = (FIRST..=LAST).filter(|n| !is_black(*n)).count() as i32;
-        let x0 = LIST_X + (LIST_W - nwhite * kw) / 2;
+        // The keys widen with the list (7 px white, 4 px black on 320 x 170).
+        let kw = (list_w() / nwhite).max(7);
+        let bw = kw * 4 / 7;
+        let x0 = LIST_X + (list_w() - nwhite * kw) / 2;
         let y0 = BODY_Y + 4;
         let mut wi = 0;
         for n in FIRST..=LAST {
@@ -2596,24 +2653,26 @@ impl Interceptor {
                 wi += 1;
                 continue;
             }
-            let r = Rect::new(x0 + wi * kw - 2, y0, 4, 12);
+            let r = Rect::new(x0 + wi * kw - bw / 2, y0, bw as u32, 12);
             let on = self.midi.held[n as usize] > 0;
             ui::fill_rect(c, r, if on { p.paper } else { p.ink });
             ui::draw_rect(c, r, p.ink);
         }
         let ly = y0 + 24;
-        let px = LIST_X + (LIST_W - 16 * 18 + 2) / 2;
+        // The 16 channel pads share the extra width too (16 px pads, 2 px apart on 320 x 170).
+        let pitch = 18 + extra_w() / 16;
+        let px = LIST_X + (list_w() - 16 * pitch + 2) / 2;
         for (ch, lv) in self.midi.level.iter().enumerate() {
-            let cell = Rect::new(px + ch as i32 * 18, ly, 16, 16);
+            let cell = Rect::new(px + ch as i32 * pitch, ly, (pitch - 2) as u32, 16);
             ui::fill_rect(c, cell, p.paper);
             let h = (lv * 14.0) as i32;
             if h > 0 {
-                ui::fill_rect(c, Rect::new(cell.x() + 1, cell.bottom() - 1 - h, 14, h as u32), p.ink);
+                ui::fill_rect(c, Rect::new(cell.x() + 1, cell.bottom() - 1 - h, cell.width() - 2, h as u32), p.ink);
             }
             ui::draw_rect(c, cell, p.faint);
         }
         // Log, newest at the bottom: rows 3..8.
-        let vis = (BODY_ROWS - 3) as usize;
+        let vis = (body_rows() - 3) as usize;
         let total = self.midi.log.len();
         self.scroll[PAGE_MIDI] = self.scroll[PAGE_MIDI].min(total.saturating_sub(vis));
         if total == 0 {
@@ -2624,7 +2683,7 @@ impl Interceptor {
             } else {
                 format!("Listening: {}", self.midi.ports.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", "))
             };
-            text_row(c, ctx, LIST_X + 4, BODY_Y + 3 * ROW, LIST_W - 8, &msg, p.faint);
+            text_row(c, ctx, LIST_X + 4, BODY_Y + 3 * ROW, list_w() - 8, &msg, p.faint);
         }
         let end = total - self.scroll[PAGE_MIDI];
         let start = end.saturating_sub(vis);
@@ -2635,12 +2694,12 @@ impl Interceptor {
             let ch = m.channel().map(|c| format!("{:02}", c + 1)).unwrap_or_else(|| "--".into());
             ctx.fs.draw_text(c, row.x() + 4, y + 1, &ch, sub);
             ctx.fs.draw_text(c, row.x() + 24, y + 1, m.kind(), fg);
-            text_data(c, ctx, row.x() + 84, y, LIST_W - 84 - 52, &m.detail(), fg);
+            text_data(c, ctx, row.x() + 84, y, list_w() - 84 - 52, &m.detail(), fg);
             if let Some(l) = m.level() {
                 draw_meter(c, ctx.tm, Rect::new(row.right() - 44, y + 4, 40, 8), l as f32 / 127.0);
             }
         }
-        for x in [22, 80, LIST_W - 48] {
+        for x in [22, 80, list_w() - 48] {
             vsep_rows(c, p, LIST_X + x, 3, end - start);
         }
         scrollbar(c, ctx, total, vis, total.saturating_sub(vis).saturating_sub(self.scroll[PAGE_MIDI]));
@@ -2660,6 +2719,10 @@ fn nice_ceil(v: f32) -> f32 {
 }
 
 impl LauncherApp for Interceptor {
+    fn sizing(&self) -> crate::launcher::app::Sizing {
+        crate::launcher::app::Sizing::Flexible
+    }
+
     /// Tab switches tabs, so a double Tab here is not the Agent (Alt+Tab is).
     fn wants_tab(&self) -> bool {
         true
@@ -2933,6 +2996,7 @@ impl LauncherApp for Interceptor {
         let mut dirty = false;
         if self.page == PAGE_DEV {
             if let Some(dv) = self.dev.as_mut() {
+                dv.fit();
                 if dv.last_marquee.map_or(true, |t| now.duration_since(t) >= Duration::from_millis(300)) {
                     dv.last_marquee = Some(now);
                     let before = dv.tree.shift;
@@ -3045,9 +3109,9 @@ impl LauncherApp for Interceptor {
             _ => self.draw_w1(c, ctx, &p),
         }
         match self.page {
-            PAGE_ETH => frame_sides(c, &p, body_frame(150)),
+            PAGE_ETH => frame_sides(c, &p, body_frame(ETH_COL_W)),
             PAGE_DEV => {}
-            _ => frame_sides(c, &p, body_frame(LIST_W)),
+            _ => frame_sides(c, &p, body_frame(list_w())),
         }
     }
 }
@@ -3337,7 +3401,7 @@ mod tests {
         assert!(!a.follow[PAGE_MIDI]);
         assert_eq!(a.cur[PAGE_MIDI], n - 2);
         a.move_cursor(-100);
-        assert_eq!((a.cur[PAGE_MIDI], a.scroll[PAGE_MIDI]), (0, n - (BODY_ROWS - 3) as usize));
+        assert_eq!((a.cur[PAGE_MIDI], a.scroll[PAGE_MIDI]), (0, n - (body_rows() - 3) as usize));
         a.move_cursor(1000);
         assert!(a.follow[PAGE_MIDI] && a.scroll[PAGE_MIDI] == 0);
         // Pages without a list ignore the cursor.
@@ -3484,17 +3548,12 @@ mod tests {
         }
     }
 
-    /// Renders every page (mock data, themes Black and LCD) and checks, from the pixels of
-    /// the column x = 5, that every band starts at y = 16 + 16k and is a whole number of
-    /// rows tall, and that nothing is drawn below the content (y >= 148).
+    /// Renders every page (mock data, every theme) on the 320 x 170 screen and in a bigger
+    /// window, and checks, from the pixels of the column x = 5, that every band starts at
+    /// y = 36 + 16k and is a whole number of rows tall down to the last row but one (y 148 on
+    /// 320 x 170), and that no pixel below is left unpainted.
     #[test]
     fn every_page_follows_the_row_grid() {
-        use crate::font::{load_mplus_f12r, FontSystem};
-        use crate::pdfont::PlaydateFont;
-        use crate::system::mock::MockBackend;
-        use crate::theme::{Theme, ThemeManager};
-        use sdl2::pixels::PixelFormatEnum;
-
         std::env::set_var("SDL_VIDEODRIVER", "dummy");
         let Ok(sdl) = sdl2::init() else {
             eprintln!("skipped: SDL cannot start here");
@@ -3504,11 +3563,23 @@ mod tests {
             eprintln!("skipped: no SDL video");
             return;
         };
-        let Ok(window) = video.window("grid", 320, 170).build() else {
-            eprintln!("skipped: no window");
-            return;
-        };
-        let mut canvas = window.into_canvas().software().build().unwrap();
+        for (w, h) in [(320, 170), (640, 300)] {
+            let Ok(window) = video.window("grid", w as u32, h as u32).build() else {
+                eprintln!("skipped: no window");
+                return;
+            };
+            let mut canvas = window.into_canvas().software().build().unwrap();
+            grid::with_surface((w, h), || grid_check(&mut canvas, w as usize, h as usize));
+        }
+    }
+
+    fn grid_check(canvas: &mut Canvas<Window>, w: usize, h: usize) {
+        use crate::font::{load_mplus_f12r, FontSystem};
+        use crate::pdfont::PlaydateFont;
+        use crate::system::mock::MockBackend;
+        use crate::theme::{Theme, ThemeManager};
+        use sdl2::pixels::PixelFormatEnum;
+
         let tc = canvas.texture_creator();
         let mut assets = AssetStore::new(&tc).unwrap();
         let mut fs = FontSystem::new();
@@ -3531,40 +3602,42 @@ mod tests {
                 app.osc.table_view = table;
                 canvas.set_draw_color(Color::RGB(255, 0, 255));
                 canvas.clear();
-                app.draw(&mut canvas, &mut assets, &ctx);
+                app.draw(canvas, &mut assets, &ctx);
                 let px = canvas.read_pixels(None, PixelFormatEnum::RGB24).unwrap();
-                let at = |x: usize, y: usize| (px[(y * 320 + x) * 3], px[(y * 320 + x) * 3 + 1], px[(y * 320 + x) * 3 + 2]);
-                let who = format!("{theme} / {name}");
+                let at = |x: usize, y: usize| (px[(y * w + x) * 3], px[(y * w + x) * 3 + 1], px[(y * w + x) * 3 + 2]);
+                let who = format!("{theme} / {name} / {w}x{h}");
                 // Bands in the column x = 5.
                 // The tab strip (y 16..36) is folder tabs of one size, rule on its last pixel row.
                 let ink = tm.get_color("foreground");
                 let ink3 = (ink.r, ink.g, ink.b);
                 let sb = tm.get_color("select_bg");
                 let strip = tabs_strip(app.page, app.tab_first);
-                let act = (0..320).find(|&x| strip.hit(x, 30, &tm) == Some(widgets::FolderHit::Tab(page))).expect("active tab shown") as usize;
-                let idle = (0..320).find(|&x| matches!(strip.hit(x, 30, &tm), Some(widgets::FolderHit::Tab(i)) if i != page)).unwrap() as usize;
+                let act = (0..w as i32).find(|&x| strip.hit(x, 30, &tm) == Some(widgets::FolderHit::Tab(page))).expect("active tab shown") as usize;
+                let idle = (0..w as i32).find(|&x| matches!(strip.hit(x, 30, &tm), Some(widgets::FolderHit::Tab(i)) if i != page)).unwrap() as usize;
                 if !table {
                     assert_eq!(at(act + 2, 30), (sb.r, sb.g, sb.b), "{who}: the active tab wears the selection colour");
                     assert_eq!(at(act + 10, 35), ink3, "{who}: the rule runs under the active tab too");
                     assert_eq!(at(idle + 10, 35), ink3, "{who}: rule under the idle tabs");
                     assert_eq!(at(4, 35), ink3, "{who}: the tab edge meets the rule");
                 }
+                // The last row is left out: a page may end its list there or a row early.
+                let last = (BODY_Y + (body_rows() - 1) * ROW) as usize;
                 let mut start = 36usize;
-                for y in 37..=148usize {
+                for y in 37..=last {
                     // The last pixel row of every 16 px row may carry the 1 px rule between items.
-                    if y < 148 && (y - 36) % 16 == 15 {
+                    if y < last && (y - 36) % 16 == 15 {
                         continue;
                     }
                     let col = |y: usize| at(5, y);
-                    if y == 148 || col(y) != col(start) {
+                    if y == last || col(y) != col(start) {
                         assert!(col(start) != (255, 0, 255), "{who}: unpainted band at y={start}");
                         assert_eq!((start - 36) % 16, 0, "{who}: band starts at y={start}");
                         assert_eq!((y - start) % 16, 0, "{who}: band at y={start} is {} px tall", y - start);
                         start = y;
                     }
                 }
-                // Below the nine rows only the app background (no unpainted pixels): windows reach the screen edge minus 1 px.
-                for y in 148..169usize {
+                // Below, only the app background (no unpainted pixels): windows reach the screen edge minus 1 px.
+                for y in last..h - 1 {
                     assert!(at(5, y) != (255, 0, 255), "{who}: unpainted at y={y}");
                 }
             }
@@ -3595,7 +3668,7 @@ mod mouse_tests {
         run(|ctx| {
             let mut a = Interceptor::new(true);
             // The right arrow tab feeds through every page, the window follows.
-            let next_x = 4 + TABS_ROOM - 6;
+            let next_x = 4 + tabs_room() - 6;
             for i in 1..NP {
                 a.pointer(down(next_x, grid::BAR_H + 10, 1), ctx);
                 assert_eq!(a.page, i);
@@ -3648,8 +3721,69 @@ mod mouse_tests {
             a.pointer(PointerEvent::Up { x: 0, y: 0, button: 0 }, ctx);
             assert!(!a.sb_drag);
             // Row hit-testing ignores points outside the list and below the last item.
-            assert_eq!(g.row_at(LIST_X + LIST_W + 5, y), None);
+            assert_eq!(g.row_at(LIST_X + list_w() + 5, y), None);
             assert_eq!(g.row_at(LIST_X + 5, BODY_Y), None, "the header band is not an item");
+        });
+    }
+
+    /// The body's geometry is the old fixed one on 320 x 170 and grows with a bigger window.
+    #[test]
+    fn layout_follows_the_surface() {
+        grid::with_surface((320, 170), || {
+            assert_eq!((body_rows(), body_h(), body_end(), list_w(), extra_w()), (8, 128, 169, 304, 0));
+            assert_eq!(body_scrollbar_rect(), Rect::new(312, 37, 4, 132));
+            assert_eq!(dev_tree_rect(), Rect::new(4, 36, 304, 128));
+            assert_eq!(eth_graph_rect(), Rect::new(162, 52, 144, 109));
+            assert_eq!(eth_slots(eth_graph_rect()), 72);
+            assert_eq!(ble_vis(), 3);
+        });
+        grid::with_surface((800, 480), || {
+            // Same pitch, more rows; the frame line stays clear of the last one.
+            assert_eq!(body_rows(), 27);
+            assert!(BODY_Y + body_h() < body_end() - 1);
+            assert_eq!((list_w(), extra_w()), (784, 480));
+            let sb = body_scrollbar_rect();
+            assert_eq!((sb.x(), sb.bottom()), (grid::scroll_x(), body_end()));
+            let g = eth_graph_rect();
+            assert_eq!((g.right(), g.y(), g.bottom()), (LIST_X + list_w() - 2, BODY_Y + ROW, BODY_Y + body_h() - 3));
+            assert_eq!(eth_slots(g), 312);
+            assert_eq!(ble_vis(), 13);
+        });
+    }
+
+    /// In a big window every list shows more rows, and a click on a row far below the 320 x 170
+    /// area selects that row.
+    #[test]
+    fn a_big_window_shows_more_rows_and_clicks_reach_them() {
+        run(|ctx| {
+            let mut a = Interceptor::new(true);
+            for n in 0..60 {
+                a.osc.feed_packet(n * 10, "192.168.3.7:9001", &mock_osc_packet(n as u32 + 1));
+            }
+            a.set_page(PAGE_OSC);
+            a.osc.table_view = false;
+            let small = grid::with_surface((320, 170), || a.dims().1);
+            assert_eq!(small, 6);
+            grid::with_surface((800, 480), || {
+                a.sync_cursor();
+                let g = a.list_geom().unwrap();
+                assert_eq!(g.vis, 25);
+                assert_eq!(g.start, g.total - g.vis);
+                // Row 20 of the list: y well below 170, x well right of 320.
+                let y = BODY_Y + (g.first_row + 20) * ROW + 3;
+                a.pointer(down(600, y, 1), ctx);
+                assert_eq!(a.cur[PAGE_OSC], g.start + 20);
+                // The scroll bar is at the window's right edge.
+                assert_eq!(g.row_at(grid::scroll_x() + 1, y), None);
+            });
+            // Device tab: the tree follows the window's height.
+            a.set_page(PAGE_DEV);
+            grid::with_surface((800, 480), || {
+                a.with_dev(|dv, _| assert_eq!(dv.tree.visible, 27));
+            });
+            grid::with_surface((320, 170), || {
+                a.with_dev(|dv, _| assert_eq!((dv.tree.visible, dv.tree.prop_w), (8, widgets::PROP_ROW_W)));
+            });
         });
     }
 
@@ -3675,7 +3809,7 @@ mod mouse_tests {
             let sb = body_scrollbar_rect();
             let (total, vis) = {
                 let t = &a.dev.as_ref().unwrap().tree;
-                (t.rows.len(), BODY_ROWS as usize)
+                (t.rows.len(), body_rows() as usize)
             };
             assert!(total > vis);
             a.pointer(down(sb.x() + 1, sb.y() + sb.height() as i32 - 6, 1), ctx);

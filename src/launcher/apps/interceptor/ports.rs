@@ -974,7 +974,7 @@ impl Ports {
 
     /// (rows, rows visible, first body row) of a list page here.
     pub fn dims(&self, page: usize) -> Option<(usize, usize, i32)> {
-        let full = (BODY_ROWS - 1) as usize;
+        let full = (body_rows() - 1) as usize;
         match page {
             PAGE_WIFI => Some((self.wifi.len(), full, 1)),
             PAGE_SER if !self.serial.ports.is_empty() => Some((self.serial.log.len(), full - 1, 1)),
@@ -1161,7 +1161,7 @@ impl Interceptor {
 
     /// The "Install ..." button a page shows when a tool it needs is missing (Return or a click).
     pub(super) fn install_button_rect() -> Rect {
-        Rect::new(LIST_X + (LIST_W - 180) / 2, BODY_Y + 4 * ROW + 4, 180, 24)
+        Rect::new(LIST_X + (list_w() - 180) / 2, BODY_Y + 4 * ROW + 4, 180, 24)
     }
 
     fn draw_install_button(&self, c: &mut Canvas<Window>, ctx: &Ctx, page: usize) {
@@ -1174,10 +1174,10 @@ impl Interceptor {
     /// A page with nothing to show yet: a header and plain lines under it.
     fn explain(&self, c: &mut Canvas<Window>, ctx: &Ctx, p: &Pal, title: &str, lines: &[String]) {
         header_band(c, ctx, p, 0, title, "");
-        for (i, l) in lines.iter().enumerate().take((BODY_ROWS - 1) as usize) {
+        for (i, l) in lines.iter().enumerate().take((body_rows() - 1) as usize) {
             let row = row_rect(1 + i as i32);
             zebra(c, p, row, i + 1);
-            text_row(c, ctx, row.x() + 4, row.y(), LIST_W - 8, l, p.faint);
+            text_row(c, ctx, row.x() + 4, row.y(), list_w() - 8, l, p.faint);
         }
     }
 
@@ -1194,23 +1194,25 @@ impl Interceptor {
             Some(s) => band_at(c, ctx, p, row_rect(0), &format!("Wi-Fi  {s}"), &right),
             None => header_band(c, ctx, p, 0, "Not connected", &right),
         }
-        let vis = (BODY_ROWS - 1) as usize;
+        let vis = (body_rows() - 1) as usize;
         let total = self.ports.wifi.len();
         let r = self.window(PAGE_WIFI, total, vis);
         let n = r.len();
+        // A wider list widens the network name; the other columns keep their size.
+        let e = extra_w();
         for (k, i) in r.enumerate() {
             let net = self.ports.wifi[i].clone();
             let row = row_rect(1 + k as i32);
             let (fg, sub) = row_style(c, ctx, p, row, i, i == self.cur[PAGE_WIFI]);
             let mark = if net.in_use { "* " } else { "  " };
             let name = if net.ssid.is_empty() { i18n::tr_s("(hidden)") } else { net.ssid.clone() };
-            text_data(c, ctx, row.x() + 2, row.y(), 140, &format!("{mark}{name}"), if net.ssid.is_empty() { sub } else { fg });
-            draw_meter(c, ctx.tm, Rect::new(row.x() + 148, row.y() + 4, 40, 8), net.signal as f32 / 100.0);
-            text_data(c, ctx, row.x() + 196, row.y(), 52, &format!("{} {}", net.chan, wifi_band(net.chan)), sub);
+            text_data(c, ctx, row.x() + 2, row.y(), 140 + e, &format!("{mark}{name}"), if net.ssid.is_empty() { sub } else { fg });
+            draw_meter(c, ctx.tm, Rect::new(row.x() + 148 + e, row.y() + 4, 40, 8), net.signal as f32 / 100.0);
+            text_data(c, ctx, row.x() + 196 + e, row.y(), 52, &format!("{} {}", net.chan, wifi_band(net.chan)), sub);
             let sec = if net.security == "open" { i18n::tr_s("open") } else { net.security.split_whitespace().next().unwrap_or("").to_string() };
             right_text(c, ctx, row.right() - 4, row.y(), &sec, sub);
         }
-        for x in [144, 192, 250] {
+        for x in [144 + e, 192 + e, 250 + e] {
             vsep_rows(c, p, LIST_X + x, 1, n);
         }
         scrollbar(c, ctx, total, vis, self.scroll[PAGE_WIFI]);
@@ -1228,7 +1230,7 @@ impl Interceptor {
         let rows = self.usb_rows();
         let devices = rows.iter().filter(|(d, s)| *s >= 0 && !d.name.starts_with("usb")).count();
         header_band(c, ctx, p, 0, "USB host", &format!("{devices} devices"));
-        let vis = (BODY_ROWS - 1) as usize;
+        let vis = (body_rows() - 1) as usize;
         let r = self.window(PAGE_USB, rows.len(), vis);
         let n = r.len();
         for (k, i) in r.enumerate() {
@@ -1242,11 +1244,11 @@ impl Interceptor {
                 -1 => format!("- {label}"),
                 _ => label,
             };
-            text_data(c, ctx, row.x() + 4 + indent, row.y(), LIST_W - 100 - indent, &label, if *state < 0 { sub } else { fg });
+            text_data(c, ctx, row.x() + 4 + indent, row.y(), list_w() - 100 - indent, &label, if *state < 0 { sub } else { fg });
             text_data(c, ctx, row.right() - 88, row.y(), 56, &format!("{:04x}:{:04x}", d.vid, d.pid), sub);
             right_text(c, ctx, row.right() - 4, row.y(), &d.speed_label(), sub);
         }
-        vsep_rows(c, p, LIST_X + LIST_W - 92, 1, n);
+        vsep_rows(c, p, LIST_X + list_w() - 92, 1, n);
         scrollbar(c, ctx, rows.len(), vis, self.scroll[PAGE_USB]);
     }
 
@@ -1307,7 +1309,7 @@ impl Interceptor {
             let row = row_rect(3 + i as i32);
             zebra(c, p, row, i);
             text_row(c, ctx, row.x() + 4, row.y(), 92, k, p.faint);
-            text_data(c, ctx, row.x() + 104, row.y(), LIST_W - 108, v, p.ink);
+            text_data(c, ctx, row.x() + 104, row.y(), list_w() - 108, v, p.ink);
         }
         vsep_rows(c, p, LIST_X + 100, 3, rows.len());
     }
@@ -1333,7 +1335,7 @@ impl Interceptor {
             i18n::tr_s("Port closed")
         };
         band_at(c, ctx, p, row_rect(0), &left, &right);
-        let vis = (BODY_ROWS - 2) as usize;
+        let vis = (body_rows() - 2) as usize;
         let total = s.log.len();
         self.scroll[PAGE_SER] = self.scroll[PAGE_SER].min(total.saturating_sub(vis));
         let end = total - self.scroll[PAGE_SER];
@@ -1346,20 +1348,20 @@ impl Interceptor {
             let col = if l.dir == Dir::Info { sub } else { fg };
             let text = l.render(s.hex);
             if l.dir == Dir::Info {
-                text_row(c, ctx, row.x() + 4, row.y(), LIST_W - 8, &text, col);
+                text_row(c, ctx, row.x() + 4, row.y(), list_w() - 8, &text, col);
             } else {
-                text_data(c, ctx, row.x() + 4, row.y(), LIST_W - 8, &text, col);
+                text_data(c, ctx, row.x() + 4, row.y(), list_w() - 8, &text, col);
             }
         }
         // The last row: the line to send (the shared text field) while open, the port's name when closed.
-        let row = row_rect(BODY_ROWS - 1);
+        let row = row_rect(body_rows() - 1);
         if s.is_open() {
             widgets::draw_field(c, ctx.fs, ctx.tm, row, &widgets::Field { text: &s.input, caret: Some(s.input.chars().count()), prefix: ">", ..Default::default() });
         } else {
             ui::fill_rect(c, row, p.paper);
             ui::line(c, row.x(), row.y(), row.right() - 1, row.y(), p.band);
             let label = if let Some(e) = &s.err { e.clone() } else { port.label.clone() };
-            text_data(c, ctx, row.x() + 4, row.y(), LIST_W - 8, &label, p.faint);
+            text_data(c, ctx, row.x() + 4, row.y(), list_w() - 8, &label, p.faint);
         }
         scrollbar(c, ctx, total, vis, total.saturating_sub(vis).saturating_sub(self.scroll[PAGE_SER]));
     }
@@ -1380,17 +1382,17 @@ impl Interceptor {
         if let I2cState::Err(e) = &i2c.state {
             let row = row_rect(1);
             zebra(c, p, row, 1);
-            text_row(c, ctx, row.x() + 4, row.y(), LIST_W - 8, e, p.faint);
+            text_row(c, ctx, row.x() + 4, row.y(), list_w() - 8, e, p.faint);
             self.draw_install_button(c, ctx, PAGE_I2C);
             return;
         }
         if i2c.state == I2cState::Done && i2c.found.is_empty() {
             let row = row_rect(1);
             zebra(c, p, row, 1);
-            text_row(c, ctx, row.x() + 4, row.y(), LIST_W - 8, "No device answered.", p.faint);
+            text_row(c, ctx, row.x() + 4, row.y(), list_w() - 8, "No device answered.", p.faint);
             return;
         }
-        let vis = (BODY_ROWS - 1) as usize;
+        let vis = (body_rows() - 1) as usize;
         let total = self.ports.i2c.found.len();
         let r = self.window(PAGE_I2C, total, vis);
         let n = r.len();
@@ -1400,7 +1402,7 @@ impl Interceptor {
             let (fg, sub) = row_style(c, ctx, p, row, i, i == self.cur[PAGE_I2C]);
             text_data(c, ctx, row.x() + 4, row.y(), 36, &format!("0x{addr:02X}"), fg);
             let hint = i2c_hint(addr);
-            text_data(c, ctx, row.x() + 48, row.y(), LIST_W - 130, if hint.is_empty() { "?" } else { hint }, if hint.is_empty() { sub } else { fg });
+            text_data(c, ctx, row.x() + 48, row.y(), list_w() - 130, if hint.is_empty() { "?" } else { hint }, if hint.is_empty() { sub } else { fg });
             if used {
                 right_text(c, ctx, row.right() - 4, row.y(), "kernel driver", sub);
             }
@@ -1421,20 +1423,22 @@ impl Interceptor {
         let chip = self.ports.gpio[self.ports.gpio_chip.min(self.ports.gpio.len() - 1)].clone();
         let used = chip.lines.iter().filter(|l| l.consumer.is_some()).count();
         band_at(c, ctx, p, row_rect(0), &format!("{}  {}", chip.name, chip.label), &format!("{used} / {} used", chip.lines.len()));
-        let vis = (BODY_ROWS - 1) as usize;
+        let vis = (body_rows() - 1) as usize;
         let r = self.window(PAGE_GPIO, chip.lines.len(), vis);
         let n = r.len();
+        // A wider list: half the extra width to the line name, the rest to the consumer.
+        let en = extra_w() / 2;
         for (k, i) in r.enumerate() {
             let l = &chip.lines[i];
             let row = row_rect(1 + k as i32);
             let (fg, sub) = row_style(c, ctx, p, row, i, i == self.cur[PAGE_GPIO]);
             right_text(c, ctx, row.x() + 22, row.y(), &l.num.to_string(), sub);
-            text_data(c, ctx, row.x() + 30, row.y(), 104, if l.name.is_empty() { "-" } else { &l.name }, fg);
+            text_data(c, ctx, row.x() + 30, row.y(), 104 + en, if l.name.is_empty() { "-" } else { &l.name }, fg);
             let dir = format!("{}{}", if l.output { "out" } else { "in" }, if l.active_low { " low" } else { "" });
-            text_data(c, ctx, row.x() + 142, row.y(), 50, &dir, sub);
-            text_data(c, ctx, row.x() + 198, row.y(), LIST_W - 202, l.consumer.as_deref().unwrap_or("-"), if l.consumer.is_some() { fg } else { sub });
+            text_data(c, ctx, row.x() + 142 + en, row.y(), 50, &dir, sub);
+            text_data(c, ctx, row.x() + 198 + en, row.y(), list_w() - 202 - en, l.consumer.as_deref().unwrap_or("-"), if l.consumer.is_some() { fg } else { sub });
         }
-        for x in [26, 138, 194] {
+        for x in [26, 138 + en, 194 + en] {
             vsep_rows(c, p, LIST_X + x, 1, n);
         }
         scrollbar(c, ctx, chip.lines.len(), vis, self.scroll[PAGE_GPIO]);
@@ -1452,10 +1456,10 @@ impl Interceptor {
         if devs.is_empty() {
             let row = row_rect(1);
             zebra(c, p, row, 1);
-            text_row(c, ctx, row.x() + 4, row.y(), LIST_W - 8, "No device on the bus.", p.faint);
+            text_row(c, ctx, row.x() + 4, row.y(), list_w() - 8, "No device on the bus.", p.faint);
             return;
         }
-        let vis = (BODY_ROWS - 1) as usize;
+        let vis = (body_rows() - 1) as usize;
         let r = self.window(PAGE_W1, devs.len(), vis);
         let n = r.len();
         for (k, i) in r.enumerate() {
@@ -1463,7 +1467,7 @@ impl Interceptor {
             let row = row_rect(1 + k as i32);
             let (fg, sub) = row_style(c, ctx, p, row, i, i == self.cur[PAGE_W1]);
             text_data(c, ctx, row.x() + 4, row.y(), 104, &mask_w1(&d.id, self.mask), fg);
-            text_data(c, ctx, row.x() + 116, row.y(), 110, w1_family(&d.id), sub);
+            text_data(c, ctx, row.x() + 116, row.y(), 110 + extra_w(), w1_family(&d.id), sub);
             if let Some(t) = d.temp_mc {
                 right_text(c, ctx, row.right() - 4, row.y(), &fmt_temp(t), fg);
             }

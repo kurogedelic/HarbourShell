@@ -9,8 +9,53 @@ use sdl2::rect::Rect;
 
 pub const UNIT: i32 = 4;
 
+/// The design size: the Cardputer Zero's LCD. A [`Sizing::Fixed`](crate::launcher::app::Sizing) app
+/// is always drawn at this size (scaled by whole numbers on a bigger screen), so its constants stay
+/// right. Code that also runs in a resizable window reads the surface size instead: [`sw`], [`sh`].
 pub const SCREEN_W: i32 = 320;
 pub const SCREEN_H: i32 = 170;
+
+thread_local! {
+    static SURFACE: std::cell::Cell<(i32, i32)> = const { std::cell::Cell::new((SCREEN_W, SCREEN_H)) };
+}
+
+/// The lowest surface: a flexible screen above the on-screen keyboard on a 170 px screen.
+pub const MIN_SURFACE_H: i32 = 64;
+
+/// Width of the surface being drawn now: the screen, or the window the host is drawing.
+pub fn sw() -> i32 {
+    SURFACE.with(|s| s.get().0)
+}
+
+/// Height of the surface being drawn now.
+pub fn sh() -> i32 {
+    SURFACE.with(|s| s.get().1)
+}
+
+/// Set the surface size (the host, before it draws a window or hands it input). Returns the
+/// previous size so the caller can put it back.
+pub fn set_surface(w: i32, h: i32) -> (i32, i32) {
+    // Never narrower than the design width; a screen above the on-screen keyboard may be lower.
+    SURFACE.with(|s| s.replace((w.max(SCREEN_W), h.max(MIN_SURFACE_H))))
+}
+
+/// Run `f` with the surface set to `size`, then put the old size back.
+pub fn with_surface<R>(size: (i32, i32), f: impl FnOnce() -> R) -> R {
+    let old = set_surface(size.0, size.1);
+    let r = f();
+    set_surface(old.0, old.1);
+    r
+}
+
+/// [`SCROLL_X`] for the current surface.
+pub fn scroll_x() -> i32 {
+    sw() - MARGIN - SCROLL_W
+}
+
+/// [`APP_FRAME_BOTTOM`] for the current surface.
+pub fn frame_bottom() -> i32 {
+    sh() - 2
+}
 
 /// Menu strip at the top (4 units).
 pub const BAR_H: i32 = 16;
@@ -64,7 +109,7 @@ pub fn rect_u(x: i32, y: i32, w: i32, h: i32) -> Rect {
 /// The window: a 1 px gap to the screen edges and to the menu bar, so 318 x 152 at (1, 17).
 pub fn window() -> Rect {
     let g = WINDOW_INSET;
-    Rect::new(g, BAR_H + g, (SCREEN_W - 2 * g) as u32, (SCREEN_H - BAR_H - 2 * g) as u32)
+    Rect::new(g, BAR_H + g, (sw() - 2 * g) as u32, (sh() - BAR_H - 2 * g) as u32)
 }
 
 /// 1 px frame, then 1 px of breathing room on the left, right and bottom.
@@ -94,7 +139,10 @@ pub const APP_FRAME_BOTTOM: i32 = SCREEN_H - 2;
 
 /// Where `app_content` stops (exclusive): y 161 is its last row, as when the frame's corners were
 /// rounded, so the framed apps keep their rows and cells.
-const APP_CONTENT_END: i32 = 162;
+/// 8 px above the screen's last row on every surface.
+fn app_content_end() -> i32 {
+    sh() - 8
+}
 
 /// The 1 px frame of a full-screen app whose content is one big area (Terminal, Text Editor,
 /// Browser, Images): the old window outline without its title bar. It keeps 1 px to the screen
@@ -108,7 +156,7 @@ pub fn app_frame() -> Rect {
 /// The same frame starting at row `top` (the Browser puts it under its toolbar).
 pub fn app_frame_from(top: i32) -> Rect {
     let g = WINDOW_INSET;
-    Rect::new(g, top, (SCREEN_W - 2 * g) as u32, (APP_FRAME_BOTTOM + 1 - top) as u32)
+    Rect::new(g, top, (sw() - 2 * g) as u32, (frame_bottom() + 1 - top) as u32)
 }
 
 /// Inside the frame's line: (2, 18, 316, 150).
@@ -125,32 +173,33 @@ pub fn app_content() -> Rect {
 
 pub fn app_content_from(top: i32) -> Rect {
     let f = app_frame_from(top);
-    Rect::new(f.x() + 2, top + 2, f.width() - 4, (APP_CONTENT_END - (top + 2)) as u32)
+    Rect::new(f.x() + 2, top + 2, f.width() - 4, (app_content_end() - (top + 2)) as u32)
 }
 
 /// Every pixel of the frame's line, starting at row `top` (top line, sides, bottom line).
 pub fn app_frame_points(top: i32) -> Vec<(i32, i32)> {
-    let (l, r) = (WINDOW_INSET, SCREEN_W - 1 - WINDOW_INSET);
+    let (l, r) = (WINDOW_INSET, sw() - 1 - WINDOW_INSET);
+    let bottom = frame_bottom();
     let mut v = Vec::new();
     for x in l..=r {
         v.push((x, top));
     }
-    for y in top + 1..APP_FRAME_BOTTOM {
+    for y in top + 1..bottom {
         v.push((l, y));
         v.push((r, y));
     }
     for x in l..=r {
-        v.push((x, APP_FRAME_BOTTOM));
+        v.push((x, bottom));
     }
     v
 }
 
 /// Row `y`'s inside span (first and last x) of the frame, or None on and below the bottom line.
 pub fn app_frame_span(y: i32) -> Option<(i32, i32)> {
-    if y >= APP_FRAME_BOTTOM {
+    if y >= frame_bottom() {
         return None;
     }
-    Some((WINDOW_INSET + 1, SCREEN_W - 2 - WINDOW_INSET))
+    Some((WINDOW_INSET + 1, sw() - 2 - WINDOW_INSET))
 }
 
 /// Draws the app frame from row `top` down: the line in `line`, and when `fill` is given the inside
@@ -158,7 +207,7 @@ pub fn app_frame_span(y: i32) -> Option<(i32, i32)> {
 pub fn draw_app_frame(c: &mut sdl2::render::Canvas<sdl2::video::Window>, top: i32, line: sdl2::pixels::Color, fill: Option<sdl2::pixels::Color>) {
     if let Some(f) = fill {
         c.set_draw_color(f);
-        for y in top + 1..APP_FRAME_BOTTOM {
+        for y in top + 1..frame_bottom() {
             if let Some((x0, x1)) = app_frame_span(y) {
                 let _ = c.fill_rect(Rect::new(x0, y, (x1 - x0 + 1) as u32, 1));
             }

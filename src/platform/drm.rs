@@ -19,7 +19,10 @@ use std::os::unix::io::AsRawFd;
 
 const FOURCC_RGB565: u32 = 0x3631_4752; // 'RG16'
 const FOURCC_XRGB8888: u32 = 0x3432_5258; // 'XR24'
+/// 8-bit grey (one byte per pixel), what some grey and black-and-white panels take.
+const FOURCC_R8: u32 = 0x2020_3852; // 'R8  '
 const CONNECTOR_SPI: u32 = 19;
+const CONNECTOR_HDMIA: u32 = 11;
 const MODE_TYPE_PREFERRED: u32 = 1 << 3;
 
 #[repr(C)]
@@ -102,6 +105,27 @@ struct Connector {
     mm_height: u32,
     subpixel: u32,
     pad: u32,
+}
+
+#[repr(C)]
+#[derive(Default, Clone, Copy)]
+struct Version {
+    major: i32,
+    minor: i32,
+    patch: i32,
+    name_len: usize,
+    name: u64,
+    date_len: usize,
+    date: u64,
+    desc_len: usize,
+    desc: u64,
+}
+
+/// Drivers of black-and-white panels (Sharp memory LCDs and their kin): Harbour sends them its
+/// 1-bit theme, dithered.
+pub fn mono_driver(name: &str) -> bool {
+    let n = name.to_ascii_lowercase();
+    ["sharp", "memory", "ls0", "ssd130", "st7565", "uc1701"].iter().any(|k| n.contains(k))
 }
 
 #[repr(C)]
@@ -231,6 +255,8 @@ pub struct ConnInfo {
     pub connection: u32,
     pub crtc_id: u32,
     pub modes: Vec<ModeInfo>,
+    /// Physical size (mm), 0 when unknown.
+    pub mm: (u32, u32),
 }
 
 /// Raw device access shared by the backend and the probe tool.
@@ -286,6 +312,15 @@ impl Device {
         Ok(c)
     }
 
+    /// The kernel driver's name (DRM_IOCTL_VERSION).
+    pub fn driver_name(&self) -> io::Result<String> {
+        let mut name = vec![0u8; 64];
+        let mut v = Version { name_len: name.len(), name: name.as_mut_ptr() as u64, ..Default::default() };
+        ioctl(self.fd(), iowr::<Version>(0x00), &mut v)?;
+        name.truncate(v.name_len.min(64));
+        Ok(String::from_utf8_lossy(&name).into_owned())
+    }
+
     pub fn connectors(&self) -> io::Result<Vec<ConnInfo>> {
         let (crtcs, conns) = self.resources()?;
         let mut out = Vec::new();
@@ -327,6 +362,7 @@ impl Device {
                 connection: c2.connection,
                 crtc_id,
                 modes,
+                mm: (c2.mm_width, c2.mm_height),
             });
         }
         Ok(out)
@@ -367,6 +403,8 @@ pub fn find_panel() -> io::Result<String> {
         .collect();
     cards.sort();
     let mut fallback = None;
+    // Any card with a connected screen (a handheld's DSI panel, a monitor) when no small panel is found.
+    let mut any = None;
     for c in cards {
         let Ok(dev) = Device::open(&c) else { continue };
         let Ok(conns) = dev.connectors() else { continue };
@@ -380,9 +418,12 @@ pub fn find_panel() -> io::Result<String> {
             if k.modes[0].hdisplay <= 640 && fallback.is_none() {
                 fallback = Some(c.clone());
             }
+            if any.is_none() {
+                any = Some(c.clone());
+            }
         }
     }
-    fallback.ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no panel connector found under /dev/dri"))
+    fallback.or(any).ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "no panel connector found under /dev/dri"))
 }
 
 fn pick_mode(modes: &[ModeInfo]) -> ModeInfo {
@@ -399,6 +440,10 @@ pub struct DrmDisplay {
     saved: Crtc,
     width: usize,
     height: usize,
+    /// Physical size of the panel (mm), when the driver reports it.
+    mm: Option<(u32, u32)>,
+    /// The kernel driver's name (`sharp-drm`, `vc4`...).
+    driver: String,
     format: u32,
     fb_id: u32,
     handle: u32,
@@ -425,10 +470,18 @@ impl DrmDisplay {
         };
         let dev = Device::open(&path)?;
         let conns = dev.connectors()?;
+        // The built-in panel first (SPI, or a small mode); any connected screen otherwise (a DSI
+        // panel of a handheld, an HDMI monitor).
+        let usable = |k: &&ConnInfo| k.connection == 1 && !k.modes.is_empty() && k.crtc_id != 0;
         let conn = conns
             .iter()
-            .find(|k| k.connection == 1 && !k.modes.is_empty() && k.crtc_id != 0 && (k.connector_type == CONNECTOR_SPI || k.modes[0].hdisplay <= 640))
+            .filter(usable)
+            .find(|k| k.connector_type == CONNECTOR_SPI || k.modes[0].hdisplay <= 640)
+            .or_else(|| conns.iter().filter(usable).find(|k| k.connector_type != CONNECTOR_HDMIA))
+            .or_else(|| conns.iter().find(usable))
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, format!("{path}: no usable panel connector")))?;
+        let mm = Some(conn.mm);
+        let driver = dev.driver_name().unwrap_or_default();
         let mode = pick_mode(&conn.modes);
         let (width, height) = (mode.hdisplay as usize, mode.vdisplay as usize);
         // Becoming master is what lets an unprivileged `video` user set a mode.
@@ -445,6 +498,8 @@ impl DrmDisplay {
             saved,
             width,
             height,
+            mm,
+            driver,
             format: FOURCC_RGB565,
             fb_id: 0,
             handle: 0,
@@ -457,9 +512,10 @@ impl DrmDisplay {
             ext: None,
             permanent_fbdev: false,
         };
-        // RGB565 first (no conversion, what the panel wants); XRGB8888 (driver converts) otherwise.
+        // RGB565 first (no conversion, what the panel wants); XRGB8888 (driver converts) otherwise;
+        // 8-bit grey for panels that take only that.
         let mut err = None;
-        for (fourcc, bpp) in [(FOURCC_RGB565, 16u32), (FOURCC_XRGB8888, 32)] {
+        for (fourcc, bpp) in [(FOURCC_RGB565, 16u32), (FOURCC_XRGB8888, 32), (FOURCC_R8, 8)] {
             match me.create_buffer(fourcc, bpp) {
                 Ok(()) => {
                     err = None;
@@ -556,10 +612,10 @@ impl DrmDisplay {
     }
 
     fn bpp_bytes(&self) -> usize {
-        if self.format == FOURCC_RGB565 {
-            2
-        } else {
-            4
+        match self.format {
+            FOURCC_RGB565 => 2,
+            FOURCC_R8 => 1,
+            _ => 4,
         }
     }
 
@@ -573,6 +629,10 @@ impl DrmDisplay {
                 let dst = self.map.add(off);
                 if self.format == FOURCC_RGB565 {
                     std::ptr::copy_nonoverlapping(src.as_ptr(), dst, src.len());
+                } else if self.format == FOURCC_R8 {
+                    for (i, p) in src.chunks_exact(2).enumerate() {
+                        dst.add(i).write(super::display::luma565(p[0], p[1]));
+                    }
                 } else {
                     let dst = dst as *mut u32;
                     for (i, p) in src.chunks_exact(2).enumerate() {
@@ -669,6 +729,22 @@ impl Display for DrmDisplay {
         self.ext.is_some()
     }
 
+    fn size(&self) -> (usize, usize) {
+        (self.width, self.height)
+    }
+    fn mm(&self) -> Option<(u32, u32)> {
+        self.mm.filter(|(w, h)| *w > 0 && *h > 0)
+    }
+    fn kind(&self) -> super::display::PanelKind {
+        use super::display::PanelKind;
+        if mono_driver(&self.driver) {
+            PanelKind::Mono
+        } else if self.format == FOURCC_R8 {
+            PanelKind::Gray
+        } else {
+            PanelKind::Color
+        }
+    }
     fn backend(&self) -> &'static str {
         if self.ext.is_some() {
             "drm+fbdev"

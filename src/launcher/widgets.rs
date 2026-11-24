@@ -60,8 +60,8 @@ impl Pointer {
 
     /// Relative motion: returns a `Drag` while the left button is held, else a `Move`.
     pub fn moved(&mut self, dx: i32, dy: i32) -> PointerEvent {
-        self.x = (self.x + dx).clamp(0, grid::SCREEN_W - 1);
-        self.y = (self.y + dy).clamp(0, grid::SCREEN_H - 1);
+        self.x = (self.x + dx).clamp(0, grid::sw() - 1);
+        self.y = (self.y + dy).clamp(0, grid::sh() - 1);
         if self.left {
             PointerEvent::Drag { x: self.x, y: self.y, dx, dy }
         } else {
@@ -359,8 +359,9 @@ fn folder_idle_text_y(top: i32, last: i32) -> i32 {
 }
 
 /// The room a full-width folder strip offers (margins on both sides).
-pub const FOLDER_ROOM: i32 = grid::SCREEN_W - 2 * grid::MARGIN;
-
+pub fn folder_room() -> i32 {
+    grid::sw() - 2 * grid::MARGIN
+}
 impl<'a> Tabs<'a> {
     /// The shared folder strip (see `FOLDER_TABS_H`); `tab_w` usually from `folder_tab_w`.
     pub fn folder_strip(labels: &'a [&'a str], active: usize, tab_w: i32, tm: &ThemeManager) -> Self {
@@ -384,14 +385,14 @@ impl<'a> Tabs<'a> {
     /// language (see `folder_widths`).
     pub fn folder_fit(fs: &FontSystem, labels: &'a [&'a str], active: usize, tm: &ThemeManager) -> Self {
         let needs: Vec<i32> = folder_need(fs, labels).collect();
-        let mut t = Self::folder_strip(labels, active, folder_tab_w(fs, labels, FOLDER_ROOM), tm);
-        t.widths = folder_widths(&needs, FOLDER_ROOM);
+        let mut t = Self::folder_strip(labels, active, folder_tab_w(fs, labels, folder_room()), tm);
+        t.widths = folder_widths(&needs, folder_room());
         t
     }
 
     /// The strip's full-width `home_bg` band, then the tabs on it.
     pub fn draw_strip(&self, c: &mut Canvas<Window>, fs: &FontSystem, tm: &ThemeManager) {
-        ui::fill_rect(c, Rect::new(0, self.origin.1, grid::SCREEN_W as u32, self.h as u32), tm.get_color("home_bg"));
+        ui::fill_rect(c, Rect::new(0, self.origin.1, grid::sw() as u32, self.h as u32), tm.get_color("home_bg"));
         self.draw(c, fs, tm);
     }
 
@@ -420,7 +421,7 @@ pub struct FolderScroll<'a> {
     pub active: usize,
     /// Index of the first tab shown.
     pub first: usize,
-    /// Room for the strip from `FOLDER_X` (normally `FOLDER_ROOM`; less leaves a gap at the right).
+    /// Room for the strip from `FOLDER_X` (normally `folder_room()`; less leaves a gap at the right).
     pub room: i32,
     pub min_tab_w: i32,
 }
@@ -504,7 +505,7 @@ impl<'a> FolderScroll<'a> {
     /// The `home_bg` band, the window of tabs, the rule and the two arrow tabs.
     pub fn draw_strip(&self, c: &mut Canvas<Window>, fs: &FontSystem, tm: &ThemeManager) {
         let y0 = grid::BAR_H;
-        ui::fill_rect(c, Rect::new(0, y0, grid::SCREEN_W as u32, FOLDER_TABS_H as u32), tm.get_color("home_bg"));
+        ui::fill_rect(c, Rect::new(0, y0, grid::sw() as u32, FOLDER_TABS_H as u32), tm.get_color("home_bg"));
         let strip = self.strip(tm);
         strip.draw(c, fs, tm);
         if !self.overflow() {
@@ -588,7 +589,7 @@ impl Tabs<'_> {
         }
         // The rule under the whole strip: full width (the same margin on the right as on the left,
         // or to the last tab if that reaches further).
-        let right = (grid::SCREEN_W - x0).max(self.x_of(n as usize) + 1);
+        let right = (grid::sw() - x0).max(self.x_of(n as usize) + 1);
         let rule = self.page.map(|pg| rule_ink(tm, pg)).unwrap_or(ink);
         ui::fill_rect(c, Rect::new(x0, last, (right - x0) as u32, 1), rule);
     }
@@ -1122,7 +1123,7 @@ impl Dropdown {
     pub fn popup_rect(&self) -> Rect {
         let h = self.items.len() as i32 * grid::ROW_H + 2;
         let below = self.rect.y() + self.rect.height() as i32;
-        let y = if below + h <= grid::SCREEN_H - grid::WINDOW_INSET { below } else { (self.rect.y() - h).max(grid::BAR_H) };
+        let y = if below + h <= grid::sh() - grid::WINDOW_INSET { below } else { (self.rect.y() - h).max(grid::BAR_H) };
         Rect::new(self.rect.x(), y, self.rect.width().max(60), h as u32)
     }
 
@@ -1253,12 +1254,13 @@ impl AppMenu {
     }
 
     /// Rows that fit under the menu strip.
-    const MAX_ROWS: usize = ((grid::SCREEN_H - grid::BAR_H - grid::WINDOW_INSET - 6) / grid::ROW_H) as usize;
-
+    fn max_rows() -> usize {
+        ((grid::sh() - grid::BAR_H - grid::WINDOW_INSET - 6) / grid::ROW_H) as usize
+    }
     /// One column normally; a long menu (more rows than fit on the screen) is folded into two
     /// columns, filled top to bottom, the left column first. Quit stays last.
     pub fn columns(&self) -> usize {
-        if self.items.len() > Self::MAX_ROWS { 2 } else { 1 }
+        if self.items.len() > Self::max_rows() { 2 } else { 1 }
     }
 
     fn rows_per_column(&self) -> usize {
@@ -1276,7 +1278,7 @@ impl AppMenu {
         match self.origin {
             None => Rect::new(grid::MARGIN, grid::BAR_H, w as u32, h as u32),
             Some((px, py)) => {
-                let (right, bottom) = (grid::SCREEN_W - grid::WINDOW_INSET, grid::SCREEN_H - grid::WINDOW_INSET);
+                let (right, bottom) = (grid::sw() - grid::WINDOW_INSET, grid::sh() - grid::WINDOW_INSET);
                 let x = if px + w <= right { px } else { px - w };
                 let y = if py + h <= bottom { py } else { py - h };
                 Rect::new(x.max(0), y.max(grid::BAR_H), w as u32, h as u32)
@@ -1429,24 +1431,28 @@ pub struct TreeList {
     /// through the row so that all of it can be read); see [`TreeList::marquee`].
     pub shift: usize,
     shift_for: usize,
+    /// Width a property row has for marker + name + value; [`PROP_ROW_W`] for the 302 px list. A
+    /// screen whose list is wider (a big window) sets it to follow the list.
+    pub prop_w: i32,
 }
 
 pub const TREE_ROW_H: i32 = grid::ROW_H;
 pub const TREE_INDENT: i32 = 4;
 const TREE_MARK_W: i32 = 10;
 /// Width of a property row (302 px list) left for marker + name + value.
-const PROP_ROW_W: i32 = 295;
+pub const PROP_ROW_W: i32 = 295;
 
-/// Widths for a property row: (name, value), the name at most 45% of the row.
-fn prop_split(fs: &FontSystem, n: &TreeNode, depth_px: i32) -> (i32, i32) {
-    let avail = PROP_ROW_W - depth_px - 10;
+/// Widths for a property row `row_w` wide (see [`TreeList::prop_w`]): (name, value), the name at
+/// most 45% of the row.
+fn prop_split(fs: &FontSystem, n: &TreeNode, depth_px: i32, row_w: i32) -> (i32, i32) {
+    let avail = row_w - depth_px - 10;
     let name_w = fs.measure_text(&n.label).min(avail * 45 / 100).max(8);
     (name_w, avail - name_w - 8)
 }
 
 impl TreeList {
     pub fn new(roots: Vec<TreeNode>, visible: usize) -> Self {
-        Self { rows: roots, cursor: 0, scroll: 0, visible, shift: 0, shift_for: usize::MAX }
+        Self { rows: roots, cursor: 0, scroll: 0, visible, shift: 0, shift_for: usize::MAX, prop_w: PROP_ROW_W }
     }
 
     pub fn selected(&self) -> Option<&TreeNode> {
@@ -1469,7 +1475,7 @@ impl TreeList {
         }
         let Some(n) = self.selected().filter(|n| n.prop) else { return };
         let len = n.extra.chars().count();
-        let (_, vw) = prop_split(fs, n, 0);
+        let (_, vw) = prop_split(fs, n, 0, self.prop_w);
         if fs.measure_text(&n.extra) <= vw {
             self.shift = 0;
             return;
@@ -1659,7 +1665,7 @@ impl TreeList {
             if node.prop {
                 // name left (faint), value right-aligned (ink); a long value is cut, or scrolled on the cursor row
                 let lx = x + TREE_MARK_W - 1;
-                let (nw, vw) = prop_split(fs, node, node.depth as i32 * TREE_INDENT);
+                let (nw, vw) = prop_split(fs, node, node.depth as i32 * TREE_INDENT, self.prop_w);
                 let name = crate::chrome::fit_text(fs, &node.label, nw);
                 draw_row_text(c, fs, tm, row, lx, &name, sel, if sel { fg } else { faint });
                 let full = fs.measure_text(&node.extra);
@@ -1839,7 +1845,7 @@ mod tree_tests {
 
 #[cfg(test)]
 mod tests {
-    use super::{folder_widths, rule_ink, tones, FOLDER_ROOM};
+    use super::{folder_widths, rule_ink, tones, folder_room};
 
     #[test]
     fn a_folder_rule_always_stands_out_from_the_page_under_it() {
@@ -1863,19 +1869,19 @@ mod tests {
 
     #[test]
     fn folder_tabs_are_equal_when_the_widest_label_fits() {
-        assert_eq!(folder_widths(&[30, 58, 40], FOLDER_ROOM), None);
+        assert_eq!(folder_widths(&[30, 58, 40], folder_room()), None);
     }
 
     #[test]
     fn folder_tabs_grow_per_label_when_one_would_be_cut() {
         // Monitor in Japanese: the 6 tabs get 51 px each at most, ディスク needs 58.
         let needs = [34, 32, 46, 34, 34, 58];
-        let w = folder_widths(&needs, FOLDER_ROOM).expect("per-tab widths");
+        let w = folder_widths(&needs, folder_room()).expect("per-tab widths");
         for (k, need) in needs.iter().enumerate() {
             assert!(w[k] >= *need, "tab {k} is {} px, needs {need}", w[k]);
         }
         let total: i32 = w[..6].iter().sum();
-        assert_eq!(total, FOLDER_ROOM - 1, "the spare room is shared out exactly");
+        assert_eq!(total, folder_room() - 1, "the spare room is shared out exactly");
     }
 
     #[test]
@@ -1897,7 +1903,7 @@ mod tests {
         let mut many = AppMenu::new((0..14).map(|i| MenuItem::new("x", &format!("Item {i}"))).collect());
         assert_eq!(many.columns(), 2);
         let r = many.rect(&fs);
-        assert!(r.bottom() <= grid::SCREEN_H, "the menu fits on the screen");
+        assert!(r.bottom() <= grid::sh(), "the menu fits on the screen");
         // 15 items: column 0 holds 8, column 1 holds 7 (the last is Quit).
         assert_eq!(many.hit(&fs, many.row_rect(&fs, 0).x() + 3, many.row_rect(&fs, 0).y() + 3), Some(0));
         let last = many.row_rect(&fs, 14);
@@ -2141,7 +2147,7 @@ mod context_menu_tests {
         // Near the right / bottom edge it flips up and left.
         let m = AppMenu::context(items(4), 315, 160);
         let r = m.rect(&fs);
-        assert!(r.right() <= grid::SCREEN_W && r.bottom() <= grid::SCREEN_H, "{r:?}");
+        assert!(r.right() <= grid::sw() && r.bottom() <= grid::sh(), "{r:?}");
         assert!(r.x() < 315 && r.y() < 160);
         // Never above the menu strip or left of the screen, even for a tall menu.
         let m = AppMenu::context(items(20), 2, 150);

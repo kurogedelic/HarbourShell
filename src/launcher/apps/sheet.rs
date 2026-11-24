@@ -427,12 +427,17 @@ const BODY_Y: i32 = HEAD_Y + grid::ROW_H;
 const ROW_HEAD_W: i32 = 24;
 const CELL_W: i32 = 56;
 const X0: i32 = grid::MARGIN;
-const VIS_ROWS: usize = ((grid::SCREEN_H - grid::WINDOW_INSET - BODY_Y) / grid::ROW_H) as usize;
+fn vis_rows() -> usize {
+    ((grid::sh() - grid::WINDOW_INSET - BODY_Y) / grid::ROW_H) as usize
+}
 /// The grid's frame runs down to y 168 (1 px above the screen's last row): the 5 px under the last
 /// whole row continue the grid as the frame's edge (paper, column lines), never an empty band.
-const GRID_BOTTOM: i32 = grid::APP_FRAME_BOTTOM + 1;
-const VIS_COLS: usize = ((grid::SCROLL_X + grid::SCROLL_W - grid::MARGIN - X0 - ROW_HEAD_W) / CELL_W) as usize;
-
+fn grid_bottom() -> i32 {
+    grid::frame_bottom() + 1
+}
+fn vis_cols() -> usize {
+    ((grid::scroll_x() + grid::SCROLL_W - grid::MARGIN - X0 - ROW_HEAD_W) / CELL_W) as usize
+}
 impl SheetApp {
     pub fn open(path: PathBuf) -> Self {
         let sheet = std::fs::read_to_string(&path).map(|t| Sheet::from_csv(&t)).unwrap_or_default();
@@ -450,8 +455,8 @@ impl SheetApp {
     }
 
     fn follow(&mut self) {
-        self.scroll_row = self.scroll_row.min(self.row).max((self.row + 1).saturating_sub(VIS_ROWS));
-        self.scroll_col = self.scroll_col.min(self.col).max((self.col + 1).saturating_sub(VIS_COLS));
+        self.scroll_row = self.scroll_row.min(self.row).max((self.row + 1).saturating_sub(vis_rows()));
+        self.scroll_col = self.scroll_col.min(self.col).max((self.col + 1).saturating_sub(vis_cols()));
     }
 
     fn go(&mut self, dc: isize, dr: isize) {
@@ -621,12 +626,16 @@ impl SheetApp {
     }
 
     fn cell_at(&self, x: i32, y: i32) -> Option<(usize, usize)> {
-        let r = Rect::new(X0 + ROW_HEAD_W, BODY_Y, (VIS_COLS as i32 * CELL_W) as u32, (VIS_ROWS as i32 * grid::ROW_H) as u32);
+        let r = Rect::new(X0 + ROW_HEAD_W, BODY_Y, (vis_cols() as i32 * CELL_W) as u32, (vis_rows() as i32 * grid::ROW_H) as u32);
         contains(r, x, y).then(|| (self.scroll_col + ((x - r.x()) / CELL_W) as usize, self.scroll_row + ((y - BODY_Y) / grid::ROW_H) as usize))
     }
 }
 
 impl LauncherApp for SheetApp {
+    fn sizing(&self) -> crate::launcher::app::Sizing {
+        crate::launcher::app::Sizing::Flexible
+    }
+
     fn help(&self) -> Vec<(String, String)> {
         let k = |a: &str, b: &str| (a.to_string(), b.to_string());
         vec![
@@ -745,8 +754,8 @@ impl LauncherApp for SheetApp {
             Keycode::Right => self.go(1, 0),
             Keycode::Up => self.go(0, -1),
             Keycode::Down => self.go(0, 1),
-            Keycode::PageUp => self.go(0, -(VIS_ROWS as isize)),
-            Keycode::PageDown => self.go(0, VIS_ROWS as isize),
+            Keycode::PageUp => self.go(0, -(vis_rows() as isize)),
+            Keycode::PageDown => self.go(0, vis_rows() as isize),
             Keycode::Home => {
                 self.col = 0;
                 self.follow();
@@ -789,7 +798,7 @@ impl LauncherApp for SheetApp {
         }
         match ev {
             PointerEvent::Wheel { dy, .. } if self.edit.is_none() => {
-                self.scroll_row = if dy > 0 { self.scroll_row.saturating_sub(1) } else { (self.scroll_row + 1).min(ROWS - VIS_ROWS) };
+                self.scroll_row = if dy > 0 { self.scroll_row.saturating_sub(1) } else { (self.scroll_row + 1).min(ROWS - vis_rows()) };
             }
             PointerEvent::Down { x, y, button: 0, clicks } => {
                 if let Some((c, r)) = self.cell_at(x, y) {
@@ -814,8 +823,8 @@ impl LauncherApp for SheetApp {
         let line = tm.get_color("line");
         let alt = tm.get_color("surface_alt");
         let soft = tm.get_color("accent_soft");
-        ui::fill_rect(c, Rect::new(0, grid::BAR_H, grid::SCREEN_W as u32, (grid::SCREEN_H - grid::BAR_H) as u32), tm.get_color("home_bg"));
-        let right = grid::SCROLL_X + grid::SCROLL_W;
+        ui::fill_rect(c, Rect::new(0, grid::BAR_H, grid::sw() as u32, (grid::sh() - grid::BAR_H) as u32), tm.get_color("home_bg"));
+        let right = grid::scroll_x() + grid::SCROLL_W;
 
         // Input line: reference, then the raw contents (or the edit in progress).
         let bar = Rect::new(X0, BAR_Y, (right - X0 - grid::MARGIN) as u32, widgets::FIELD_H as u32);
@@ -827,9 +836,9 @@ impl LauncherApp for SheetApp {
         widgets::draw_field(c, fs, tm, bar, &widgets::Field { prefix: &name, prefix_w: 32, ..field });
 
         // Column headers and row numbers.
-        let hdr = Rect::new(X0, HEAD_Y, (ROW_HEAD_W + VIS_COLS as i32 * CELL_W) as u32, grid::ROW_H as u32);
+        let hdr = Rect::new(X0, HEAD_Y, (ROW_HEAD_W + vis_cols() as i32 * CELL_W) as u32, grid::ROW_H as u32);
         ui::fill_rect(c, hdr, alt);
-        for k in 0..VIS_COLS {
+        for k in 0..vis_cols() {
             let col = self.scroll_col + k;
             if col >= COLS {
                 break;
@@ -838,10 +847,10 @@ impl LauncherApp for SheetApp {
             let x = X0 + ROW_HEAD_W + k as i32 * CELL_W + (CELL_W - fs.measure_text(&l)) / 2;
             fs.draw_text(c, x, HEAD_Y + 1, &l, if col == self.col { ink } else { faint });
         }
-        let body = Rect::new(X0 + ROW_HEAD_W, BODY_Y, (VIS_COLS as i32 * CELL_W) as u32, (GRID_BOTTOM - BODY_Y) as u32);
+        let body = Rect::new(X0 + ROW_HEAD_W, BODY_Y, (vis_cols() as i32 * CELL_W) as u32, (grid_bottom() - BODY_Y) as u32);
         ui::fill_rect(c, body, paper);
         ui::fill_rect(c, Rect::new(X0, BODY_Y, ROW_HEAD_W as u32, body.height()), alt);
-        for k in 0..VIS_ROWS {
+        for k in 0..vis_rows() {
             let row = self.scroll_row + k;
             if row >= ROWS {
                 break;
@@ -849,7 +858,7 @@ impl LauncherApp for SheetApp {
             let y = BODY_Y + k as i32 * grid::ROW_H;
             let l = (row + 1).to_string();
             fs.draw_text(c, X0 + ROW_HEAD_W - 4 - fs.measure_text(&l), y + 1, &l, if row == self.row { ink } else { faint });
-            for j in 0..VIS_COLS {
+            for j in 0..vis_cols() {
                 let col = self.scroll_col + j;
                 if col >= COLS {
                     break;
@@ -874,10 +883,10 @@ impl LauncherApp for SheetApp {
         // Grid lines between every cell (solid 1 px `line`), also through the row numbers and
         // the column letters; a heavier ink rule closes the header band and the row-number column.
         let full_h = (grid::ROW_H + body.height() as i32) as u32;
-        for j in 0..VIS_COLS as i32 {
+        for j in 0..vis_cols() as i32 {
             ui::fill_rect(c, Rect::new(body.x() + j * CELL_W, HEAD_Y, 1, full_h), line);
         }
-        for k in 0..VIS_ROWS as i32 {
+        for k in 0..vis_rows() as i32 {
             ui::fill_rect(c, Rect::new(X0, BODY_Y + k * grid::ROW_H + grid::ROW_H - 1, hdr.width(), 1), line);
         }
         ui::fill_rect(c, Rect::new(X0, BODY_Y - 1, hdr.width(), 1), ink);
@@ -1000,7 +1009,7 @@ mod tests {
         assert_eq!((a.col, a.row), (0, 0));
         a.go(100, 200);
         assert_eq!((a.col, a.row), (COLS - 1, ROWS - 1));
-        assert!(a.scroll_row + VIS_ROWS >= ROWS && a.scroll_col + VIS_COLS >= COLS);
+        assert!(a.scroll_row + vis_rows() >= ROWS && a.scroll_col + vis_cols() >= COLS);
     }
 
     #[test]

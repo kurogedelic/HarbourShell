@@ -12,7 +12,7 @@ use sdl2::video::Window;
 use std::path::PathBuf;
 
 use crate::assets::{AssetStore, IconPalette};
-use crate::chrome::{self, SCREEN_W};
+use crate::chrome;
 use crate::font::FontSystem;
 use crate::grid;
 use crate::launcher::folders::{Dest, Folders};
@@ -29,8 +29,6 @@ const TILE_H: i32 = 44;
 const GRID_X: i32 = 4;
 /// 2 px below the menu strip's rule (y 15): the selection square of the first row starts here.
 const GRID_Y: i32 = 18;
-/// Scroll bars and the list end here (exclusive): y 167 is their last row.
-const BOTTOM: i32 = 168;
 const ICON: u32 = 32;
 
 /// List view geometry.
@@ -185,6 +183,10 @@ pub struct Home {
     /// Keys of the last launched items, newest first (`recent.txt`).
     pub recent: Vec<String>,
     recent_path: Option<PathBuf>,
+    /// On a desk (a bigger screen) Home is the desk itself: its icons stand in columns from the
+    /// right edge, top to bottom, on the desk's own background; there is no list view and no
+    /// scrolling.
+    pub desk: bool,
 }
 
 impl Home {
@@ -202,6 +204,7 @@ impl Home {
             folders_path: None,
             recent: Vec::new(),
             recent_path: None,
+            desk: false,
         };
         h.relayout(None);
         h
@@ -325,7 +328,8 @@ impl Home {
             }
             None => {
                 let recent = self.recent_items();
-                if !recent.is_empty() {
+                // The desk shows no Recent folder: its windows are what is in use.
+                if !recent.is_empty() && !self.desk {
                     items.push(Item {
                         name: "Recent".into(),
                         target: Target::External(String::new()),
@@ -637,12 +641,50 @@ impl Home {
         }
     }
 
+    /// Columns that fit the surface (4 grid / 2 list on the Cardputer Zero; more on a bigger screen).
     pub fn cols(&self) -> usize {
-        self.view.cols()
+        let w = grid::sw();
+        match self.view {
+            View::Grid => (((w - GRID_X - (CELL_W - 4) - 8) / CELL_W) + 1).max(1) as usize,
+            View::List => ((w - LIST_X) / LIST_COL_W).max(1) as usize,
+        }
     }
 
+    /// On a desk: icons per column (from the surface's height).
+    fn desk_rows(&self) -> usize {
+        (((grid::sh() - GRID_Y - 4) / CELL_H).max(1)) as usize
+    }
+
+    /// Home becomes (or stops being) the desk: no Recent tile there, icons from the right.
+    pub fn set_desk(&mut self, on: bool) {
+        let keep = self.sel_id();
+        self.desk = on;
+        if on && self.open == Some(RECENT) {
+            self.open = None;
+        }
+        self.relayout(keep);
+    }
+
+    /// On a desk: the width the icon columns take at the right edge (windows open left of it).
+    pub fn desk_icons_w(&self) -> i32 {
+        if !self.desk_grid() {
+            return 0;
+        }
+        let cols = self.items.len().div_ceil(self.desk_rows()).max(1) as i32;
+        cols * CELL_W + 8
+    }
+
+    fn desk_grid(&self) -> bool {
+        self.desk && self.view == View::Grid
+    }
+
+    /// Rows that fit the surface (3 grid / 10 list on the Cardputer Zero).
     pub fn vrows(&self) -> usize {
-        self.view.rows()
+        let h = grid::sh();
+        match self.view {
+            View::Grid => (((h - GRID_Y - TILE_H) / CELL_H) + 1).max(1) as usize,
+            View::List => ((h - LIST_Y - 2) / LIST_ROW_H).max(1) as usize,
+        }
     }
 
     /// Number of pages (screenfuls of rows).
@@ -660,6 +702,9 @@ impl Home {
 
     /// Switch between the icon grid and the list, keeping the selection.
     pub fn toggle_view(&mut self) {
+        if self.desk {
+            return;
+        }
         self.view = if self.view == View::Grid { View::List } else { View::Grid };
         self.scroll_row = 0;
         self.scroll_into_view();
@@ -673,6 +718,10 @@ impl Home {
     }
 
     fn scroll_into_view(&mut self) {
+        if self.desk_grid() {
+            self.scroll_row = 0;
+            return;
+        }
         let (cols, vrows) = (self.cols(), self.vrows());
         let row = self.selected / cols;
         if row < self.scroll_row {
@@ -717,6 +766,40 @@ impl Home {
             }
             return HomeAction::None;
         }
+        if self.desk_grid() {
+            // Columns run from the right edge leftwards, top to bottom.
+            let rpc = self.desk_rows();
+            let moved = match key {
+                Keycode::Up => {
+                    if self.selected % rpc > 0 {
+                        self.selected -= 1;
+                    }
+                    true
+                }
+                Keycode::Down => {
+                    if self.selected % rpc + 1 < rpc && self.selected + 1 < n {
+                        self.selected += 1;
+                    }
+                    true
+                }
+                Keycode::Left => {
+                    if self.selected + rpc < n {
+                        self.selected += rpc;
+                    } else if self.selected / rpc < (n - 1) / rpc {
+                        self.selected = n - 1;
+                    }
+                    true
+                }
+                Keycode::Right => {
+                    self.selected = self.selected.saturating_sub(rpc);
+                    true
+                }
+                _ => false,
+            };
+            if moved {
+                return HomeAction::None;
+            }
+        }
         match key {
             Keycode::Left => self.selected = self.selected.saturating_sub(1),
             Keycode::Right => self.selected = (self.selected + 1).min(n - 1),
@@ -754,15 +837,18 @@ impl Home {
 
     /// The scroll bar's track (None when everything fits).
     pub fn sb_track(&self) -> Option<Rect> {
+        if self.desk_grid() {
+            return None;
+        }
         let (rows, vrows) = (self.rows(), self.vrows());
         if rows <= vrows {
             return None;
         }
         let (y, full) = match self.view {
-            View::Grid => (GRID_Y, BOTTOM - GRID_Y),
-            View::List => (LIST_Y, BOTTOM - LIST_Y),
+            View::Grid => (GRID_Y, grid::sh() - 2 - GRID_Y),
+            View::List => (LIST_Y, grid::sh() - 2 - LIST_Y),
         };
-        Some(Rect::new(grid::SCROLL_X, y, grid::SCROLL_W as u32, full as u32))
+        Some(Rect::new(grid::scroll_x(), y, grid::SCROLL_W as u32, full as u32))
     }
 
     /// The shared scroll bar on `track`.
@@ -813,8 +899,11 @@ impl Home {
 
     /// The entry under the pointer, if any (visible entries only).
     pub fn hit(&self, px: i32, py: i32) -> Option<usize> {
-        let first = self.scroll_row * self.cols();
-        let last = ((self.scroll_row + self.vrows()) * self.cols()).min(self.items.len());
+        let (first, last) = if self.desk_grid() {
+            (0, self.items.len())
+        } else {
+            (self.scroll_row * self.cols(), ((self.scroll_row + self.vrows()) * self.cols()).min(self.items.len()))
+        };
         (first..last).find(|&idx| {
             let Some((cx, cy)) = self.cell_origin(idx) else { return false };
             let r = match self.view {
@@ -851,6 +940,12 @@ impl Home {
     }
 
     fn cell_origin(&self, idx: usize) -> Option<(i32, i32)> {
+        if self.desk_grid() {
+            let rpc = self.desk_rows();
+            let (col, row) = ((idx / rpc) as i32, (idx % rpc) as i32);
+            let x = grid::sw() - 8 - (col + 1) * CELL_W + 4;
+            return (x >= 0).then_some((x, GRID_Y + 6 + row * CELL_H));
+        }
         let (cols, vrows) = (self.cols(), self.vrows());
         let row = idx / cols;
         if row < self.scroll_row || row >= self.scroll_row + vrows {
@@ -873,7 +968,8 @@ impl Home {
         let paper_cream = tm.get_color("widget_face_active");
 
         // Backdrop: a faint dithered wash so the page has a ground, not a void.
-        let body = Rect::new(0, chrome::BAR_H, SCREEN_W, crate::chrome::SCREEN_H - chrome::BAR_H as u32);
+        // (On a desk this wash is the desk itself.)
+        let body = Rect::new(0, chrome::BAR_H, crate::chrome::screen_w(), crate::chrome::screen_h() - chrome::BAR_H as u32);
         crate::dither::fill_two_tone(c, body, tm.get_color("home_bg"), tm.get_color("home_bg_alt"), crate::dither::Pattern::Quarter);
         let tile_fill = tm.get_color("surface_sunken");
         let _faint = crate::launcher::widgets::secondary_ink(tm);

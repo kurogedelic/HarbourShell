@@ -16,6 +16,7 @@ pub mod infoscope;
 pub mod interceptor;
 pub mod monitor;
 pub mod music;
+pub mod music_eq;
 pub mod radio;
 pub mod osc;
 pub mod paint;

@@ -17,6 +17,7 @@ pub struct Shared {
 #[cfg(target_os = "linux")]
 pub mod evdev;
 pub mod mouse;
+pub mod gamepad;
 pub mod display;
 #[cfg(target_os = "linux")]
 pub mod drm;

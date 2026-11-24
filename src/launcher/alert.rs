@@ -92,8 +92,8 @@ impl Alert {
     pub fn rect(&self, fs: &FontSystem) -> Rect {
         let lines = self.wrap(fs, W - 24 - ICON - 14).len() as i32;
         let h = (14 + 16 + lines * 14 + 10 + BTN_H + 14).max(ICON + 44 + BTN_H);
-        let h = h.min(grid::SCREEN_H - grid::BAR_H - 8);
-        Rect::new((grid::SCREEN_W - W) / 2, grid::BAR_H + (grid::SCREEN_H - grid::BAR_H - h) / 2, W as u32, h as u32)
+        let h = h.min(grid::sh() - grid::BAR_H - 8);
+        Rect::new((grid::sw() - W) / 2, grid::BAR_H + (grid::sh() - grid::BAR_H - h) / 2, W as u32, h as u32)
     }
 
     fn button_rects(&self, r: Rect) -> Vec<Rect> {
@@ -233,7 +233,7 @@ mod tests {
         let fs = FontSystem::new();
         let a = Alert::new(AlertIcon::Note, "Hi", "A short message.", &["Cancel", "OK"]);
         let r = a.rect(&fs);
-        assert!(r.bottom() <= grid::SCREEN_H && r.y() >= grid::BAR_H, "the card fits under the menu strip");
+        assert!(r.bottom() <= grid::sh() && r.y() >= grid::BAR_H, "the card fits under the menu strip");
         let b = a.button_rects(r);
         assert_eq!(b.len(), 2);
         assert!(b[0].right() < b[1].x(), "buttons do not overlap");

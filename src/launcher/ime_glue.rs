@@ -12,7 +12,6 @@ use sdl2::rect::Rect;
 use sdl2::render::Canvas;
 use sdl2::video::Window;
 
-use crate::chrome::SCREEN_W;
 use crate::font::FontSystem;
 use crate::ime::{Ime, Key, KeyIn, Mode, View, CAND_PAGE};
 use crate::platform::keys::Input;
@@ -410,7 +409,9 @@ impl Layout {
         let margin = 3;
         let w = area.width() as i32 - 2 * margin - 2;
         // Its 1 px shadow ends at y 166, 1 px above the app frame's bottom line (y 168).
-        let window = Rect::new(area.x() + margin, (crate::grid::APP_FRAME_BOTTOM - 2 - WIN_H).max(0), w.max(40) as u32, WIN_H as u32);
+        // (A shorter `area`, as above the on-screen keyboard, keeps it above that area's bottom.)
+        let bottom = (crate::grid::frame_bottom() - 2).min(area.bottom() - 2);
+        let window = Rect::new(area.x() + margin, (bottom - WIN_H).max(0), w.max(40) as u32, WIN_H as u32);
         let text_x = window.x() + 2 + MODE_W + 4;
         let text_w = window.width() as i32 - (text_x - window.x()) - 4;
         // Keep the caret (or the end of the text) inside the window.
@@ -431,7 +432,6 @@ impl Layout {
 
 #[allow(dead_code)]
 fn _unused(_: Color, _: u32) {
-    let _ = SCREEN_W;
 }
 
 #[cfg(test)]

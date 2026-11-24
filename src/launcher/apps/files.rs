@@ -147,12 +147,17 @@ fn read_dir(dir: &Path, hidden: bool) -> Result<Vec<Entry>, String> {
 
 const LIST_Y: i32 = grid::BAR_H + grid::MARGIN + grid::ROW_H;
 const LIST_X: i32 = grid::MARGIN;
-const LIST_W: i32 = grid::SCROLL_X - grid::GUTTER - grid::MARGIN;
-const VISIBLE: usize = ((grid::SCREEN_H - grid::WINDOW_INSET - LIST_Y) / grid::ROW_H) as usize;
+fn list_w() -> i32 {
+    grid::scroll_x() - grid::GUTTER - grid::MARGIN
+}
+fn visible() -> usize {
+    ((grid::sh() - grid::WINDOW_INSET - LIST_Y) / grid::ROW_H) as usize
+}
 /// The list's box and the scroll bar run down to y 168 (1 px above the screen's last row); the
 /// 5 px under the last whole row are the box's paper, not an empty band.
-const LIST_BOTTOM: i32 = grid::APP_FRAME_BOTTOM + 1;
-
+fn list_bottom() -> i32 {
+    grid::frame_bottom() + 1
+}
 impl Files {
     pub fn new(dir: PathBuf) -> Self {
         let mut f = Files { modal: None, clip: None, trash: fileops::trash_dir(), dir, entries: vec![], cursor: 0, scroll: 0, hidden: false, error: None, hover: None, sb_drag: false, info: None };
@@ -180,7 +185,7 @@ impl Files {
     }
 
     fn follow(&mut self) {
-        self.scroll = widgets::follow_scroll(self.cursor, self.scroll, VISIBLE, self.entries.len());
+        self.scroll = widgets::follow_scroll(self.cursor, self.scroll, visible(), self.entries.len());
     }
 
     fn up(&mut self) {
@@ -449,7 +454,7 @@ impl Files {
     }
 
     fn row_at(&self, x: i32, y: i32) -> Option<usize> {
-        let r = Rect::new(LIST_X, LIST_Y, LIST_W as u32, (VISIBLE as i32 * grid::ROW_H) as u32);
+        let r = Rect::new(LIST_X, LIST_Y, list_w() as u32, (visible() as i32 * grid::ROW_H) as u32);
         if !contains(r, x, y) {
             return None;
         }
@@ -458,8 +463,8 @@ impl Files {
     }
 
     fn scrollbar(&self) -> ScrollBar {
-        let r = Rect::new(grid::SCROLL_X, LIST_Y, grid::SCROLL_W as u32, (LIST_BOTTOM - LIST_Y) as u32);
-        ScrollBar::new(r, self.entries.len(), VISIBLE, self.scroll)
+        let r = Rect::new(grid::scroll_x(), LIST_Y, grid::SCROLL_W as u32, (list_bottom() - LIST_Y) as u32);
+        ScrollBar::new(r, self.entries.len(), visible(), self.scroll)
     }
 
     fn move_cursor(&mut self, delta: isize) {
@@ -470,6 +475,10 @@ impl Files {
 }
 
 impl LauncherApp for Files {
+    fn sizing(&self) -> crate::launcher::app::Sizing {
+        crate::launcher::app::Sizing::Flexible
+    }
+
     fn help(&self) -> Vec<(String, String)> {
         let k = |a: &str, b: &str| (a.to_string(), b.to_string());
         vec![
@@ -638,8 +647,8 @@ impl LauncherApp for Files {
             Keycode::Escape => return AppAction::Quit,
             Keycode::Up => self.move_cursor(-1),
             Keycode::Down => self.move_cursor(1),
-            Keycode::PageUp => self.move_cursor(-(VISIBLE as isize)),
-            Keycode::PageDown => self.move_cursor(VISIBLE as isize),
+            Keycode::PageUp => self.move_cursor(-(visible() as isize)),
+            Keycode::PageDown => self.move_cursor(visible() as isize),
             Keycode::Home => self.move_cursor(-(self.cursor as isize)),
             Keycode::End => self.move_cursor(self.entries.len() as isize),
             Keycode::Left | Keycode::Backspace => self.up(),
@@ -679,16 +688,16 @@ impl LauncherApp for Files {
         match ev {
             PointerEvent::Move { x, y } => self.hover = self.row_at(x, y),
             PointerEvent::Wheel { dy, .. } => {
-                let max = self.entries.len().saturating_sub(VISIBLE);
+                let max = self.entries.len().saturating_sub(visible());
                 self.scroll = if dy > 0 { self.scroll.saturating_sub(1) } else { (self.scroll + 1).min(max) };
             }
             PointerEvent::Down { x, y, button: 0, clicks } => {
                 let sb = self.scrollbar();
                 match sb.hit(x, y) {
                     Some(SbPart::Up) => self.scroll = self.scroll.saturating_sub(1),
-                    Some(SbPart::Down) => self.scroll = (self.scroll + 1).min(self.entries.len().saturating_sub(VISIBLE)),
-                    Some(SbPart::PageUp) => self.scroll = self.scroll.saturating_sub(VISIBLE),
-                    Some(SbPart::PageDown) => self.scroll = (self.scroll + VISIBLE).min(self.entries.len().saturating_sub(VISIBLE)),
+                    Some(SbPart::Down) => self.scroll = (self.scroll + 1).min(self.entries.len().saturating_sub(visible())),
+                    Some(SbPart::PageUp) => self.scroll = self.scroll.saturating_sub(visible()),
+                    Some(SbPart::PageDown) => self.scroll = (self.scroll + visible()).min(self.entries.len().saturating_sub(visible())),
                     Some(SbPart::Thumb) => self.sb_drag = true,
                     None => {
                         if let Some(i) = self.row_at(x, y) {
@@ -715,12 +724,12 @@ impl LauncherApp for Files {
         let line = tm.get_color("line");
         let alt = tm.get_color("surface_alt");
         let soft = tm.get_color("accent_soft");
-        ui::fill_rect(c, Rect::new(0, grid::BAR_H, grid::SCREEN_W as u32, (grid::SCREEN_H - grid::BAR_H) as u32), tm.get_color("home_bg"));
+        ui::fill_rect(c, Rect::new(0, grid::BAR_H, grid::sw() as u32, (grid::sh() - grid::BAR_H) as u32), tm.get_color("home_bg"));
 
         // Path bar, boxed, with a rule under it.
-        let bar = Rect::new(LIST_X, grid::BAR_H + grid::MARGIN, LIST_W as u32, grid::ROW_H as u32);
+        let bar = Rect::new(LIST_X, grid::BAR_H + grid::MARGIN, list_w() as u32, grid::ROW_H as u32);
         ui::fill_rect(c, bar, alt);
-        let mut path_w = LIST_W - 12;
+        let mut path_w = list_w() - 12;
         if let Some((p, cut)) = &self.clip {
             let name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
             let tag = chrome::fit_text(fs, &format!("{}: {name}", crate::launcher::i18n::tr(if *cut { "Cut" } else { "Copy" })), 96);
@@ -733,7 +742,7 @@ impl LauncherApp for Files {
         widgets::draw_row_rule(c, tm, bar);
         ui::draw_rect(c, bar, line);
 
-        let area = Rect::new(LIST_X, LIST_Y, LIST_W as u32, (LIST_BOTTOM - LIST_Y) as u32);
+        let area = Rect::new(LIST_X, LIST_Y, list_w() as u32, (list_bottom() - LIST_Y) as u32);
         ui::fill_rect(c, area, paper);
         if self.entries.iter().all(|e| e.parent) {
             // Nothing but ".." (or nothing at all): say so on the row below it.
@@ -742,9 +751,9 @@ impl LauncherApp for Files {
             let row = if self.entries.is_empty() { 0 } else { 1 };
             fs.draw_text(c, area.x() + 20, widgets::text_origin(area.y() + row * grid::ROW_H, grid::ROW_H), &msg, faint);
         }
-        for (n, e) in self.entries.iter().enumerate().skip(self.scroll).take(VISIBLE) {
+        for (n, e) in self.entries.iter().enumerate().skip(self.scroll).take(visible()) {
             let y = LIST_Y + (n - self.scroll) as i32 * grid::ROW_H;
-            let row = Rect::new(LIST_X, y, LIST_W as u32, grid::ROW_H as u32);
+            let row = Rect::new(LIST_X, y, list_w() as u32, grid::ROW_H as u32);
             let sel = n == self.cursor;
             if sel {
                 widgets::draw_row_plate(c, tm, row);
@@ -758,7 +767,7 @@ impl LauncherApp for Files {
             }
             let size = if e.is_dir { String::new() } else { format_size(e.size) };
             let sw = fs.measure_text(&size);
-            let name = chrome::fit_text(fs, &e.name, LIST_W - 22 - sw - 12);
+            let name = chrome::fit_text(fs, &e.name, list_w() - 22 - sw - 12);
             let ty = widgets::text_origin(row.y(), row.height() as i32);
             fs.draw_text(c, row.x() + 20, ty, &name, fg);
             fs.draw_text(c, row.right() - sw - 6, ty, &size, if sel { fg } else { faint });
@@ -780,7 +789,7 @@ impl LauncherApp for Files {
 fn draw_info(c: &mut Canvas<Window>, ctx: &Ctx, card: &InfoCard) {
     use crate::launcher::i18n::tr;
     let (tm, fs) = (ctx.tm, ctx.fs);
-    let r = Rect::new(12, grid::BAR_H + 8, (grid::SCREEN_W - 24) as u32, 136);
+    let r = Rect::new(12, grid::BAR_H + 8, (grid::sw() - 24) as u32, 136);
     widgets::draw_panel(c, tm, r);
     let ink = tm.get_color("foreground");
     let faint = widgets::secondary_ink(tm);
@@ -892,7 +901,7 @@ mod tests {
         f.entries = (0..30).map(|i| e(&format!("f{i}"), false)).collect();
         f.cursor = 29;
         f.follow();
-        assert_eq!(f.scroll, 30 - VISIBLE);
+        assert_eq!(f.scroll, 30 - visible());
         f.cursor = 0;
         f.follow();
         assert_eq!(f.scroll, 0);

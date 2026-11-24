@@ -17,6 +17,47 @@ pub enum MediaKey {
     BrightnessDown,
 }
 
+/// The gamepad's buttons, as the keyboard and the host read them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Pad {
+    Up,
+    Down,
+    Left,
+    Right,
+    A,
+    B,
+    X,
+    Y,
+    L,
+    R,
+    Start,
+    Select,
+    /// The stick pressed in: a click where the pointer is.
+    Stick,
+}
+
+impl Pad {
+    /// Script and config names: up, down, left, right, a, b, x, y, l, r, start, select, stick.
+    pub fn from_name(s: &str) -> Option<Pad> {
+        Some(match s.to_ascii_lowercase().as_str() {
+            "up" => Pad::Up,
+            "down" => Pad::Down,
+            "left" => Pad::Left,
+            "right" => Pad::Right,
+            "a" => Pad::A,
+            "b" => Pad::B,
+            "x" => Pad::X,
+            "y" => Pad::Y,
+            "l" => Pad::L,
+            "r" => Pad::R,
+            "start" => Pad::Start,
+            "select" => Pad::Select,
+            "stick" => Pad::Stick,
+            _ => return None,
+        })
+    }
+}
+
 /// One input event delivered to the launcher main loop.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Input {
@@ -49,6 +90,16 @@ pub enum Input {
     },
     /// Alt tapped on its own: open the app menu.
     Menu,
+    /// A gamepad button went down or up.
+    Pad {
+        pad: Pad,
+        down: bool,
+    },
+    /// The gamepad's stick: where it is held now, each axis -1000..=1000 (0, 0 = let go).
+    Stick {
+        x: i16,
+        y: i16,
+    },
     Quit,
 }
 

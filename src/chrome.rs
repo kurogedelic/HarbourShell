@@ -11,8 +11,18 @@ use crate::font::FontSystem;
 use crate::theme::ThemeManager;
 use crate::ui;
 
+/// The design size (see [`crate::grid::SCREEN_W`]); [`screen_w`] / [`screen_h`] give the surface
+/// being drawn now.
 pub const SCREEN_W: u32 = 320;
 pub const SCREEN_H: u32 = 170;
+
+pub fn screen_w() -> u32 {
+    crate::grid::sw() as u32
+}
+
+pub fn screen_h() -> u32 {
+    crate::grid::sh() as u32
+}
 pub const BAR_H: i32 = crate::grid::BAR_H;
 pub const TITLEBAR_H: i32 = crate::grid::TITLE_H;
 pub const COMMANDBAR_H: i32 = 16;
@@ -37,6 +47,9 @@ pub struct StatusView {
     pub bar_style: u8,
     /// Input-method mode shown at the right of the context name (`あ`, `A`...); empty = hidden.
     pub ime: String,
+    /// Only the anchor and the context name: a window's title strip on a desk (the desk's own strip
+    /// shows the status).
+    pub bare: bool,
 }
 
 /// Windows fill the screen below the menu bar, inset 2 px on the left, right and
@@ -89,12 +102,13 @@ pub fn draw_zoom(c: &mut Canvas<Window>, tm: &ThemeManager, from: Rect, to: Rect
 pub fn draw_desktop(c: &mut Canvas<Window>, tm: &ThemeManager) {
     let a = tm.get_color("background");
     let b = tm.get_color("shadow");
+    // fill_rect, not clear(): clear() ignores the viewport and would wipe the other windows on a desk.
     c.set_draw_color(a);
-    c.clear();
+    let _ = c.fill_rect(Rect::new(0, 0, screen_w(), screen_h()));
     c.set_draw_color(b);
     let mut y = BAR_H + 1;
-    while y < SCREEN_H as i32 {
-        let _ = c.draw_line((0, y), (SCREEN_W as i32 - 1, y));
+    while y < screen_h() as i32 {
+        let _ = c.draw_line((0, y), (screen_w() as i32 - 1, y));
         y += 2;
     }
 }
@@ -106,7 +120,7 @@ pub fn draw_corners(c: &mut Canvas<Window>, tm: &ThemeManager) {
     // Always pure black, whatever the theme or Invert: the corners are the bezel, not part of the picture.
     let _ = tm;
     c.set_draw_color(sdl2::pixels::Color::RGB(0, 0, 0));
-    let w = SCREEN_W as i32;
+    let w = screen_w() as i32;
     for (row, n) in R.iter().enumerate() {
         let row = row as i32;
         let _ = c.draw_line((0, row), (n - 1, row));
@@ -289,13 +303,20 @@ pub fn draw_menu_bar(c: &mut Canvas<Window>, assets: &mut AssetStore, fs: &FontS
         _ => (tm.get_color("foreground"), tm.get_color("muted"), tm.get_color("topbar_bg")),
     };
     c.set_draw_color(paper);
-    let _ = c.fill_rect(Rect::new(0, 0, SCREEN_W, BAR_H as u32));
-    ui::line(c, 0, BAR_H - 1, SCREEN_W as i32 - 1, BAR_H - 1, ink);
+    let _ = c.fill_rect(Rect::new(0, 0, screen_w(), BAR_H as u32));
+    ui::line(c, 0, BAR_H - 1, screen_w() as i32 - 1, BAR_H - 1, ink);
     status_icon(c, assets, Icon::Anchor, 0, 7, 2, ink, dim);
     let x = 22;
 
+    if st.bare {
+        if !context.is_empty() {
+            let text = fit_display_text(fs, context, screen_w() as i32 - 7 - x);
+            fs.draw_display_text(c, x, 1, &text, ink);
+        }
+        return;
+    }
     // Right side, built from the edge inward.
-    let mut right = SCREEN_W as i32 - 7;
+    let mut right = screen_w() as i32 - 7;
     let clock = &st.time;
     let cw = fs.measure_display_text(clock);
     right -= cw;
@@ -345,6 +366,58 @@ pub fn draw_menu_bar(c: &mut Canvas<Window>, assets: &mut AssetStore, fs: &FontS
     }
 }
 
+/// The things at the right of the menu strip that open a menu when clicked.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StatusItem {
+    Clock,
+    Battery,
+    Network,
+    Internet,
+    Speaker,
+    Ime,
+}
+
+/// Where each status item sits in the strip (x from, x to exclusive), laid out exactly as
+/// [`draw_menu_bar`] draws them, right to left. A couple of pixels wider each side to hit.
+pub fn status_spans(fs: &FontSystem, st: &StatusView) -> Vec<(StatusItem, i32, i32)> {
+    let mut v = Vec::new();
+    if st.bare {
+        return v;
+    }
+    let mut right = screen_w() as i32 - 7;
+    let cw = fs.measure_display_text(&st.time);
+    v.push((StatusItem::Clock, right - cw - 2, right + 4));
+    right -= cw + 9;
+    if st.battery.is_some() || st.charging {
+        let end = right;
+        right -= 16;
+        if let Some(p) = st.battery {
+            right -= fs.measure_text(&format!("{p}%")) + 9;
+        }
+        v.push((StatusItem::Battery, right + 7, end + 2));
+    }
+    right -= 12;
+    v.push((StatusItem::Network, right - 2, right + 14));
+    right -= 16;
+    v.push((StatusItem::Internet, right - 2, right + 14));
+    if st.volume.is_some() {
+        right -= 15;
+        v.push((StatusItem::Speaker, right - 2, right + 15));
+    }
+    right -= 8;
+    if !st.ime.is_empty() {
+        let w = fs.measure_text(&st.ime).max(6) + 6;
+        right -= w;
+        v.push((StatusItem::Ime, right - 2, right + w + 2));
+    }
+    v
+}
+
+/// The status item at strip x `x` (y is the caller's: the strip only).
+pub fn status_hit(fs: &FontSystem, st: &StatusView, x: i32) -> Option<(StatusItem, i32)> {
+    status_spans(fs, st).into_iter().find(|(_, a, b)| (*a..*b).contains(&x)).map(|(i, a, _)| (i, a))
+}
+
 /// Horizontal slider 0..=100 inside `r` (1px frame, filled portion).
 pub fn draw_slider(c: &mut Canvas<Window>, r: Rect, value: u32, fg: sdl2::pixels::Color, bg: sdl2::pixels::Color) {
     ui::fill_rect(c, r, bg);
@@ -358,7 +431,22 @@ pub fn draw_slider(c: &mut Canvas<Window>, r: Rect, value: u32, fg: sdl2::pixels
 
 /// Mouse pointer: an arrow with an ink fill and a paper outline (visible on any theme).
 pub fn draw_cursor(c: &mut Canvas<Window>, tm: &ThemeManager, x: i32, y: i32) {
-    const ART: [&str; 16] = [
+    for (row, line) in CURSOR_ART.iter().enumerate() {
+        for (col, ch) in line.bytes().enumerate() {
+            let color = match ch {
+                b'X' => tm.get_color("widget_face_active"),
+                b'O' => tm.get_color("foreground"),
+                _ => continue,
+            };
+            c.set_draw_color(color);
+            let _ = c.draw_point((x + col as i32, y + row as i32));
+        }
+    }
+}
+
+/// The pointer arrow: `X` the paper outline, `O` the ink fill; the tip (0, 0) is the hot spot. Also
+/// the system cursor's shape in a desktop window.
+pub const CURSOR_ART: [&str; 16] = [
         "X           ",
         "XX          ",
         "XOX         ",
@@ -375,34 +463,18 @@ pub fn draw_cursor(c: &mut Canvas<Window>, tm: &ThemeManager, x: i32, y: i32) {
         "X    XOOX   ",
         "     XOOX   ",
         "      XX    ",
-    ];
-    // The tip is the hot spot: it is drawn exactly at (x, y), so the pointer can point at every pixel including the
-    // bottom-right corner; the part of the arrow beyond the screen edge is simply cut off.
-    let ink = tm.get_color("foreground");
-    let edge = tm.get_color("widget_face_active");
-    for (row, line) in ART.iter().enumerate() {
-        for (col, ch) in line.bytes().enumerate() {
-            let color = match ch {
-                b'X' => edge,
-                b'O' => ink,
-                _ => continue,
-            };
-            c.set_draw_color(color);
-            let _ = c.draw_point((x + col as i32, y + row as i32));
-        }
-    }
-}
+];
 
 /// Centered toast near the bottom, e.g. "Volume 45%".
 pub fn draw_toast(c: &mut Canvas<Window>, fs: &FontSystem, tm: &ThemeManager, text: &str, fraction: Option<u32>) {
     let ink = tm.get_color("foreground");
     // Long messages (e.g. a failed app start) must never overflow the screen.
-    let text = &fit_text(fs, &crate::launcher::i18n::tr_s(text), SCREEN_W as i32 - 32);
-    let w = ((fs.measure_text(text) + 16).max(if fraction.is_some() { 120 } else { 60 }) as u32).min(SCREEN_W - 8);
+    let text = &fit_text(fs, &crate::launcher::i18n::tr_s(text), screen_w() as i32 - 32);
+    let w = ((fs.measure_text(text) + 16).max(if fraction.is_some() { 120 } else { 60 }) as u32).min(screen_w() - 8);
     let h = if fraction.is_some() { 30 } else { 20 };
-    let x = (SCREEN_W - w) as i32 / 2;
+    let x = (screen_w() - w) as i32 / 2;
     // Its 1 px shadow ends at y 166, 1 px above the app frame's bottom line (y 168).
-    let y = crate::grid::APP_FRAME_BOTTOM - 2 - h as i32;
+    let y = crate::grid::frame_bottom() - 2 - h as i32;
     let r = Rect::new(x, y, w, h);
     crate::launcher::widgets::draw_panel(c, tm, r);
     let tw = fs.measure_text(text);
@@ -419,7 +491,7 @@ pub fn draw_hold_gauge(c: &mut Canvas<Window>, fs: &FontSystem, tm: &ThemeManage
     let label = &crate::launcher::i18n::tr_s(label);
     let w = (fs.measure_text(label) + 24).max(132) as u32;
     // Like the toast: its shadow ends at y 166, 1 px above the app frame's bottom line.
-    let r = Rect::new((SCREEN_W as i32 - w as i32) / 2, crate::grid::APP_FRAME_BOTTOM - 2 - 32, w, 32);
+    let r = Rect::new((screen_w() as i32 - w as i32) / 2, crate::grid::frame_bottom() - 2 - 32, w, 32);
     crate::launcher::widgets::draw_panel(c, tm, r);
     let tw = fs.measure_text(label);
     fs.draw_text(c, r.x() + (w as i32 - tw) / 2, r.y() + 3, label, ink);
@@ -432,8 +504,8 @@ pub fn draw_hold_gauge(c: &mut Canvas<Window>, fs: &FontSystem, tm: &ThemeManage
 pub fn draw_launching(c: &mut Canvas<Window>, fs: &FontSystem, tm: &ThemeManager, name: &str, tick: u32) {
     draw_desktop(c, tm);
     let ink = tm.get_color("foreground");
-    let w = (fs.measure_display_text(name).max(120) + 56).min(SCREEN_W as i32 - 24) as u32;
-    let r = Rect::new((SCREEN_W as i32 - w as i32) / 2, 52, w, 60);
+    let w = (fs.measure_display_text(name).max(120) + 56).min(screen_w() as i32 - 24) as u32;
+    let r = Rect::new((screen_w() as i32 - w as i32) / 2, 52, w, 60);
     crate::launcher::widgets::draw_panel(c, tm, r);
     let label = fit_display_text(fs, &crate::launcher::i18n::tr_s(&format!("Opening {name}")), r.width() as i32 - 16);
     let lw = fs.measure_display_text(&label);
