@@ -1,0 +1,12 @@
+CREATE TABLE IF NOT EXISTS posts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  room TEXT NOT NULL,
+  name TEXT NOT NULL,
+  dev TEXT NOT NULL,
+  text TEXT NOT NULL,
+  time INTEGER NOT NULL,
+  ip TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS posts_room ON posts (room, id);
+CREATE INDEX IF NOT EXISTS posts_dev ON posts (dev, time);
+CREATE INDEX IF NOT EXISTS posts_ip ON posts (ip, time);

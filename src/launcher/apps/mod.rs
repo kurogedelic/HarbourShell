@@ -11,12 +11,14 @@ pub mod calendar;
 pub mod devices;
 pub mod devtree;
 pub mod files;
+pub mod harbourtalk;
 pub mod imageviewer;
 pub mod infoscope;
 pub mod interceptor;
 pub mod monitor;
 pub mod music;
 pub mod music_eq;
+pub mod music_vis;
 pub mod radio;
 pub mod osc;
 pub mod paint;
@@ -25,6 +27,7 @@ pub mod recorder;
 pub mod sheet;
 pub mod timer;
 pub mod tone;
+pub mod yacht;
 
 /// Shown on the home screen after the core built-ins, in this order.
 pub const REGISTRY: &[AppDef] = &[
@@ -41,6 +44,8 @@ pub const REGISTRY: &[AppDef] = &[
     AppDef { id: "calendar", name: "Calendar", make: calendar::make },
     AppDef { id: "interceptor", name: "Interceptor", make: interceptor::make },
     AppDef { id: "infoscope", name: "Infoscope", make: infoscope::make },
+    AppDef { id: "yacht", name: "Yacht", make: yacht::make },
+    AppDef { id: "harbourtalk", name: "HarbourTalk", make: harbourtalk::make },
 ];
 
 #[cfg(test)]

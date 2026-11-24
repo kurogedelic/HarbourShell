@@ -151,6 +151,7 @@ Headless runs also work on the device (real backend, no LCD): `HARBOUR_HEADLESS=
 - The hardware is pretend (`HARBOUR_MOCK`). The home folder is kept in the browser (IndexedDB), so notes, drawings and settings survive a reload.
 - There are no threads in the page: `rt::sleep` hands each frame back to the browser (Asyncify) and `rt::spawn` runs its work at once.
 - Left out: apps that need the network, a terminal, a camera or the sound device (Browser, Infoscope, Radio, Music, Voice Memo, Terminal, Interceptor, Monitor, Camera) and the Agent. The Japanese dictionary is never redistributed, so input is kana only.
+- HarbourTalk is in: it talks to the board server through the browser (synchronous XMLHttpRequest), so the server lists the page's address in `ALLOWED_ORIGINS` (`server/harbourtalk/README.md`); the server setting `demo` gives the demo board instead.
 
 ## Japanese input (romaji to kana; kanji conversion with an optional, user-installed dictionary)
 

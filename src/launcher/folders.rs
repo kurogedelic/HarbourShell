@@ -238,7 +238,7 @@ const AUTO_RULES: &[(&str, Rule)] = &[
     ("Games", Rule::Contains(&["nestopia", "nes", "game"])),
     (
         "Music",
-        Rule::Names(&["Music", "Fune", "AcidZero", "ZeroDexed", "MIDI Scope", "uzume", "Piano", "Recorder"]),
+        Rule::Names(&["Music", "Fune", "AcidZero", "ZeroDexed", "MIDI Scope", "uzume", "Piano", "Recorder", "Yacht"]),
     ),
     (
         "Tools",

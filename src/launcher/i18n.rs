@@ -292,16 +292,17 @@ mod ja_camera;
 mod ja_files;
 mod ja_infoscope;
 mod ja_media;
+mod ja_talk;
 mod ja_tools;
 
 /// Every table: the core one above plus one per group of apps (`i18n/ja_*.rs`, each exporting
 /// `JA` and `JA_PAT`).
 fn all_ja() -> impl Iterator<Item = &'static (&'static str, &'static str)> {
-    JA.iter().chain(ja_files::JA).chain(ja_infoscope::JA).chain(ja_media::JA).chain(ja_tools::JA).chain(ja_camera::JA)
+    JA.iter().chain(ja_files::JA).chain(ja_infoscope::JA).chain(ja_media::JA).chain(ja_tools::JA).chain(ja_camera::JA).chain(ja_talk::JA)
 }
 
 fn all_pat() -> impl Iterator<Item = &'static (&'static str, &'static str)> {
-    JA_PAT.iter().chain(ja_files::JA_PAT).chain(ja_infoscope::JA_PAT).chain(ja_media::JA_PAT).chain(ja_tools::JA_PAT).chain(ja_camera::JA_PAT)
+    JA_PAT.iter().chain(ja_files::JA_PAT).chain(ja_infoscope::JA_PAT).chain(ja_media::JA_PAT).chain(ja_tools::JA_PAT).chain(ja_camera::JA_PAT).chain(ja_talk::JA_PAT)
 }
 
 fn pattern(english: &str) -> Option<String> {

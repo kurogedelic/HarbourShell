@@ -12,6 +12,9 @@
 //! E (or the menu) opens the equalizer ([`music_eq`]): five bands and presets, kept in the
 //! config file. ffplay cannot change its filters while it runs, so a change restarts it at the
 //! current position once the knobs have been still for a moment.
+//!
+//! V (or a click on the cover) switches the Now Playing panel between the cover, band bars and
+//! a waveform ([`music_vis`]); on a desk the panel grows with the window.
 
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -34,6 +37,7 @@ use crate::launcher::app::{AppAction, Ctx, LauncherApp};
 use crate::launcher::apps::tone;
 use crate::launcher::widgets::{self, contains, MenuItem, PointerEvent, SbPart, ScrollBar};
 use crate::launcher::apps::music_eq::{self, Eq};
+use crate::launcher::apps::music_vis::{self, Meter, Source};
 use crate::platform::keys::arrow_alias;
 use crate::system::config::{self, Config};
 use crate::ui;
@@ -1018,6 +1022,54 @@ struct Playing {
     from: Duration,
     /// The equalizer this process plays with.
     eq: Eq,
+    /// Counts processes, so the visualizer's tap knows when to follow a new one.
+    gen: u64,
+}
+
+/// What the Now Playing panel shows.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum View {
+    Cover,
+    Bars,
+    Wave,
+}
+
+impl View {
+    fn next(self) -> View {
+        match self {
+            View::Cover => View::Bars,
+            View::Bars => View::Wave,
+            View::Wave => View::Cover,
+        }
+    }
+    fn key(self) -> &'static str {
+        match self {
+            View::Cover => "cover",
+            View::Bars => "bars",
+            View::Wave => "wave",
+        }
+    }
+    fn from_key(s: &str) -> View {
+        match s {
+            "bars" => View::Bars,
+            "wave" => View::Wave,
+            _ => View::Cover,
+        }
+    }
+}
+
+/// Starts the visualizer's sample source; a mock in tests.
+pub type TapMaker = fn(&Path, Duration, Option<&str>) -> Result<Box<dyn Source>, String>;
+
+fn ffmpeg_tap(path: &Path, from: Duration, af: Option<&str>) -> Result<Box<dyn Source>, String> {
+    Ok(Box::new(music_vis::Tap::spawn(path, from, af)?))
+}
+
+/// The visualizer's running source: which process it follows and where in the track it started.
+struct TapState {
+    gen: u64,
+    from: Duration,
+    src: Box<dyn Source>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1057,12 +1109,21 @@ pub struct Music {
     // Equalizer: the settings, when they last changed, unsaved, and the EQ screen's state.
     eq: Eq,
     eq_changed: Option<Instant>,
-    eq_dirty: bool,
+    prefs_dirty: bool,
     cfg_path: Option<PathBuf>,
     /// 0 = the preset row, 1..=5 = the bands.
     eq_focus: usize,
     eq_back: Screen,
     eq_drag: Option<usize>,
+    // Visualizer.
+    view: View,
+    tap_maker: TapMaker,
+    tap: Option<TapState>,
+    meter: Meter,
+    wave: Vec<f32>,
+    vis_at: Option<Instant>,
+    vis_error: Option<String>,
+    gen: u64,
 }
 
 pub fn make() -> Box<dyn LauncherApp> {
@@ -1085,34 +1146,101 @@ pub fn make() -> Box<dyn LauncherApp> {
 
 const LIST_Y: i32 = grid::BAR_H + grid::MARGIN;
 const LIST_X: i32 = grid::MARGIN;
-const LIST_W: i32 = grid::SCROLL_X - grid::GUTTER - grid::MARGIN;
-const VISIBLE: usize = ((grid::SCREEN_H - grid::WINDOW_INSET - LIST_Y) / grid::ROW_H) as usize;
+/// The list's width and rows follow the surface (a desk window can be any size).
+fn list_w() -> i32 {
+    grid::scroll_x() - grid::GUTTER - grid::MARGIN
+}
+fn visible() -> usize {
+    ((grid::sh() - grid::WINDOW_INSET - LIST_Y) / grid::ROW_H).max(1) as usize
+}
 /// The list's frame and scroll bar run down to y 168 (`grid::APP_FRAME_BOTTOM`): 9 rows, and the
 /// 5 px under the last one are the frame's bottom edge.
-const LIST_H: i32 = grid::APP_FRAME_BOTTOM + 1 - LIST_Y;
+fn list_h() -> i32 {
+    grid::frame_bottom() + 1 - LIST_Y
+}
 
 impl Music {
     pub fn new(audio: Box<dyn Audio>, tracks: Vec<Track>) -> Self {
         Music { audio, tracks, cursor: 0, scroll: 0, screen: Screen::List, playing: None, error: None, sb_drag: false,
             cache: Default::default(), mock: false, async_meta: false, rx: None, dur_rx: None, born: Instant::now(), serial: 0, meta: None, art_runs: None, _img: None,
             cover_stage: Default::default(), disk: None, loader: None,
-            eq: Eq::default(), eq_changed: None, eq_dirty: false, cfg_path: None, eq_focus: 1, eq_back: Screen::List, eq_drag: None }
+            eq: Eq::default(), eq_changed: None, prefs_dirty: false, cfg_path: None, eq_focus: 1, eq_back: Screen::List, eq_drag: None,
+            view: View::Cover, tap_maker: ffmpeg_tap, tap: None, meter: Meter::default(), wave: Vec::new(), vis_at: None, vis_error: None, gen: 0 }
+    }
+
+    fn cycle_view(&mut self) {
+        self.view = self.view.next();
+        self.prefs_dirty = true;
+        self.meter = Meter::default();
+        self.wave.clear();
+        self.vis_at = None;
+        self.vis_error = None;
+        if self.screen == Screen::List && self.playing.is_some() && self.view != View::Cover {
+            self.screen = Screen::Now;
+        }
+    }
+
+    /// Keep the visualizer's tap following playback and analyse the samples at the clock.
+    /// True when there is something new to draw.
+    fn sync_vis(&mut self, now: Instant) -> bool {
+        let wanted = self.screen == Screen::Now && self.view != View::Cover;
+        let Some(p) = self.playing.as_ref().filter(|_| wanted) else {
+            self.tap = None;
+            return false;
+        };
+        let clock = if p.ready { p.time.elapsed(now) } else { p.from };
+        if self.tap.as_ref().map(|t| t.gen) != Some(p.gen) {
+            self.tap = None;
+            let path = self.tracks[p.index].path.clone();
+            match (self.tap_maker)(&path, clock, p.eq.ffmpeg_filter().as_deref()) {
+                Ok(src) => {
+                    self.tap = Some(TapState { gen: p.gen, from: clock, src });
+                    self.vis_error = None;
+                }
+                Err(e) => {
+                    let changed = self.vis_error.is_none();
+                    self.vis_error = Some(e);
+                    // Do not retry every frame: wait for the next process.
+                    self.tap = Some(TapState { gen: p.gen, from: clock, src: Box::new(NoSource) });
+                    return changed;
+                }
+            }
+        }
+        let paused = p.time.paused() || !p.ready;
+        let dt = self.vis_at.map_or(0.0, |t| now.saturating_duration_since(t).as_secs_f32()).min(0.25);
+        self.vis_at = Some(now);
+        let Some(t) = &mut self.tap else { return false };
+        let win = t.src.window(clock.saturating_sub(t.from));
+        match win {
+            Some(w) => {
+                if !paused {
+                    self.meter.update(&music_vis::band_db(&w, music_vis::RATE as f32), dt);
+                }
+                self.wave = w;
+            }
+            None if !paused => self.meter.update(&[music_vis::FLOOR_DB; music_eq::N], dt),
+            None => {}
+        }
+        !paused
     }
 
     /// Read the equalizer from the config file and save changes there.
     pub fn use_config(&mut self, path: PathBuf) {
-        self.eq = Eq::load(&Config::load(path.clone()));
+        let cfg = Config::load(path.clone());
+        self.eq = Eq::load(&cfg);
+        self.view = View::from_key(&cfg.get_str("music_view", "cover"));
         self.cfg_path = Some(path);
     }
 
     fn save_eq(&mut self) {
-        if !self.eq_dirty {
+        if !self.prefs_dirty {
             return;
         }
-        self.eq_dirty = false;
+        self.prefs_dirty = false;
         let Some(p) = self.cfg_path.clone() else { return };
         let mut cfg = Config::load(p);
         self.eq.store(&mut cfg);
+        cfg.set_str("music_view", self.view.key());
         let _ = cfg.save(); // a read-only or foreign config is left alone
     }
 
@@ -1120,7 +1248,7 @@ impl Music {
         if e != self.eq {
             self.eq = e;
             self.eq_changed = Some(now);
-            self.eq_dirty = true;
+            self.prefs_dirty = true;
         }
     }
 
@@ -1180,6 +1308,8 @@ impl Music {
                 p.proc = proc;
                 p.from = at;
                 p.eq = eq;
+                self.gen += 1;
+                p.gen = self.gen;
                 // The old sound stops now; the clock waits for the new one but shows `at`.
                 p.ready = false;
                 p.time = Timeline::starting_at(now, at);
@@ -1196,7 +1326,7 @@ impl Music {
     }
 
     fn follow(&mut self) {
-        self.scroll = widgets::follow_scroll(self.cursor, self.scroll, VISIBLE, self.tracks.len());
+        self.scroll = widgets::follow_scroll(self.cursor, self.scroll, visible(), self.tracks.len());
     }
 
     fn stop(&mut self) {
@@ -1214,7 +1344,8 @@ impl Music {
                 // The real ffprobe takes over a second: it runs on a thread when async_meta is on.
                 let total = if self.async_meta { None } else { self.audio.duration(&t.path) };
                 self.eq_changed = None;
-                self.playing = Some(Playing { index, proc, time: Timeline::new(now), total, ready: false, from: Duration::ZERO, eq });
+                self.gen += 1;
+                self.playing = Some(Playing { index, proc, time: Timeline::new(now), total, ready: false, from: Duration::ZERO, eq, gen: self.gen });
                 self.error = None;
                 self.start_meta(index);
             }
@@ -1382,7 +1513,7 @@ impl Music {
     }
 
     fn row_at(&self, x: i32, y: i32) -> Option<usize> {
-        let r = Rect::new(LIST_X, LIST_Y, LIST_W as u32, (VISIBLE as i32 * grid::ROW_H) as u32);
+        let r = Rect::new(LIST_X, LIST_Y, list_w() as u32, (visible() as i32 * grid::ROW_H) as u32);
         if !contains(r, x, y) {
             return None;
         }
@@ -1391,7 +1522,7 @@ impl Music {
     }
 
     fn scrollbar(&self) -> ScrollBar {
-        ScrollBar::new(Rect::new(grid::SCROLL_X, LIST_Y, grid::SCROLL_W as u32, LIST_H as u32), self.tracks.len(), VISIBLE, self.scroll)
+        ScrollBar::new(Rect::new(grid::scroll_x(), LIST_Y, grid::SCROLL_W as u32, list_h() as u32), self.tracks.len(), visible(), self.scroll)
     }
 }
 
@@ -1412,6 +1543,15 @@ impl LauncherApp for Music {
                 k("Left / Up", "Previous track"),
                 k("Right / Down", "Next track"),
                 k("Click", "Play / Pause"),
+                k("E", "Equalizer"),
+                k("V / click the cover", "Cover / bars / wave"),
+            ],
+            Screen::Eq => vec![
+                k("Left / Right", "Choose a band"),
+                k("Up / Down", "Raise / lower (preset row: change preset)"),
+                k("Delete", "Band to 0 dB"),
+                k("Drag / Wheel", "Set a band"),
+                k("Esc / E", "Back"),
             ],
         }
     }
@@ -1420,12 +1560,32 @@ impl LauncherApp for Music {
         crate::launcher::i18n::tr_s("Music")
     }
 
+    fn sizing(&self) -> crate::launcher::app::Sizing {
+        crate::launcher::app::Sizing::Flexible
+    }
+
     fn menu(&self) -> Vec<MenuItem> {
-        vec![MenuItem::new("pause", "Play / Pause"), MenuItem::new("next", "Next track"), MenuItem::new("prev", "Previous track"), MenuItem::new("stop", "Stop")]
+        vec![
+            MenuItem::new("pause", "Play / Pause"),
+            MenuItem::new("next", "Next track"),
+            MenuItem::new("prev", "Previous track"),
+            MenuItem::new("stop", "Stop"),
+            MenuItem::new("eq", "Equalizer"),
+            MenuItem::new("view", "Cover / bars / wave"),
+        ]
     }
 
     fn context_menu(&mut self, x: i32, y: i32, _ctx: &Ctx) -> Option<Vec<MenuItem>> {
         let mut v = Vec::new();
+        if self.screen == Screen::Eq {
+            // The presets, the current one ticked.
+            let cur = self.eq.preset();
+            for (i, (name, _)) in music_eq::PRESETS.iter().enumerate() {
+                let mark = if cur == Some(i) { "\u{2713} " } else { "" };
+                v.push(MenuItem::new(PRESET_IDS[i], format!("{mark}{}", crate::launcher::i18n::tr(name))));
+            }
+            return Some(v);
+        }
         if self.screen == Screen::List {
             if let Some(i) = self.row_at(x, y) {
                 self.cursor = i;
@@ -1449,7 +1609,13 @@ impl LauncherApp for Music {
             "next" => self.step(1, now),
             "prev" => self.step(-1, now),
             "stop" => self.stop(),
-            _ => {}
+            "eq" => self.open_eq(),
+            "view" => self.cycle_view(),
+            id => {
+                if let Some(i) = PRESET_IDS.iter().position(|p| *p == id) {
+                    self.set_eq(Eq { gains: music_eq::PRESETS[i].1 }, now);
+                }
+            }
         }
         AppAction::None
     }
@@ -1475,6 +1641,18 @@ impl LauncherApp for Music {
     fn key(&mut self, key: Keycode, _mods: Mod, _repeat: bool, _ctx: &Ctx) -> AppAction {
         let now = Instant::now();
         let k = arrow_alias(key);
+        if self.screen == Screen::Eq {
+            self.eq_key(k, now);
+            return AppAction::None;
+        }
+        if k == Keycode::E {
+            self.open_eq();
+            return AppAction::None;
+        }
+        if k == Keycode::V {
+            self.cycle_view();
+            return AppAction::None;
+        }
         if k == Keycode::Escape {
             if self.screen == Screen::Now {
                 self.screen = Screen::List;
@@ -1513,15 +1691,19 @@ impl LauncherApp for Music {
 
     fn pointer(&mut self, ev: PointerEvent, _ctx: &Ctx) -> AppAction {
         let now = Instant::now();
+        if self.screen == Screen::Eq {
+            self.eq_pointer(ev, now);
+            return AppAction::None;
+        }
         match (self.screen, ev) {
             (Screen::List, PointerEvent::Wheel { dy, .. }) => {
-                let max = self.tracks.len().saturating_sub(VISIBLE);
+                let max = self.tracks.len().saturating_sub(visible());
                 self.scroll = if dy > 0 { self.scroll.saturating_sub(1) } else { (self.scroll + 1).min(max) };
             }
             (Screen::List, PointerEvent::Down { x, y, button: 0, clicks }) => match self.scrollbar().hit(x, y) {
                 Some(SbPart::Thumb) => self.sb_drag = true,
-                Some(SbPart::Up | SbPart::PageUp) => self.scroll = self.scroll.saturating_sub(VISIBLE),
-                Some(SbPart::Down | SbPart::PageDown) => self.scroll = (self.scroll + VISIBLE).min(self.tracks.len().saturating_sub(VISIBLE)),
+                Some(SbPart::Up | SbPart::PageUp) => self.scroll = self.scroll.saturating_sub(visible()),
+                Some(SbPart::Down | SbPart::PageDown) => self.scroll = (self.scroll + visible()).min(self.tracks.len().saturating_sub(visible())),
                 None => {
                     if let Some(i) = self.row_at(x, y) {
                         self.cursor = i;
@@ -1536,7 +1718,15 @@ impl LauncherApp for Music {
             },
             (Screen::List, PointerEvent::Drag { y, .. }) if self.sb_drag => self.scroll = self.scrollbar().offset_for_y(y),
             (_, PointerEvent::Up { .. }) => self.sb_drag = false,
-            (Screen::Now, PointerEvent::Down { button: 0, .. }) => self.toggle_pause(now),
+            (Screen::Now, PointerEvent::Down { x, y, button: 0, .. }) => {
+                if contains(self.eq_badge(), x, y) {
+                    self.open_eq();
+                } else if contains(self.now_panel(), x, y) {
+                    self.cycle_view();
+                } else {
+                    self.toggle_pause(now);
+                }
+            }
             (Screen::Now, PointerEvent::Wheel { dy, .. }) => self.step(if dy > 0 { -1 } else { 1 }, now),
             _ => {}
         }
@@ -1544,7 +1734,8 @@ impl LauncherApp for Music {
     }
 
     fn tick(&mut self, _ctx: &Ctx) -> bool {
-        let changed = self.poll(Instant::now()) | self.poll_meta() | self.poll_loader();
+        let now = Instant::now();
+        let changed = self.poll(now) | self.apply_eq(now) | self.poll_meta() | self.poll_loader() | self.sync_vis(now);
         let loading = self.loader.is_some() || (self.screen == Screen::Now && self.playing.as_ref().map_or(false, |p| !p.ready || self.meta.is_none()));
         let ticking = self.screen == Screen::Now && self.playing.as_ref().map(|p| !p.time.paused()).unwrap_or(false);
         changed || ticking || loading
@@ -1555,7 +1746,330 @@ impl LauncherApp for Music {
         match self.screen {
             Screen::List => self.draw_list(c, ctx),
             Screen::Now => self.draw_now(c, ctx),
+            Screen::Eq => self.draw_eq(c, ctx),
         }
+    }
+}
+
+/// Stands in for a tap that could not start.
+struct NoSource;
+
+impl Source for NoSource {
+    fn window(&mut self, _: Duration) -> Option<Vec<f32>> {
+        None
+    }
+}
+
+// ------------------------------------------------------------ EQ screen
+
+const PRESET_IDS: [&str; music_eq::PRESETS.len()] = ["preset0", "preset1", "preset2", "preset3", "preset4", "preset5"];
+/// The preset row, then five slider columns and the response curve on the right.
+const EQ_PRESET: (i32, i32, i32, i32) = (LIST_X, LIST_Y, 150, grid::ROW_H);
+const EQ_COL_W: i32 = 30;
+const EQ_VALUE_Y: i32 = LIST_Y + 20;
+const EQ_TRACK_TOP: i32 = LIST_Y + 40;
+const EQ_PX_PER_DB: i32 = 3;
+const EQ_ZERO_Y: i32 = EQ_TRACK_TOP + music_eq::MAX_DB * EQ_PX_PER_DB;
+const EQ_TRACK_BOTTOM: i32 = EQ_ZERO_Y + music_eq::MAX_DB * EQ_PX_PER_DB;
+const EQ_LABEL_Y: i32 = EQ_TRACK_BOTTOM + 6;
+const EQ_CURVE_X: i32 = LIST_X + 5 * EQ_COL_W + 8;
+/// The curve spans +-15 dB, 20 Hz to 20 kHz.
+const EQ_CURVE_DB: f64 = 15.0;
+
+fn eq_preset_rect() -> Rect {
+    Rect::new(EQ_PRESET.0, EQ_PRESET.1, EQ_PRESET.2 as u32, EQ_PRESET.3 as u32)
+}
+
+fn eq_col_rect(band: usize) -> Rect {
+    Rect::new(LIST_X + band as i32 * EQ_COL_W, EQ_VALUE_Y, EQ_COL_W as u32, (EQ_LABEL_Y + grid::ROW_H - EQ_VALUE_Y) as u32)
+}
+
+fn eq_curve_rect() -> Rect {
+    let right = grid::scroll_x() + grid::SCROLL_W;
+    let extra = (grid::sh() - grid::SCREEN_H).max(0);
+    Rect::new(EQ_CURVE_X, LIST_Y, (right - EQ_CURVE_X) as u32, (EQ_LABEL_Y - LIST_Y + extra) as u32)
+}
+
+impl Music {
+    /// The panel on the left of Now Playing: the cover's square, or for the visualizer the whole
+    /// height and whatever width a bigger window adds.
+    fn now_panel(&self) -> Rect {
+        let side = tags::COVER as i32 + 8;
+        let top = grid::BAR_H + grid::MARGIN * 2;
+        if self.view == View::Cover {
+            return Rect::new(grid::MARGIN * 2, top, side as u32, side as u32);
+        }
+        let w = side + (grid::sw() - grid::SCREEN_W).max(0);
+        let h = (grid::frame_bottom() - top).max(side);
+        Rect::new(grid::MARGIN * 2, top, w as u32, h as u32)
+    }
+
+    /// The "EQ" button on Now Playing: in the text column, under the album line.
+    fn eq_badge(&self) -> Rect {
+        let x = self.now_panel().right() + grid::MARGIN * 3;
+        Rect::new(x, grid::BAR_H + grid::MARGIN * 2 + 74, 84, 16)
+    }
+
+    /// Band bars or the waveform inside `r` (the panel), dark on the white panel like the cover.
+    fn draw_vis(&self, c: &mut Canvas<Window>, ctx: &Ctx, r: Rect, ready: bool, tick: u32) {
+        let (tm, fs) = (ctx.tm, ctx.fs);
+        let (paper, dark) = tone::paper_ink(tm);
+        let inner = Rect::new(r.x() + 6, r.y() + 6, r.width() - 12, r.height() - 12);
+        if let Some(e) = &self.vis_error {
+            let t = chrome::fit_text(fs, e, inner.width() as i32);
+            fs.draw_text(c, inner.x(), inner.y(), &t, dark);
+            return;
+        }
+        if !ready && self.wave.is_empty() {
+            draw_barber(c, ctx, Rect::new(inner.x() + 2, inner.center().y() - 14, inner.width() - 4, 28), crate::launcher::i18n::tr("Starting..."), tick);
+            return;
+        }
+        match self.view {
+            View::Bars => {
+                // Five columns of 3 px segments (1 px gaps), the band's name under each, a 2 px
+                // peak mark that waits and falls.
+                let label_h = 14;
+                let area = Rect::new(inner.x(), inner.y(), inner.width(), inner.height() - label_h as u32);
+                let gap = 4;
+                let bw = (area.width() as i32 - gap * (music_eq::N as i32 - 1)) / music_eq::N as i32;
+                let x0 = area.x() + (area.width() as i32 - (bw * music_eq::N as i32 + gap * (music_eq::N as i32 - 1))) / 2;
+                let segs = (area.height() as i32 + 1) / 4;
+                let bottom = area.y() + segs * 4 - 1;
+                for (b, band) in music_eq::BANDS.iter().enumerate() {
+                    let x = x0 + b as i32 * (bw + gap);
+                    let lit = (Meter::frac(self.meter.level[b]) * segs as f32).round() as i32;
+                    for sgm in 0..segs {
+                        let y = bottom - sgm * 4 - 2;
+                        let seg = Rect::new(x, y, bw as u32, 3);
+                        if sgm < lit {
+                            ui::fill_rect(c, seg, dark);
+                        } else {
+                            dither::fill_two_tone(c, seg, paper, dark, Pattern::Eighth);
+                        }
+                    }
+                    let pk = (Meter::frac(self.meter.peak[b]) * segs as f32).round() as i32;
+                    if pk > 0 {
+                        let y = bottom - (pk - 1) * 4 - 2;
+                        ui::fill_rect(c, Rect::new(x, y - 2, bw as u32, 1), dark);
+                    }
+                    let lw = fs.measure_text(band.label);
+                    fs.draw_text(c, x + (bw - lw) / 2, widgets::text_origin(area.bottom() + 1, label_h), band.label, dark);
+                }
+            }
+            View::Wave => {
+                let cy = inner.center().y();
+                let half = inner.height() as f32 / 2.0 - 1.0;
+                c.set_draw_color(dark);
+                for x in (inner.x()..inner.right()).step_by(3) {
+                    let _ = c.draw_point((x, cy));
+                }
+                for (i, (lo, hi)) in music_vis::wave_columns(&self.wave, inner.width() as usize).into_iter().enumerate() {
+                    let x = inner.x() + i as i32;
+                    let (y0, y1) = (cy - (hi.clamp(-1.0, 1.0) * half).round() as i32, cy - (lo.clamp(-1.0, 1.0) * half).round() as i32);
+                    let _ = c.draw_line(Point::new(x, y0), Point::new(x, y1));
+                }
+            }
+            View::Cover => {}
+        }
+    }
+}
+
+fn db_for_y(y: i32) -> i32 {
+    let d = EQ_ZERO_Y - y;
+    (d + d.signum() * EQ_PX_PER_DB / 2) / EQ_PX_PER_DB
+}
+
+impl Music {
+    fn eq_key(&mut self, k: Keycode, now: Instant) {
+        let band = self.eq_focus.checked_sub(1);
+        match k {
+            Keycode::Escape | Keycode::E | Keycode::Return | Keycode::KpEnter => self.close_eq(),
+            Keycode::Left => self.eq_focus = self.eq_focus.saturating_sub(1),
+            Keycode::Right => self.eq_focus = (self.eq_focus + 1).min(music_eq::N),
+            Keycode::Tab => self.eq_focus = (self.eq_focus + 1) % (music_eq::N + 1),
+            Keycode::Up | Keycode::Down => {
+                let up = k == Keycode::Up;
+                match band {
+                    Some(b) => self.nudge_band(b, if up { 1 } else { -1 }, now),
+                    None => self.cycle_preset(if up { -1 } else { 1 }, now),
+                }
+            }
+            Keycode::Backspace | Keycode::Delete | Keycode::Num0 => match band {
+                Some(b) => {
+                    let mut e = self.eq;
+                    e.set(b, 0);
+                    self.set_eq(e, now);
+                }
+                None => self.set_eq(Eq::default(), now),
+            },
+            Keycode::Space => self.toggle_pause(now),
+            _ => {}
+        }
+    }
+
+    fn eq_band_at(&self, x: i32, y: i32) -> Option<usize> {
+        (0..music_eq::N).find(|&b| contains(eq_col_rect(b), x, y))
+    }
+
+    fn eq_pointer(&mut self, ev: PointerEvent, now: Instant) {
+        match ev {
+            PointerEvent::Down { x, y, button: 0, .. } => {
+                let pr = eq_preset_rect();
+                if contains(pr, x, y) {
+                    self.eq_focus = 0;
+                    self.cycle_preset(if x < pr.x() + pr.width() as i32 / 3 { -1 } else { 1 }, now);
+                } else if let Some(b) = self.eq_band_at(x, y) {
+                    self.eq_focus = b + 1;
+                    if (EQ_TRACK_TOP - 6..=EQ_TRACK_BOTTOM + 6).contains(&y) {
+                        let mut e = self.eq;
+                        e.set(b, db_for_y(y));
+                        self.set_eq(e, now);
+                        self.eq_drag = Some(b);
+                    }
+                }
+            }
+            PointerEvent::Drag { y, .. } => {
+                if let Some(b) = self.eq_drag {
+                    let mut e = self.eq;
+                    e.set(b, db_for_y(y));
+                    self.set_eq(e, now);
+                }
+            }
+            PointerEvent::Up { .. } => self.eq_drag = None,
+            PointerEvent::Wheel { x, y, dy, .. } => {
+                if contains(eq_preset_rect(), x, y) {
+                    self.cycle_preset(if dy > 0 { -1 } else { 1 }, now);
+                } else if let Some(b) = self.eq_band_at(x, y).or(self.eq_focus.checked_sub(1)) {
+                    self.eq_focus = b + 1;
+                    self.nudge_band(b, if dy > 0 { 1 } else { -1 }, now);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn draw_eq(&mut self, c: &mut Canvas<Window>, ctx: &Ctx) {
+        let (tm, fs) = (ctx.tm, ctx.fs);
+        let ink = tm.get_color("foreground");
+        let faint = widgets::secondary_ink(tm);
+        let line = tm.get_color("line");
+        let well = tm.get_color("surface_sunken");
+        let paper = tm.get_color("widget_face_active");
+        let tr = crate::launcher::i18n::tr;
+
+        // Preset row: < name >, a plate when focused.
+        let pr = eq_preset_rect();
+        let focus0 = self.eq_focus == 0;
+        ui::fill_rect(c, pr, paper);
+        if focus0 {
+            widgets::draw_row_plate(c, tm, Rect::new(pr.x(), pr.y(), pr.width(), pr.height() + 1));
+        }
+        let fg = widgets::row_ink(tm, focus0, ink);
+        let ty = widgets::text_origin(pr.y(), pr.height() as i32);
+        let label = tr("Preset");
+        fs.draw_text(c, pr.x() + 4, ty, label, if focus0 { fg } else { faint });
+        let name = tr(self.eq.preset_name());
+        let lx = pr.x() + 8 + fs.measure_text(label);
+        let (ax, bx) = (lx + 2, pr.right() - 8);
+        draw_arrow(c, ax, pr.y() + 4, -1, fg);
+        draw_arrow(c, bx, pr.y() + 4, 1, fg);
+        let nw = fs.measure_text(name);
+        fs.draw_text(c, (ax + 6 + bx - 2 - nw) / 2, ty, name, fg);
+        ui::draw_rect(c, pr, ink);
+
+        // Sliders.
+        for (b, band) in music_eq::BANDS.iter().enumerate() {
+            let col = eq_col_rect(b);
+            let cx = col.x() + EQ_COL_W / 2;
+            let focus = self.eq_focus == b + 1;
+            let g = self.eq.gains[b] as i32;
+            let val = if g > 0 { format!("+{g}") } else { g.to_string() };
+            let vw = fs.measure_text(&val);
+            fs.draw_text(c, cx - vw / 2, widgets::text_origin(EQ_VALUE_Y, grid::ROW_H), &val, if g == 0 { faint } else { ink });
+            let track = Rect::new(cx - 2, EQ_TRACK_TOP - 3, 5, (EQ_TRACK_BOTTOM - EQ_TRACK_TOP + 7) as u32);
+            dither::fill_two_tone(c, track, well, line, Pattern::Half);
+            ui::draw_rect(c, track, ink);
+            // 0 dB and the +-6 / +-12 ticks.
+            for db in [-12, -6, 0, 6, 12] {
+                let y = EQ_ZERO_Y - db * EQ_PX_PER_DB;
+                let w = if db == 0 { 5 } else { 3 };
+                ui::fill_rect(c, Rect::new(cx - 4 - w, y, w as u32, 1), if db == 0 { ink } else { faint });
+                ui::fill_rect(c, Rect::new(cx + 5, y, w as u32, 1), if db == 0 { ink } else { faint });
+            }
+            let thumb = Rect::new(cx - 6, EQ_ZERO_Y - g * EQ_PX_PER_DB - 3, 13, 7);
+            ui::fill_rect(c, thumb, if focus { ink } else { paper });
+            ui::draw_rect(c, thumb, ink);
+            if !focus {
+                ui::fill_rect(c, Rect::new(cx - 3, thumb.y() + 3, 7, 1), ink);
+            }
+            let lab = Rect::new(col.x() + 1, EQ_LABEL_Y, (EQ_COL_W - 2) as u32, grid::ROW_H as u32);
+            if focus {
+                widgets::draw_row_plate(c, tm, Rect::new(lab.x(), lab.y(), lab.width(), lab.height() + 1));
+            }
+            let lw = fs.measure_text(band.label);
+            fs.draw_text(c, cx - lw / 2, widgets::text_origin(lab.y(), lab.height() as i32), band.label, widgets::row_ink(tm, focus, ink));
+        }
+
+        // Response curve: 20 Hz - 20 kHz across, +-15 dB up and down.
+        let cr = eq_curve_rect();
+        ui::fill_rect(c, cr, paper);
+        let inner = Rect::new(cr.x() + 1, cr.y() + 1, cr.width() - 2, cr.height() - 2);
+        let x_of = |f: f64| inner.x() + ((f / 20.0).log10() / 3.0 * (inner.width() as f64 - 1.0)).round() as i32;
+        let cy = inner.y() + inner.height() as i32 / 2;
+        let y_of = |db: f64| cy - (db / EQ_CURVE_DB * (inner.height() as f64 / 2.0 - 1.0)).round() as i32;
+        c.set_draw_color(line);
+        for f in [100.0, 1000.0, 10_000.0] {
+            let x = x_of(f);
+            for y in (inner.y()..inner.bottom()).step_by(2) {
+                let _ = c.draw_point((x, y));
+            }
+        }
+        for db in [-12.0, 12.0] {
+            let y = y_of(db);
+            for x in (inner.x()..inner.right()).step_by(4) {
+                let _ = c.draw_point((x, y));
+            }
+        }
+        c.set_draw_color(faint);
+        for x in (inner.x()..inner.right()).step_by(2) {
+            let _ = c.draw_point((x, cy));
+        }
+        let pts: Vec<Point> = (0..inner.width() as i32)
+            .map(|i| {
+                let f = 20.0 * 1000f64.powf(i as f64 / (inner.width() as f64 - 1.0));
+                let db = self.eq.response_db(f).clamp(-EQ_CURVE_DB, EQ_CURVE_DB);
+                Point::new(inner.x() + i, y_of(db))
+            })
+            .collect();
+        c.set_draw_color(ink);
+        let _ = c.draw_lines(&pts[..]);
+        let thick: Vec<Point> = pts.iter().map(|p| Point::new(p.x(), p.y() + 1)).collect();
+        let _ = c.draw_lines(&thick[..]);
+        for (b, band) in music_eq::BANDS.iter().enumerate() {
+            let (x, y) = (x_of(band.freq), y_of(self.eq.response_db(band.freq).clamp(-EQ_CURVE_DB, EQ_CURVE_DB)));
+            let s = if self.eq_focus == b + 1 { 7 } else { 3 };
+            let r = Rect::new(x - s / 2, y - s / 2 + 0, s as u32, s as u32);
+            ui::fill_rect(c, r, if s > 3 { paper } else { ink });
+            ui::draw_rect(c, r, ink);
+        }
+        ui::draw_rect(c, cr, ink);
+        for (f, t) in [(100.0, "100"), (1000.0, "1k"), (10_000.0, "10k")] {
+            let w = fs.measure_text(t);
+            fs.draw_text(c, x_of(f) - w / 2, widgets::text_origin(cr.bottom(), grid::ROW_H), t, faint);
+        }
+        // Under the sliders: the pre-gain that keeps boosts from clipping.
+        let head = self.eq.headroom_db();
+        let note = if self.eq.flat() { tr("EQ off").to_string() } else if head > 0.05 { format!("{} -{head:.1} dB", tr("Pre-gain")) } else { tr("No boost").to_string() };
+        fs.draw_text(c, LIST_X + 2, widgets::text_origin(EQ_LABEL_Y + grid::ROW_H - 2, grid::ROW_H), &chrome::fit_text(fs, &note, 5 * EQ_COL_W), faint);
+    }
+}
+
+/// A small solid triangle 8 px high pointing left (`dir` < 0) or right, its tip at `x`.
+fn draw_arrow(c: &mut Canvas<Window>, x: i32, y: i32, dir: i32, color: sdl2::pixels::Color) {
+    c.set_draw_color(color);
+    for i in 0..4 {
+        let px = x - dir * i;
+        let _ = c.draw_line(Point::new(px, y + 3 - i), Point::new(px, y + 4 + i));
     }
 }
 
@@ -1566,7 +2080,7 @@ impl Music {
         let paper = tm.get_color("widget_face_active");
         let faint = crate::launcher::widgets::secondary_ink(tm);
         let line = tm.get_color("line");
-        let area = Rect::new(LIST_X, LIST_Y, LIST_W as u32, LIST_H as u32);
+        let area = Rect::new(LIST_X, LIST_Y, list_w() as u32, list_h() as u32);
         ui::fill_rect(c, area, paper);
         if let Some((_, pr)) = &self.loader {
             let (tagged, found, _) = pr.snapshot();
@@ -1580,8 +2094,8 @@ impl Music {
             fs.draw_text(c, area.x() + 6, area.y() + 4, &crate::launcher::i18n::tr_s(&msg), faint);
         }
         let playing = self.playing.as_ref().map(|p| p.index);
-        for (n, t) in self.tracks.iter().enumerate().skip(self.scroll).take(VISIBLE) {
-            let row = Rect::new(LIST_X, LIST_Y + (n - self.scroll) as i32 * grid::ROW_H, LIST_W as u32, grid::ROW_H as u32);
+        for (n, t) in self.tracks.iter().enumerate().skip(self.scroll).take(visible()) {
+            let row = Rect::new(LIST_X, LIST_Y + (n - self.scroll) as i32 * grid::ROW_H, list_w() as u32, grid::ROW_H as u32);
             let sel = n == self.cursor;
             if sel {
                 widgets::draw_row_plate(c, tm, row);
@@ -1590,7 +2104,7 @@ impl Music {
             if playing == Some(n) {
                 draw_play_icon(c, row.x() + 6, row.y() + 4, 8, fg);
             }
-            let name = chrome::fit_text(fs, &t.title, LIST_W - 24);
+            let name = chrome::fit_text(fs, &t.title, list_w() - 24);
             fs.draw_text(c, row.x() + 20, widgets::text_origin(row.y(), row.height() as i32), &name, fg);
             widgets::draw_row_rule(c, tm, row);
         }
@@ -1625,15 +2139,16 @@ impl Music {
         // Cover on the left: a white panel (outline + hard shadow) with the picture in two
         // tones, dark on white on every theme.
         let (paper, dark) = tone::paper_ink(tm);
-        let pad = 4;
-        let side = tags::COVER as i32 + 2 * pad;
-        let art = Rect::new(grid::MARGIN * 2, grid::BAR_H + grid::MARGIN * 2, side as u32, side as u32);
+        let art = self.now_panel();
+        let side = art.width() as i32;
         widgets::hard_shadow(c, art, ink);
         ui::fill_rect(c, art, paper);
         ui::draw_rect(c, art, ink);
-        if let Some(m) = &self.meta {
+        if self.view != View::Cover {
+            self.draw_vis(c, ctx, art, p.ready, tick);
+        } else if let Some(m) = &self.meta {
             if self.art_runs.is_none() {
-                let (ox, oy) = (art.x() + (side - m.cover.w as i32) / 2, art.y() + (side - m.cover.h as i32) / 2);
+                let (ox, oy) = (art.x() + (side - m.cover.w as i32) / 2, art.y() + (art.height() as i32 - m.cover.h as i32) / 2);
                 self.art_runs = Some(tags::dark_runs(&m.cover, ox, oy));
             }
             if let Some(v) = &self.art_runs {
@@ -1648,7 +2163,7 @@ impl Music {
 
         // Text column on the right.
         let x = art.right() + grid::MARGIN * 3;
-        let w = grid::SCROLL_X + grid::SCROLL_W - grid::MARGIN - x;
+        let w = grid::scroll_x() + grid::SCROLL_W - grid::MARGIN - x;
         let state = if p.time.paused() { crate::launcher::i18n::tr("Paused") } else { crate::launcher::i18n::tr("Playing") };
         fs.draw_text(c, x, art.y(), &format!("{} / {}", p.index + 1, self.tracks.len()), faint);
         fs.draw_text(c, x + w - fs.measure_text(state), art.y(), state, ink);
@@ -1663,6 +2178,10 @@ impl Music {
         if let Some(a) = album {
             fs.draw_text(c, x, art.y() + 54, &chrome::fit_text(fs, &a, w), faint);
         }
+
+        let eqr = self.eq_badge();
+        let eql = format!("EQ {}", crate::launcher::i18n::tr(self.eq.preset_name()));
+        widgets::draw_button(c, fs, tm, eqr, &chrome::fit_text(fs, &eql, eqr.width() as i32 - 8), widgets::BtnState::default());
 
         // Play / pause glyph, progress bar and times at the bottom of the column.
         let gy = art.bottom() - 38;
@@ -1765,6 +2284,8 @@ mod tests {
     #[derive(Default)]
     struct Log {
         spawned: Vec<PathBuf>,
+        /// (start position, filter) of each spawn.
+        opts: Vec<(Duration, Option<String>)>,
         events: Vec<&'static str>,
         done: Vec<Rc<Cell<bool>>>,
     }
@@ -1789,10 +2310,11 @@ mod tests {
     }
 
     impl Audio for Mock {
-        fn spawn(&self, path: &Path) -> Result<Box<dyn Proc>, String> {
+        fn spawn(&self, path: &Path, from: Duration, af: Option<&str>) -> Result<Box<dyn Proc>, String> {
             let done = Rc::new(Cell::new(false));
             let mut l = self.0.borrow_mut();
             l.spawned.push(path.to_path_buf());
+            l.opts.push((from, af.map(str::to_string)));
             l.done.push(done.clone());
             Ok(Box::new(MockProc(self.0.clone(), done)))
         }
@@ -1858,6 +2380,139 @@ mod tests {
         log.borrow().done[1].set(true);
         m.poll(t);
         assert!(m.playing.is_none());
+    }
+
+    #[test]
+    fn an_eq_change_restarts_the_track_where_it_was_once_settled() {
+        let (mut m, log) = app(2);
+        let t0 = Instant::now();
+        m.play(0, t0);
+        assert!(m.poll(t0), "the mock is ready at once");
+        m.open_eq();
+        m.eq_focus = 1;
+        m.eq_key(Keycode::Up, t0 + Duration::from_secs(10));
+        m.eq_key(Keycode::Up, t0 + Duration::from_secs(10));
+        assert_eq!(m.eq.gains[0], 2);
+        assert!(!m.apply_eq(t0 + Duration::from_millis(10_100)), "still settling");
+        assert!(m.apply_eq(t0 + Duration::from_secs(11)));
+        let l = log.borrow();
+        assert_eq!(l.opts[0], (Duration::ZERO, None));
+        assert_eq!(l.opts[1].0, Duration::from_secs(11));
+        assert!(l.opts[1].1.as_deref().unwrap().contains("bass=f=60:t=q:w=0.707:g=2"));
+        assert_eq!(l.events, ["stop"], "the old process is stopped");
+        drop(l);
+        assert!(!m.apply_eq(t0 + Duration::from_secs(12)), "nothing more to do");
+        // The clock carries on from the restart position once the new process is ready.
+        m.poll(t0 + Duration::from_secs(11));
+        assert_eq!(m.playing.as_ref().unwrap().time.elapsed(t0 + Duration::from_secs(13)), Duration::from_secs(13));
+        // A new track starts with the current filter, from the top.
+        m.step(1, t0 + Duration::from_secs(14));
+        assert_eq!(log.borrow().opts[2].0, Duration::ZERO);
+        assert!(log.borrow().opts[2].1.is_some());
+    }
+
+    #[test]
+    fn eq_keys_presets_and_saving() {
+        let dir = std::env::temp_dir().join(format!("harbour-music-eq-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.json");
+        std::fs::write(&path, r#"{"volume":40}"#).unwrap();
+        let (mut m, log) = app(1);
+        m.use_config(path.clone());
+        let t = Instant::now();
+        m.open_eq();
+        assert!(m.screen == Screen::Eq);
+        m.eq_focus = 0;
+        m.eq_key(Keycode::Down, t);
+        assert_eq!(m.eq.preset_name(), "Bass");
+        m.eq_key(Keycode::Right, t);
+        m.eq_key(Keycode::Delete, t);
+        assert_eq!(m.eq.gains, [0, 3, 0, 0, 0]);
+        assert_eq!(m.eq.preset_name(), "Custom");
+        m.eq_key(Keycode::Left, t);
+        m.eq_key(Keycode::Up, t);
+        assert_eq!(m.eq.preset_name(), "Night", "from Custom, up goes to the last preset");
+        // Dragging a slider: the thumb follows the pointer, a step per 3 px.
+        m.eq_pointer(PointerEvent::Down { x: eq_col_rect(2).center().x(), y: EQ_ZERO_Y - 9, button: 0, clicks: 1 }, t);
+        assert_eq!((m.eq_focus, m.eq.gains[2]), (3, 3));
+        m.eq_pointer(PointerEvent::Drag { x: 0, y: EQ_TRACK_BOTTOM + 40, dx: 0, dy: 40 }, t);
+        assert_eq!(m.eq.gains[2], -12);
+        m.eq_pointer(PointerEvent::Up { x: 0, y: 0, button: 0 }, t);
+        m.eq_key(Keycode::Escape, t);
+        assert!(m.screen == Screen::List);
+        let saved = Config::load(path.clone());
+        assert_eq!(saved.get_str("music_eq", ""), m.eq.serialize());
+        assert_eq!(saved.get_int("volume", 0), 40, "other settings stay");
+        assert!(log.borrow().spawned.is_empty());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    thread_local! {
+        static TAPS: RefCell<Vec<(Duration, Option<String>)>> = RefCell::new(Vec::new());
+    }
+
+    /// A 1 kHz sine at half scale, wherever the clock is.
+    struct SineSource;
+    impl Source for SineSource {
+        fn window(&mut self, _: Duration) -> Option<Vec<f32>> {
+            Some((0..music_vis::WINDOW).map(|i| 0.5 * (2.0 * std::f32::consts::PI * 1000.0 * i as f32 / music_vis::RATE as f32).sin()).collect())
+        }
+    }
+
+    fn mock_tap(_: &Path, from: Duration, af: Option<&str>) -> Result<Box<dyn Source>, String> {
+        TAPS.with(|t| t.borrow_mut().push((from, af.map(str::to_string))));
+        Ok(Box::new(SineSource))
+    }
+
+    #[test]
+    fn the_visualizer_follows_playback_and_the_equalizer() {
+        TAPS.with(|t| t.borrow_mut().clear());
+        let (mut m, _log) = app(2);
+        m.tap_maker = mock_tap;
+        let t0 = Instant::now();
+        m.play(0, t0);
+        m.screen = Screen::Now;
+        m.poll(t0);
+        assert!(!m.sync_vis(t0), "the cover needs no tap");
+        assert!(m.tap.is_none());
+        m.cycle_view();
+        assert_eq!(m.view, View::Bars);
+        assert!(m.sync_vis(t0 + Duration::from_secs(2)));
+        assert!(m.sync_vis(t0 + Duration::from_millis(2050)));
+        let lv = m.meter.level;
+        assert!(lv[2] > -8.0 && lv.iter().enumerate().all(|(i, &v)| i == 2 || v < lv[2] - 20.0), "1 kHz lights the 1k bar: {lv:?}");
+        // An equalizer change restarts playback, and the tap follows from the new position.
+        m.set_eq(Eq { gains: music_eq::PRESETS[1].1 }, t0 + Duration::from_secs(3));
+        m.apply_eq(t0 + Duration::from_secs(4));
+        m.poll(t0 + Duration::from_secs(4));
+        m.sync_vis(t0 + Duration::from_secs(5));
+        let taps = TAPS.with(|t| t.borrow().clone());
+        assert_eq!(taps.len(), 2);
+        assert_eq!(taps[0], (Duration::from_secs(2), None));
+        assert_eq!(taps[1].0, Duration::from_secs(5));
+        assert!(taps[1].1.as_deref().unwrap().contains("bass="));
+        // Off the Now screen the tap stops.
+        m.screen = Screen::List;
+        m.sync_vis(t0 + Duration::from_secs(6));
+        assert!(m.tap.is_none());
+        m.cycle_view();
+        m.cycle_view();
+        assert_eq!(m.view, View::Cover);
+    }
+
+    #[test]
+    fn the_panel_grows_with_the_window_for_the_visualizer_only() {
+        let (mut m, _) = app(1);
+        let at = |m: &Music, size| grid::with_surface(size, || (m.now_panel(), m.eq_badge()));
+        let (cover, _) = at(&m, (320, 170));
+        assert_eq!((cover.width(), cover.height()), (144, 144));
+        m.view = View::Wave;
+        let (small, badge) = at(&m, (320, 170));
+        assert_eq!(small, cover, "on the device it is the cover's square");
+        assert_eq!(badge.x(), cover.right() + 12);
+        let (big, badge) = at(&m, (520, 300));
+        assert_eq!((big.width(), big.height()), (344, 274));
+        assert_eq!(badge.x(), big.right() + 12);
     }
 
     #[test]
@@ -2205,7 +2860,7 @@ mod tests {
     }
     struct SlowAudio(Rc<Cell<bool>>);
     impl Audio for SlowAudio {
-        fn spawn(&self, _: &Path) -> Result<Box<dyn Proc>, String> {
+        fn spawn(&self, _: &Path, _: Duration, _: Option<&str>) -> Result<Box<dyn Proc>, String> {
             Ok(Box::new(SlowProc(self.0.clone())))
         }
         fn duration(&self, _: &Path) -> Option<Duration> {
@@ -2262,5 +2917,7 @@ mod tests {
         crate::launcher::help::check_app_rows("Music list", &m.help());
         m.screen = Screen::Now;
         crate::launcher::help::check_app_rows("Music now playing", &m.help());
+        m.screen = Screen::Eq;
+        crate::launcher::help::check_app_rows("Music equalizer", &m.help());
     }
 }

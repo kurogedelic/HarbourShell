@@ -180,7 +180,7 @@ Harbour is drawn for the Cardputer Zero's 320 x 170. On a bigger screen (`HARBOU
     Radio, Camera, Monitor, Music, Voice Memo.
   * `Flexible`: laid out from the surface (`grid::sw()` / `grid::sh()`, `grid::scroll_x()`, `grid::frame_bottom()`,
     `grid::app_frame()`...), never under 320 x 170. They open at about two thirds of the desk and resize from the
-    window's bottom-right corner. Browser, Calendar, Infoscope, Interceptor, Files, Sheet, Images, Paint (the sheet's view fills the
+    window's bottom-right corner. Browser, Calendar, HarbourTalk, Infoscope, Interceptor, Files, Sheet, Images, Paint (the sheet's view fills the
     window), Settings, Text Editor, Terminal.
   * Rule for a flexible app: anything that depends on the screen size is computed when drawing or handling input
     (a small `fn`, not a `const`); at 320 x 170 it gives exactly the old numbers.

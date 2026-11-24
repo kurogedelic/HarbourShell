@@ -1088,7 +1088,7 @@ impl Recorder {
             return;
         }
         self.stop_playback();
-        match self.audio.spawn(&f.path) {
+        match self.audio.spawn(&f.path, Duration::ZERO, None) {
             Ok(proc) => self.playing = Some(Playing { path: f.path, proc, since: Instant::now() }),
             Err(e) => self.toast = Some(e),
         }

@@ -1,0 +1,15 @@
+name = "harbourtalk"
+main = "worker.js"
+compatibility_date = "2026-11-01"
+
+# Browsers may call the board only from these pages (comma separated), e.g. the web demo's address.
+[vars]
+ALLOWED_ORIGINS = "https://kurogedelic.github.io,http://localhost:8017"
+# The public rooms: id=Name, comma separated (ids: a-z, 0-9, '-'). Removing one hides its posts.
+ROOMS = "lobby=ロビー,cardputer=Cardputer,music=音楽,chat=雑談"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "harbourtalk"
+# From `wrangler d1 create harbourtalk`.
+database_id = "fa44236b-d665-4b28-b87a-387a2c51f3f5"

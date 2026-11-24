@@ -12,7 +12,7 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 TARGET=${CARGO_TARGET_DIR:-$ROOT/../target-web}
 STAGE=$TARGET/web-stage
 DIST=$ROOT/web/dist
-WEB_APPS="calculator calendar clock files images paint settings sheet snake texteditor timer"
+WEB_APPS="calculator calendar clock files harbourtalk images paint settings sheet snake texteditor timer"
 
 rm -rf "$STAGE" && mkdir -p "$STAGE/apps"
 cp -R "$ROOT/assets" "$STAGE/assets"

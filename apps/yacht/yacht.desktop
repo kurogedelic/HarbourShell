@@ -1,0 +1,7 @@
+[Desktop Entry]
+Name=Yacht
+Exec=harbour:yacht
+Icon=icon.png
+Terminal=false
+Type=Application
+X-Harbour-Aliases=sequencer

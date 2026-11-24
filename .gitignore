@@ -14,3 +14,8 @@ assets/statusbar-src/
 assets/images/icons/Test*.png
 demo/out/
 /web/dist/
+
+# HarbourTalk server: local secrets and wrangler state.
+server/harbourtalk/.dev.vars
+server/harbourtalk/.wrangler/
+server/harbourtalk/node_modules/
