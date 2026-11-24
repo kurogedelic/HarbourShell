@@ -7,7 +7,8 @@
 <style>
   html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
   body { display: flex; align-items: center; justify-content: center; }
-  canvas { display: block; image-rendering: pixelated; image-rendering: crisp-edges; outline: none; }
+  canvas { display: block; max-width: 100vw; image-rendering: pixelated; image-rendering: crisp-edges; outline: none; }
+  canvas.fit { width: 100vw; height: auto; }
   #note { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
           color: #ccc; font: 13px/1.5 ui-monospace, Menlo, monospace; text-align: center; pointer-events: none; }
 </style>
@@ -31,7 +32,7 @@
     setStatus: function (t) { if (t) note.innerHTML = 'Harbour Shell<br>' + t.replace(/\(.*\)/, ''); },
     onRuntimeInitialized: function () { note.style.display = 'none'; canvas.focus(); },
     // Each build's files carry its version, so a browser never mixes an old build with a new one.
-    locateFile: function (path, prefix) { return prefix + path + '?v=6ced90e39b'; },
+    locateFile: function (path, prefix) { return prefix + path + '?v=bf19115267'; },
     onAbort: function (w) { note.style.display = 'flex'; note.textContent = 'Harbour Shell stopped: ' + w; },
   };
   canvas.addEventListener('mousedown', function () { canvas.focus(); });
@@ -45,6 +46,6 @@
     }, 600);
   });
 </script>
-<script src="harbour-shell.js?v=6ced90e39b"></script>
+<script src="harbour-shell.js?v=bf19115267"></script>
 </body>
 </html>
