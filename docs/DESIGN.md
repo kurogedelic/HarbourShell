@@ -164,6 +164,10 @@ Harbour is drawn for the Cardputer Zero's 320 x 170. On a bigger screen (`HARBOU
 * **Home is the desk.** Its icons stand on the desk's background in columns from the right edge, top to bottom (each
   name on a small paper plate); Up/Down move in a column, Left/Right to the next column. A press on the empty desk gives
   Home the keyboard. There is no list view and no scrolling on the desk.
+* **A folder is a window.** Opening a folder on the desk gives it a window of its own showing its apps the way Home
+  does (no `..` tile); the desk keeps its icons. An app opened from it gets its own window; Esc closes the folder.
+* **System sounds.** A short click when the menu highlight moves, and blips when a menu or window opens or closes
+  (Settings > Sound > System sounds, Sounds volume). One audio device stays open and mixes them (`sound.rs`).
 * **The desk's strip is the menu bar.** The anchor (Harbour menu), the focused screen's name (its app menu) and the
   status icons; menus drop from it. It belongs to the focused window, or to Home. Each status item opens its own
   menu: the clock (date, World Clock, Calendar, Timer), the battery (Monitor, System settings), the network (Wi-Fi on /

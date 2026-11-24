@@ -149,6 +149,7 @@ Headless runs also work on the device (real backend, no LCD): `HARBOUR_HEADLESS=
 
 - The page picks the picture size from the browser window (a desk when there is room). `?size=320x170` shows the Cardputer Zero's screen, `?scale=N` forces the zoom, `?mode=desk|full` and `?lang=ja` work like `HARBOUR_MODE` and `LANG`, and `?script=...` drives it like `HARBOUR_SCRIPT`.
 - The hardware is pretend (`HARBOUR_MOCK`). The home folder is kept in the browser (IndexedDB), so notes, drawings and settings survive a reload.
+- Sound: the shell's clicks and Yacht play through the browser's audio once the page has had a click or a key (browsers start sound only then).
 - There are no threads in the page: `rt::sleep` hands each frame back to the browser (Asyncify) and `rt::spawn` runs its work at once.
 - Left out: apps that need the network, a terminal, a camera or the sound device (Browser, Infoscope, Radio, Music, Voice Memo, Terminal, Interceptor, Monitor, Camera) and the Agent. The Japanese dictionary is never redistributed, so input is kana only.
 - HarbourTalk is in: it talks to the board server through the browser (synchronous XMLHttpRequest), so the server lists the page's address in `ALLOWED_ORIGINS` (`server/harbourtalk/README.md`); the server setting `demo` gives the demo board instead.

@@ -10,6 +10,7 @@ pub mod dialogs;
 pub mod desktop_entry;
 pub mod feed;
 pub mod fileops;
+pub mod folder_window;
 pub mod folders;
 pub mod help;
 pub mod home;

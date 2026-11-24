@@ -141,6 +141,8 @@ impl Item {
 pub enum HomeAction {
     None,
     Open(usize),
+    /// On a desk: open this folder (index into `Home::folders`) in a window of its own.
+    OpenFolder(usize),
     /// A folder opened or closed: the host plays the zoom rectangle.
     Zoom { from: Rect, to: Rect },
 }
@@ -402,6 +404,10 @@ impl Home {
         if idx != RECENT && idx >= self.folders.list.len() {
             return HomeAction::None;
         }
+        // On a desk a folder is a window, and the desk keeps its icons.
+        if self.desk && idx != RECENT {
+            return HomeAction::OpenFolder(idx);
+        }
         let from = self.selected_icon_rect();
         self.open = Some(idx);
         self.scroll_row = 0;
@@ -411,6 +417,18 @@ impl Home {
         }
         self.scroll_into_view();
         HomeAction::Zoom { from, to: Self::content_rect() }
+    }
+
+    /// A Home of its own showing folder `idx`'s apps (no `..` tile, nothing saved): the inside of a
+    /// folder window on the desk.
+    pub fn folder_view(&self, idx: usize) -> Home {
+        let mut h = Home::new(self.all.clone());
+        h.folders = self.folders.clone();
+        h.open = Some(idx);
+        h.relayout(None);
+        h.items.retain(|i| i.kind != Kind::Back);
+        h.selected = 0;
+        h
     }
 
     pub fn close_folder(&mut self) -> HomeAction {

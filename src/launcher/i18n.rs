@@ -98,6 +98,11 @@ pub const JA: &[(&str, &str)] = &[
     // Audio
     ("Volume", "音量"),
     ("Mute", "ミュート"),
+    ("System sounds", "システムサウンド"),
+    ("Sounds volume", "効果音の音量"),
+    ("Quiet", "小"),
+    ("Medium", "中"),
+    ("Strong", "大"),
     ("Muted", "ミュート中"),
     // Network / Bluetooth
     ("Wi-Fi", "Wi-Fi"),

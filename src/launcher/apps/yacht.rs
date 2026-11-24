@@ -6,8 +6,9 @@
 //! note under the cursor (or the next one placed) shorter / longer, Space plays the 16 steps in a
 //! loop with a square wave and stops. The pattern is kept in `~/Yacht/pattern.txt`.
 //!
-//! Sound: the loop is rendered to a WAV file and played with `ffplay -loop 0` (the same player
-//! Music uses); an edit while playing renders it again and restarts the loop.
+//! Sound: the loop is rendered and played over and over by the shell's own mixer
+//! ([`crate::sound`], also in the web build); without it, it goes to a WAV file played with
+//! `ffplay -loop 0`. An edit while playing renders it again and restarts the loop.
 
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -183,10 +184,22 @@ pub fn default_path() -> PathBuf {
 /// Plays the rendered loop.
 struct Player {
     child: Option<Child>,
+    /// The loop in the shell's mixer.
+    voice: Option<u64>,
     since: Instant,
 }
 
 impl Player {
+    /// Through the shell's mixer, when there is one.
+    fn mixer(pattern: &Pattern) -> Option<Player> {
+        if cfg!(test) || !crate::sound::available() {
+            return None;
+        }
+        let pcm = pattern.render(crate::sound::rate());
+        let voice = crate::sound::play_loop(pcm.iter().map(|&v| v as f32 / 32768.0).collect())?;
+        Some(Player { child: None, voice: Some(voice), since: Instant::now() })
+    }
+
     fn start(wav: &Path) -> Result<Player, String> {
         let child = if cfg!(test) {
             None
@@ -202,7 +215,7 @@ impl Player {
                     .map_err(|e| format!("ffplay: {e}"))?,
             )
         };
-        Ok(Player { child, since: Instant::now() })
+        Ok(Player { child, voice: None, since: Instant::now() })
     }
 
     fn step(&self, now: Instant) -> u8 {
@@ -212,6 +225,9 @@ impl Player {
 
 impl Drop for Player {
     fn drop(&mut self) {
+        if let Some(v) = self.voice.take() {
+            crate::sound::stop(v);
+        }
         if let Some(mut c) = self.child.take() {
             let _ = c.kill();
             let _ = c.wait();
@@ -357,6 +373,11 @@ impl Yacht {
     }
 
     fn play(&mut self) -> AppAction {
+        self.player = None;
+        if let Some(p) = Player::mixer(&self.pattern) {
+            self.player = Some(p);
+            return AppAction::None;
+        }
         let wav = self.wav_path();
         if let Err(e) = std::fs::write(&wav, self.pattern.wav(RATE)) {
             return AppAction::Toast(format!("Cannot play: {e}"));

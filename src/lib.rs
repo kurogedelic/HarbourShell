@@ -13,6 +13,7 @@ pub mod jis;
 pub mod pdfont;
 pub mod rt;
 pub mod snake;
+pub mod sound;
 pub mod text_editor;
 pub mod theme;
 pub mod ui;

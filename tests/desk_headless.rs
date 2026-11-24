@@ -17,7 +17,15 @@ fn scratch(name: &str) -> PathBuf {
 
 /// Run one script on a desk of `size`; returns the shots directory's files (name, bytes).
 fn run(name: &str, size: &str, script: &str) -> Vec<(String, Vec<u8>)> {
+    run_with(name, size, script, None)
+}
+
+/// [`run`] with Home folders (`folders.json` text).
+fn run_with(name: &str, size: &str, script: &str, folders: Option<&str>) -> Vec<(String, Vec<u8>)> {
     let d = scratch(name);
+    if let Some(f) = folders {
+        std::fs::write(d.join("folders.json"), f).unwrap();
+    }
     let out = Command::new(env!("CARGO_BIN_EXE_harbour-shell"))
         .current_dir(env!("CARGO_MANIFEST_DIR"))
         .env_remove("HARBOUR_ROOT")
@@ -32,6 +40,7 @@ fn run(name: &str, size: &str, script: &str) -> Vec<(String, Vec<u8>)> {
         .env("HARBOUR_IME_DIR", d.join("ime"))
         .env("HARBOUR_SHOT_DIR", d.join("shots"))
         .env("HARBOUR_SCRIPT", script)
+        .env("HARBOUR_ORDER_FILE", d.join("order.txt"))
         .output()
         .expect("run harbour-shell");
     let err = String::from_utf8_lossy(&out.stderr);
@@ -97,4 +106,21 @@ fn the_shot_is_the_whole_desk() {
 #[test]
 fn the_cardputer_size_has_no_desk() {
     run("no-desk", "320x170", "wait:200,expect:windows=0,goto:files,Return,wait:900,expect:screen=files&windows=0");
+}
+
+#[test]
+fn a_folder_opens_in_a_window_and_its_apps_in_windows_of_their_own() {
+    let folders = r#"{"version":1,"folders":[{"name":"Tools","items":["calculator","paint"]}]}"#;
+    run_with(
+        "folder",
+        "800x480",
+        "wait:200,expect:screen=home&windows=0,\
+         goto:Tools,Return,wait:900,expect:screen=tools&windows=1,\
+         Return,wait:900,expect:screen=calculator&windows=2,\
+         hold:Escape:1100,wait:900,expect:screen=tools&windows=1,\
+         Escape,wait:900,expect:screen=home&windows=0",
+        Some(folders),
+    );
+    // On the Cardputer's own screen a folder is still a page of Home.
+    run_with("folder-small", "320x170", "wait:200,goto:Tools,Return,wait:900,expect:screen=home", Some(folders));
 }

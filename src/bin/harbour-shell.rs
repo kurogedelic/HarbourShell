@@ -208,6 +208,8 @@ fn main() -> Result<(), String> {
     let _ = sdl2::hint::set("SDL_RENDER_SCALE_QUALITY", "0");
     sdl2::image::init(sdl2::image::InitFlag::PNG)?;
     let sdl = sdl2::init()?;
+    // The shell's own sounds (menu clicks, windows) and app loops: one device for the whole run.
+    let _sound = if headless { None } else { harbour_shell::sound::init(&sdl) };
     sdl.mouse().show_cursor(false);
     let video = sdl.video()?;
     let scale: u32 = if headless {
@@ -462,6 +464,10 @@ fn main() -> Result<(), String> {
     let mut esc = HoldKey::default();
     let mut locked = env_bool("HARBOUR_START_LOCKED");
     let mut app_menu: Option<harbour_shell::launcher::widgets::AppMenu> = None;
+    // What the sounds were last frame: the open menu's highlight, windows on the desk, a zoom.
+    let mut snd_menu: Option<usize> = None;
+    let mut snd_windows = 0usize;
+    let mut snd_zoom = false;
     let mut hold_gauge: Option<(&'static str, f32)>;
     let mut mouse_ev: Option<SettingsEvent> = None;
     let mut left_held = false;
@@ -1653,6 +1659,8 @@ fn main() -> Result<(), String> {
                         }
                         if let Some(id) = chosen {
                             app_menu = None;
+                            snd_menu = None;
+                            harbour_shell::sound::play(harbour_shell::sound::Sfx::Select);
                             // "Home" is the app menu's Quit, from anywhere (the Agent panel closes first).
                             let id = if id == "sys_home" {
                                 agent_open = false;
@@ -1757,6 +1765,7 @@ fn main() -> Result<(), String> {
                                 match id.as_str() {
                                     "hf_open" => match home.handle_key(Keycode::Return) {
                                         HomeAction::Open(i) => open = Some(i),
+                                        HomeAction::OpenFolder(i) => screen = Screen::App(Box::new(harbour_shell::launcher::folder_window::FolderWindow::new(&home, i))),
                                         HomeAction::Zoom { from, to } => zoom = Some(Zoom { t: 0.0, from, to, pending: None }),
                                         _ => {}
                                     },
@@ -1903,6 +1912,9 @@ fn main() -> Result<(), String> {
                     Screen::Home => {
                         match home.handle_key(key) {
                             HomeAction::Open(i) if !repeat => open = Some(i),
+                            HomeAction::OpenFolder(i) if !repeat => {
+                                screen = Screen::App(Box::new(harbour_shell::launcher::folder_window::FolderWindow::new(&home, i)));
+                            }
                             HomeAction::Zoom { from, to } if !repeat => {
                                 zoom = Some(Zoom { t: 0.0, from, to, pending: None });
                             }
@@ -2079,6 +2091,12 @@ fn main() -> Result<(), String> {
             dirty = true;
         }
 
+        // An app opened from a folder window: Home takes the focus first, so it gets a window of its own.
+        if let Some((key, target)) = harbour_shell::launcher::folder_window::take_launch() {
+            desk_to_home(&mut desk, &mut fid, &mut screen, &mut prev_home);
+            home.record_launch(&key);
+            pending_launch = Some(target);
+        }
         let launch: Option<Target> = match open {
             Some(i) => home.items.get(i).cloned().map(|item| {
                 home.record_launch(&item.key());
@@ -2397,6 +2415,31 @@ fn main() -> Result<(), String> {
                 // every step is far too slow on the SPI panel.
                 let _ = sys.set_brightness(((v as f32) * (1.0 - p)).max(1.0) as u32);
             }
+        }
+
+        // ---- Sounds: the menu highlight, menus opening, windows opening and closing --------
+        {
+            use harbour_shell::sound::{play, set_ui, Sfx};
+            if let Ok(c) = cfg.lock() {
+                set_ui(c.get_int("harbour_ui_sound", 1) != 0, c.get_int("harbour_ui_sound_level", 1).max(0) as usize);
+            }
+            let menu_now = app_menu.as_ref().map(|m| m.cursor);
+            match (snd_menu, menu_now) {
+                (None, Some(_)) => play(Sfx::MenuOpen),
+                (Some(a), Some(b)) if a != b => play(Sfx::Tick),
+                _ => {}
+            }
+            snd_menu = menu_now;
+            let zooming = zoom.is_some() || desk_zoom.is_some();
+            if zooming && !snd_zoom {
+                play(Sfx::Open);
+            }
+            snd_zoom = zooming;
+            let windows = desk.as_ref().map_or(0, |d| d.len());
+            if windows < snd_windows {
+                play(Sfx::Close);
+            }
+            snd_windows = windows;
         }
 
         // ---- Zoom rectangles between the home screen and a window ----------------

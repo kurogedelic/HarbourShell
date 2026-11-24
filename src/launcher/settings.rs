@@ -745,7 +745,12 @@ impl Settings {
             ],
             Page::Audio => {
                 let (p, m) = self.sys.volume().unwrap_or((0, false));
-                vec![row("Volume", Val::Slider(p as u32)), row("Mute", Val::Toggle(m))]
+                vec![
+                    row("Volume", Val::Slider(p as u32)),
+                    row("Mute", Val::Toggle(m)),
+                    row("System sounds", Val::Toggle(self.cfg_int("harbour_ui_sound", 1) == 1)),
+                    row("Sounds volume", Val::Text(UI_SOUND_LEVELS[self.cfg_int("harbour_ui_sound_level", 1).clamp(0, 2) as usize].to_string())),
+                ]
             }
             Page::Network => vec![
                 row("Wi-Fi", Val::Toggle(self.wifi.radio)),
@@ -1121,7 +1126,7 @@ impl Settings {
                 let (p, _) = self.sys.volume().unwrap_or((0, false));
                 self.set_volume_pct((p as i32 + dir * 5).clamp(0, 100) as u8);
             }
-            (Page::Audio, 1) | (Page::Theme, 1) | (Page::Lock, 3 | 4) | (Page::Agent, 0) => return self.activate(),
+            (Page::Audio, 1 | 2) | (Page::Theme, 1) | (Page::Lock, 3 | 4) | (Page::Agent, 0) => return self.activate(),
             (Page::Agent, 1) => return self.cycle_agent_provider(dir),
             (Page::Network, 0) | (Page::Bluetooth, 0) | (Page::ExtPort, _) => return self.activate(),
             (page, row) => {
@@ -1208,6 +1213,10 @@ impl Settings {
             (Page::Audio, 1) => {
                 let (_, m) = self.sys.volume().unwrap_or((0, false));
                 let _ = self.sys.set_mute(!m);
+            }
+            (Page::Audio, 2) => {
+                let on = self.cfg_int("harbour_ui_sound", 1) == 1;
+                self.cfg_set("harbour_ui_sound", (!on) as i64);
             }
             (Page::Network, 0) => {
                 let on = !self.wifi.radio;
@@ -1697,6 +1706,9 @@ struct ChoiceSpec {
 }
 
 /// The pop-up rows of every page (`None`: not a pop-up row).
+/// Settings > Sound > Sounds volume: the shell's own clicks (`sound::LEVELS`).
+const UI_SOUND_LEVELS: [&str; 3] = ["Quiet", "Medium", "Strong"];
+
 fn choice_spec(page: &Page, row: usize) -> Option<ChoiceSpec> {
     // On a grey or 1-bit panel the theme is the panel's own: nothing to choose.
     if *page == Page::Theme && row == 0 && panel_theme().is_some() {
@@ -1712,6 +1724,7 @@ fn choice_spec(page: &Page, row: usize) -> Option<ChoiceSpec> {
         (Page::Theme, 2) => spec("harbour_statusbar", index(BAR_STYLES.len()), names(&BAR_STYLES), 0),
         (Page::Lock, 0) => spec("harbour_lock_style", index(LOCK_STYLES.len()), names(&LOCK_STYLES), 0),
         (Page::Lock, 1) => spec("harbour_lock_auto", AUTO_LOCK_TIMES.to_vec(), AUTO_LOCK_TIMES.iter().map(|v| dark_label(*v)).collect(), 0),
+        (Page::Audio, 3) => spec("harbour_ui_sound_level", index(UI_SOUND_LEVELS.len()), names(&UI_SOUND_LEVELS), 1),
         (Page::Lock, 2) => spec("harbour_lock_dark", LOCK_DARK_TIMES.to_vec(), LOCK_DARK_TIMES.iter().map(|v| lock_label(*v)).collect(), 8),
         _ => None,
     }
