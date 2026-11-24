@@ -16,6 +16,13 @@ Module.preRun.push(function () {
     if (!scale) scale = vw >= 1400 && vh >= 800 ? 2 : 1;
     if (vw < 700) scale = Math.max(1, Math.floor(Math.min(vw / 320, vh / 170)));
     w = Math.max(320, Math.floor(vw / scale)); h = Math.max(170, Math.floor(vh / scale));
+    // Harbour is a landscape screen: on a tall page (a phone held upright) it is the Cardputer's own
+    // 320 x 170 picture, enlarged across the page's width (the page stretches the canvas).
+    if (vh > vw) {
+      w = 320; h = 170;
+      scale = Math.max(1, Math.floor(vw / 320));
+      if (Module.canvas) Module.canvas.classList.add('fit');
+    }
   }
   ENV.HARBOUR_SCREEN = w + 'x' + h;
   ENV.HARBOUR_SCALE = String(scale);

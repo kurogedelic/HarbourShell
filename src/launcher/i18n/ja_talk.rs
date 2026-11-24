@@ -1,6 +1,13 @@
 //! Japanese text for HarbourTalk (the app's own name stays "HarbourTalk" in every language).
 pub const JA: &[(&str, &str)] = &[
     ("Demo board", "デモ掲示板"),
+    ("My name", "名前"),
+    ("Server", "サーバー"),
+    ("Write", "書く"),
+    ("Read", "読む"),
+    ("Previous", "前へ"),
+    ("Next", "次へ"),
+    ("Post", "投稿"),
     ("1 post", "1 件の投稿"),
     ("Public rooms", "公開ルーム"),
     ("Rooms", "ルーム一覧"),
@@ -38,6 +45,6 @@ pub const JA_PAT: &[(&str, &str)] = &[
     ("{} posts", "{} 件の投稿"),
     ("Wait {} s to post again", "あと {} 秒で投稿できます"),
     ("New post in {}", "{} に投稿"),
-    ("Enter: Post as {}   Esc: Back", "Enter: {} として投稿   Esc: 戻る"),
+    ("Posting as {}", "{} として投稿"),
     ("Server error {}", "サーバーエラー {}"),
 ];

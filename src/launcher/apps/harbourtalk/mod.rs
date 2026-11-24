@@ -38,7 +38,12 @@ use net::{Board, Post, Reply, Room, Settings, Store};
 
 const ROW: i32 = 16;
 /// One post in the timeline: the author row and one row of its text.
-const ENTRY_H: i32 = 32;
+const ENTRY_H: i32 = 28;
+/// The toolbar right under the menu strip: buttons big enough for a finger (the web page on a
+/// phone shows the 320 x 170 picture enlarged across its width), then a rule.
+const TOOL_H: i32 = 24;
+/// Widest toolbar button (a desk window does not stretch them across).
+const TOOL_MAX_W: i32 = 110;
 /// Lines of a post's full text, and of the draft.
 const LINE_H: i32 = 14;
 const LEFT: i32 = 6;
@@ -59,13 +64,73 @@ pub enum View {
 
 /// The row under the menu strip, then the page.
 fn head_y() -> i32 {
-    grid::BAR_H
+    grid::BAR_H + TOOL_H
 }
 fn page_y() -> i32 {
-    grid::BAR_H + ROW + 1
+    head_y() + ROW + 1
 }
 fn page_bottom() -> i32 {
     grid::frame_bottom()
+}
+/// The toolbar's top (right under the menu strip); its rule is its last row.
+fn bar_y() -> i32 {
+    grid::BAR_H
+}
+fn bar_rule_y() -> i32 {
+    bar_y() + TOOL_H - 1
+}
+/// The last row of the page.
+fn content_bottom() -> i32 {
+    page_bottom()
+}
+
+/// What a toolbar button does (the same as its key).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Act {
+    Open,
+    Refresh,
+    Name,
+    Server,
+    Rooms,
+    Write,
+    Read,
+    Back,
+    Previous,
+    Next,
+    Post,
+    Save,
+}
+
+impl Act {
+    fn label(self) -> &'static str {
+        match self {
+            Act::Open => "Open",
+            Act::Refresh => "Refresh",
+            Act::Name => "My name",
+            Act::Server => "Server",
+            Act::Rooms => "Rooms",
+            Act::Write => "Write",
+            Act::Read => "Read",
+            Act::Back => "Back",
+            Act::Previous => "Previous",
+            Act::Next => "Next",
+            Act::Post => "Post",
+            Act::Save => "Save",
+        }
+    }
+}
+
+/// The toolbar's buttons for `n` actions: equal widths across the page, at most [`TOOL_MAX_W`].
+pub fn tool_rects(n: usize) -> Vec<Rect> {
+    if n == 0 {
+        return Vec::new();
+    }
+    let (gap, left) = (4, 4);
+    let room = grid::sw() - 2 * left - gap * (n as i32 - 1);
+    let w = (room / n as i32).min(TOOL_MAX_W);
+    let y = bar_y() + 2;
+    let h = bar_rule_y() - 2 - y;
+    (0..n).map(|i| Rect::new(left + i as i32 * (w + gap), y, w as u32, h as u32)).collect()
 }
 /// Right edge of text: clear of the scroll bar column.
 fn text_right() -> i32 {
@@ -73,14 +138,14 @@ fn text_right() -> i32 {
 }
 /// Whole timeline entries that fit.
 pub fn entries_shown() -> usize {
-    ((page_bottom() + 1 - page_y()) / ENTRY_H).max(1) as usize
+    ((content_bottom() + 1 - page_y()) / ENTRY_H).max(1) as usize
 }
 /// The scroll bar beside the room and post lists.
 fn list_bar_rect() -> Rect {
     Rect::new(grid::scroll_x(), page_y(), grid::SCROLL_W as u32, (entries_shown() as i32 * ENTRY_H) as u32)
 }
 fn read_lines_shown() -> usize {
-    ((page_bottom() - page_y() - 2) / LINE_H).max(1) as usize
+    ((content_bottom() - page_y() - 2) / LINE_H).max(1) as usize
 }
 
 fn ja() -> bool {
@@ -190,6 +255,8 @@ pub struct HarbourTalk {
     rx: Receiver<Reply>,
     shown_wait: i64,
     sb_drag: bool,
+    /// The toolbar button under a press (it acts when the press ends on it).
+    tool_down: Option<Act>,
 }
 
 pub fn make() -> Box<dyn LauncherApp> {
@@ -259,6 +326,7 @@ impl HarbourTalk {
             rx,
             shown_wait: 0,
             sb_drag: false,
+            tool_down: None,
         }
     }
 
@@ -569,6 +637,65 @@ impl HarbourTalk {
         };
     }
 
+    /// The toolbar for this page: (action, enabled, the default one).
+    pub fn toolbar(&self) -> Vec<(Act, bool, bool)> {
+        let has_posts = !self.posts.is_empty();
+        match self.view {
+            View::Rooms => vec![
+                (Act::Open, !self.rooms.is_empty(), true),
+                (Act::Refresh, true, false),
+                (Act::Name, true, false),
+                (Act::Server, true, false),
+            ],
+            View::Timeline => vec![
+                (Act::Rooms, true, false),
+                (Act::Write, !self.sending, true),
+                (Act::Read, has_posts, false),
+                (Act::Refresh, true, false),
+            ],
+            View::Read => vec![
+                (Act::Back, true, false),
+                (Act::Previous, self.sel > 0, false),
+                (Act::Next, self.sel + 1 < self.posts.len(), false),
+                (Act::Write, !self.sending, true),
+            ],
+            View::Write => vec![(Act::Back, true, false), (Act::Post, !self.sending, true)],
+            View::Name | View::Server => vec![(Act::Back, true, false), (Act::Save, true, true)],
+        }
+    }
+
+    /// Do what a toolbar button says (each is also a key; see `key`).
+    pub fn act(&mut self, a: Act, now: i64) {
+        match a {
+            Act::Open => self.open_room(self.room_sel, now),
+            Act::Refresh => self.reload(now),
+            Act::Name => {
+                self.then_write = false;
+                self.open_field(View::Name);
+            }
+            Act::Server => self.open_field(View::Server),
+            Act::Rooms => {
+                self.status = None;
+                self.view = View::Rooms;
+            }
+            Act::Write => self.start_writing(""),
+            Act::Read => self.open_read(),
+            Act::Back => self.back(),
+            Act::Previous | Act::Next => {
+                self.step(if a == Act::Next { 1 } else { -1 });
+                self.read_top = 0;
+            }
+            Act::Post => self.send(now),
+            Act::Save => self.commit_field(now),
+        }
+    }
+
+    /// The enabled toolbar button at (x, y).
+    fn tool_at(&self, x: i32, y: i32) -> Option<Act> {
+        let bar = self.toolbar();
+        tool_rects(bar.len()).into_iter().zip(bar).find(|(r, (_, on, _))| *on && r.contains_point((x, y))).map(|(_, (a, _, _))| a)
+    }
+
     fn scroll_read(&mut self, d: isize) {
         let max = self.read_len.saturating_sub(read_lines_shown());
         self.read_top = (self.read_top as isize + d).clamp(0, max as isize) as usize;
@@ -748,6 +875,25 @@ impl LauncherApp for HarbourTalk {
     }
 
     fn pointer(&mut self, ev: PointerEvent, ctx: &Ctx) -> AppAction {
+        // The toolbar: a button acts when the press that began on it ends on it.
+        match ev {
+            PointerEvent::Down { x, y, button: 0, .. } if y >= bar_y() && y <= bar_rule_y() => {
+                self.tool_down = self.tool_at(x, y);
+                return AppAction::None;
+            }
+            PointerEvent::Up { x, y, .. } if self.tool_down.is_some() => {
+                let a = self.tool_down.take();
+                if a.is_some() && self.tool_at(x, y) == a {
+                    self.act(a.unwrap(), ctx.now.timestamp());
+                }
+                return AppAction::None;
+            }
+            PointerEvent::Drag { x, y, .. } if self.tool_down.is_some() && self.tool_at(x, y) != self.tool_down => {
+                self.tool_down = None;
+                return AppAction::None;
+            }
+            _ => {}
+        }
         let rooms = self.view == View::Rooms;
         let (len, top) = if rooms { (self.rooms.len(), self.room_top) } else { (self.posts.len(), self.top) };
         let bar = ScrollBar::new(list_bar_rect(), len, entries_shown(), top);
@@ -759,7 +905,7 @@ impl LauncherApp for HarbourTalk {
                 if let Some((off, drag)) = bar.press(x, y) {
                     if rooms { self.room_top = off } else { self.top = off }
                     self.sb_drag = drag;
-                } else if y >= page_y() {
+                } else if y >= page_y() && y < page_y() + entries_shown() as i32 * ENTRY_H {
                     let i = top + ((y - page_y()) / ENTRY_H) as usize;
                     if i < len {
                         let again = i == if rooms { self.room_sel } else { self.sel };
@@ -834,6 +980,7 @@ impl LauncherApp for HarbourTalk {
         }
         // The rule under the head row.
         ui::line(c, 0, page_y() - 1, grid::sw() - 1, page_y() - 1, p.ink);
+        self.draw_toolbar(c, ctx, &p);
     }
 }
 
@@ -860,6 +1007,19 @@ impl HarbourTalk {
         fs.draw_text(c, right_x, y, right, p.faint);
     }
 
+    fn draw_toolbar(&self, c: &mut Canvas<Window>, ctx: &Ctx, p: &Paint) {
+        ui::line(c, 0, bar_rule_y(), grid::sw() - 1, bar_rule_y(), p.ink);
+        let bar = self.toolbar();
+        for (r, (a, on, default)) in tool_rects(bar.len()).into_iter().zip(bar) {
+            let st = widgets::BtnState { pressed: self.tool_down == Some(a), default: false, disabled: !on, hover: false };
+            widgets::draw_button(c, ctx.fs, ctx.tm, r, a.label(), st);
+            // The default button (what Enter does) is underlined: the heavy ring would not fit.
+            if default && on {
+                ui::line(c, r.x() + 6, r.bottom() - 3, r.right() - 7, r.bottom() - 3, if self.tool_down == Some(a) { ctx.tm.get_color("icon_white") } else { p.ink });
+            }
+        }
+    }
+
     fn status_text(&self) -> Option<String> {
         self.status.as_deref().map(tr_s)
     }
@@ -884,10 +1044,11 @@ impl HarbourTalk {
             }
             let ww = fs.measure_text(note);
             let title = fit(title, right - LEFT - ww - 8, &measure);
-            fs.draw_text_bold(c, LEFT, text_y(y), &title, ink);
-            fs.draw_text(c, right - ww, text_y(y), note, faint);
+            let (ty, by) = (widgets::text_origin(y, 14), widgets::text_origin(y + 13, 14));
+            fs.draw_text_bold(c, LEFT, ty, &title, ink);
+            fs.draw_text(c, right - ww, ty, note, faint);
             let body = fit(body, right - LEFT - 8, &measure);
-            fs.draw_text(c, LEFT + 8, text_y(y + ROW - 1), &body, ink);
+            fs.draw_text(c, LEFT + 8, by, &body, ink);
             if !selected && k + 1 != sel && k + 1 < top + entries_shown() && k + 1 < rows.len() {
                 for x in (LEFT..right).step_by(2) {
                     ui::fill_rect(c, Rect::new(x, y + ENTRY_H - 1, 1, 1), p.faint);
@@ -980,7 +1141,7 @@ impl HarbourTalk {
         self.draw_head(c, ctx, p, &tr_s(&format!("New post in {room}")), &count);
 
         // The box, then the hint row under it.
-        let hint_y = page_bottom() + 1 - ROW;
+        let hint_y = content_bottom() + 1 - ROW;
         let bx = Rect::new(2, page_y() + 2, (grid::sw() - 4) as u32, (hint_y - page_y() - 3) as u32);
         ui::fill_rect(c, bx, ctx.tm.get_color("surface_sunken"));
         ui::draw_rect(c, bx, p.ink);
@@ -1011,7 +1172,7 @@ impl HarbourTalk {
         } else if let Some(s) = st.filter(|s| !s.starts_with("Wait")) {
             tr_s(s)
         } else {
-            tr_s(&format!("Enter: Post as {}   Esc: Back", self.me()))
+            tr_s(&format!("Posting as {}", self.me()))
         };
         fs.draw_text(c, LEFT, text_y(hint_y), &hint, p.faint);
     }
@@ -1029,7 +1190,6 @@ impl HarbourTalk {
         widgets::draw_field(c, fs, ctx.tm, r, &widgets::Field { text: &self.field.text, caret: Some(self.field.caret), ..Default::default() });
         let line = self.status_text().unwrap_or_else(|| tr(hint).to_string());
         fs.draw_text(c, LEFT, text_y(page_y() + 4 + 2 * ROW), &line, p.faint);
-        fs.draw_text(c, LEFT, text_y(page_y() + 4 + 3 * ROW), tr("Enter: Save   Esc: Back"), p.faint);
     }
 }
 
@@ -1246,6 +1406,74 @@ mod tests {
         a.reload_rooms(ctx.now.timestamp());
         settle(&mut a);
         assert_eq!(a.rooms[2].count, before + 1, "a reload of the demo board keeps the count");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_toolbar_fits_the_screen_and_a_desk_window() {
+        for (w, h) in [(320, 170), (800, 480)] {
+            crate::grid::with_surface((w, h), || {
+                for n in 1..=4 {
+                    let rs = tool_rects(n);
+                    for r in &rs {
+                        assert!(r.x() >= 2 && r.right() <= w - 2, "{w}x{h} {n}: {r:?}");
+                        assert!(r.y() > bar_y() && r.bottom() < bar_rule_y(), "{w}x{h} {n}: {r:?}");
+                        assert!(r.height() >= 19, "big enough for a finger");
+                        assert!(r.width() as i32 >= 70 && r.width() as i32 <= TOOL_MAX_W);
+                    }
+                    assert!(rs.windows(2).all(|p| p[0].right() < p[1].x()), "no overlap");
+                }
+                assert!(head_y() > bar_rule_y(), "the head row is under the toolbar");
+                assert!(page_y() + entries_shown() as i32 * ENTRY_H <= page_bottom() + 1, "the list fits the page");
+                if (w, h) == (320, 170) {
+                    assert_eq!(entries_shown(), 4);
+                }
+            });
+        }
+    }
+
+    #[test]
+    fn toolbar_buttons_do_what_the_keys_do() {
+        let (fs, tm, sys) = ctx_parts();
+        let ctx = Ctx { fs: &fs, tm: &tm, sys: &sys, now: chrono::Local::now() };
+        let (mut a, dir) = app("toolbar");
+        a.settings.name = "kuro".into();
+        let click = |a: &mut HarbourTalk, act: Act| {
+            let bar = a.toolbar();
+            let i = bar.iter().position(|(b, _, _)| *b == act).unwrap_or_else(|| panic!("{act:?} not on {:?}", a.view));
+            let r = tool_rects(bar.len())[i];
+            let (x, y) = (r.x() + 5, r.y() + 5);
+            a.pointer(PointerEvent::Down { x, y, button: 0, clicks: 1 }, &ctx);
+            a.pointer(PointerEvent::Up { x, y, button: 0 }, &ctx);
+            settle(a);
+        };
+        click(&mut a, Act::Rooms);
+        assert_eq!(a.view, View::Rooms);
+        a.step_room(1);
+        click(&mut a, Act::Open);
+        assert_eq!((a.view, a.room.as_str()), (View::Timeline, "cardputer"));
+        click(&mut a, Act::Read);
+        assert_eq!(a.view, View::Read);
+        assert!(!a.toolbar()[1].1, "Previous is off on the newest post");
+        click(&mut a, Act::Next);
+        assert_eq!(a.sel, 1);
+        click(&mut a, Act::Write);
+        assert_eq!(a.view, View::Write);
+        a.text("ボタンから", &ctx);
+        click(&mut a, Act::Post);
+        assert_eq!(a.view, View::Timeline);
+        assert_eq!(a.posts[0].text, "ボタンから");
+        click(&mut a, Act::Rooms);
+        click(&mut a, Act::Name);
+        assert_eq!(a.view, View::Name);
+        click(&mut a, Act::Back);
+        assert_eq!(a.view, View::Rooms);
+        // A press that slides off its button does nothing.
+        let r = tool_rects(4)[2];
+        a.pointer(PointerEvent::Down { x: r.x() + 3, y: r.y() + 3, button: 0, clicks: 1 }, &ctx);
+        a.pointer(PointerEvent::Drag { x: r.x() - 40, y: r.y() + 3, dx: -43, dy: 0 }, &ctx);
+        a.pointer(PointerEvent::Up { x: r.x() - 40, y: r.y() + 3, button: 0 }, &ctx);
+        assert_eq!(a.view, View::Rooms);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
