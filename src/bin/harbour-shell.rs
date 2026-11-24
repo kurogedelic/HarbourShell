@@ -2357,9 +2357,9 @@ fn main() -> Result<(), String> {
             }
         }
         // Screen timeout (official `dark_time`, seconds; 0 = never).
-        // A desk is a computer's screen: Harbour does not turn it off.
-        let mut dark = if desk.is_some() { 0 } else { cfg.lock().map(|c| c.get_int("dark_time", 30)).unwrap_or(0) };
-        if locked {
+        // A desk is a computer's screen, and the web page has no backlight: Harbour does not turn it off.
+        let mut dark = if desk.is_some() || harbour_shell::rt::WEB { 0 } else { cfg.lock().map(|c| c.get_int("dark_time", 30)).unwrap_or(0) };
+        if locked && !harbour_shell::rt::WEB {
             // The lock screen goes dark sooner (`harbour_lock_dark`, seconds, default 8; 0 = follow
             // dark_time), and even when the normal screen timeout is "never".
             let lock_dark = cfg.lock().map(|c| c.get_int("harbour_lock_dark", 8)).unwrap_or(8);
