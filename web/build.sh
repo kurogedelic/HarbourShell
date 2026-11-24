@@ -32,7 +32,9 @@ cargo build --release --target wasm32-unknown-emscripten --target-dir "$TARGET" 
 
 OUT=$TARGET/wasm32-unknown-emscripten/release
 rm -rf "$DIST" && mkdir -p "$DIST"
-cp "$ROOT/web/index.html" "$OUT/harbour_shell.wasm" "$OUT/deps/harbour_shell.data" "$DIST/"
+cp "$OUT/harbour_shell.wasm" "$OUT/deps/harbour_shell.data" "$DIST/"
+BUILD=$(cat "$OUT/harbour_shell.wasm" "$OUT/deps/harbour_shell.data" "$OUT/harbour-shell.js" | shasum | cut -c1-10)
+sed "s/__BUILD__/$BUILD/g" "$ROOT/web/index.html" > "$DIST/index.html"
 # The loader names its data package by the build path; keep only the file name.
 DEPS=$(cd "$OUT/deps" && pwd -P)
 sed -e "s#$DEPS/##g" -e "s#$OUT/deps/##g" "$OUT/harbour-shell.js" > "$DIST/harbour-shell.js"
