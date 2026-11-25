@@ -274,7 +274,7 @@ pub fn trash(path: &Path, trash: &Path) -> Result<PathBuf, String> {
         cand = unique_name(&files, &format!("{cand}x"));
     }
     let abs = if path.is_absolute() { path.to_path_buf() } else { std::env::current_dir().map(|d| d.join(path)).unwrap_or_else(|_| path.to_path_buf()) };
-    let date = chrono::Local::now().format("%Y-%m-%dT%H:%M:%S");
+    let date = crate::rt::now().format("%Y-%m-%dT%H:%M:%S");
     let text = format!("[Trash Info]\nPath={}\nDeletionDate={date}\n", percent_encode(&abs.to_string_lossy()));
     fs::write(info.join(format!("{cand}.trashinfo")), text).map_err(err)?;
     match move_to_exact(path, &files.join(&cand)) {

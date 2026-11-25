@@ -8,10 +8,9 @@
 
 use std::time::{Duration, Instant};
 
-use sdl2::keyboard::{Keycode, Mod};
-use sdl2::rect::Rect;
-use sdl2::render::Canvas;
-use sdl2::video::Window;
+use crate::keys::{Keycode, Mod};
+use crate::gfx::Rect;
+use crate::gfx::Canvas;
 
 use crate::assets::AssetStore;
 use crate::chrome;
@@ -360,7 +359,7 @@ impl LauncherApp for TimerApp {
         self.sw.running() || self.cd.running() || self.finished(now)
     }
 
-    fn draw(&mut self, c: &mut Canvas<Window>, _assets: &mut AssetStore, ctx: &Ctx) {
+    fn draw(&mut self, c: &mut Canvas, _assets: &mut AssetStore, ctx: &Ctx) {
         let (tm, fs) = (ctx.tm, ctx.fs);
         let now = Instant::now();
         let ink = tm.get_color("foreground");

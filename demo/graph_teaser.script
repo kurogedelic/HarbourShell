@@ -1,0 +1,55 @@
+# Graph teaser (about 45 s): a mathematical sketchbook.
+# Record on the Mac: demo/record_mock.sh demo/graph_teaser.script demo/out/graph-teaser.mp4 4   (HARBOUR_REC_FPS=30 for smoother motion)
+wait:800
+goto:Graph,wait:700,Return,wait:1800
+
+# Rose: the petal count follows its slider.
+Down,wait:500
+Right,wait:400,Right,wait:400,Right,wait:400,Right,wait:400,Right,wait:900
+
+# Rewrite the formula in place: the petals now breathe with time t.
+Up,wait:300,Return,wait:700
+ctrl+U,wait:300
+text:cos(k*theta)*sin(t + 3theta),wait:1400
+Return,wait:3200
+
+# Curves: Butterfly, Spiral, Lissajous, Spirograph (move d), Harmonograph.
+PageDown,wait:1600
+PageDown,wait:1600
+PageDown,wait:2400
+PageDown,wait:900
+Down,wait:150,Down,wait:150,Down,wait:150,Down,wait:400
+shift+Right,wait:350,shift+Right,wait:350,shift+Left,wait:350,shift+Left,wait:350,shift+Left,wait:350,shift+Left,wait:350,shift+Left,wait:700
+PageDown,wait:2600
+
+# Terrain: raise the sea over the island, then new seeds.
+PageDown,wait:500,PageDown,wait:500,PageDown,wait:1800
+Down,wait:150,Down,wait:150,Down,wait:150,Down,wait:400
+shift+Right,wait:700,shift+Right,wait:700,shift+Right,wait:900
+shift+Left,wait:500,shift+Left,wait:500,shift+Left,wait:900
+R,wait:1300,R,wait:1300
+PageDown,wait:1600
+PageDown,wait:2200
+
+# Voronoi: Mosaic, Drift, Sunflower (turn the golden angle a little).
+PageDown,wait:1300
+PageDown,wait:2200
+PageDown,wait:1200
+Down,wait:150,Down,wait:150,Down,wait:400
+Right,wait:250,Right,wait:250,Right,wait:250,Right,wait:250,Right,wait:250,Right,wait:250,Right,wait:250,Right,wait:250,wait:900
+
+# Fields: Vortex, Dipole (swing the second charge), Wind.
+PageDown,wait:1400
+PageDown,wait:900
+Down,wait:150,Down,wait:400
+shift+Left,wait:300,shift+Left,wait:300,shift+Left,wait:300,shift+Left,wait:300,shift+Left,wait:300,shift+Left,wait:300,shift+Left,wait:300,shift+Left,wait:300,shift+Left,wait:300,shift+Left,wait:900
+PageDown,wait:1200
+
+# Whole screen, and every theme's tones.
+M,wait:2600
+theme:4,wait:2200
+theme:1:invert,wait:2200
+theme:3,wait:2200
+theme:0,wait:1200
+M,wait:1200
+hold:Escape:1100,wait:1500

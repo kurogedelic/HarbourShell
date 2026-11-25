@@ -9,11 +9,10 @@
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
-use sdl2::keyboard::{Keycode, Mod};
-use sdl2::pixels::Color;
-use sdl2::rect::Rect;
-use sdl2::render::Canvas;
-use sdl2::video::Window;
+use crate::keys::{Keycode, Mod};
+use crate::gfx::Color;
+use crate::gfx::Rect;
+use crate::gfx::Canvas;
 
 use crate::assets::AssetStore;
 use crate::chrome;
@@ -353,22 +352,22 @@ struct Pal {
     bg: Color,
 }
 
-fn text_l(c: &mut Canvas<Window>, ctx: &Ctx, x: i32, row_y: i32, s: &str, col: Color) {
+fn text_l(c: &mut Canvas, ctx: &Ctx, x: i32, row_y: i32, s: &str, col: Color) {
     ctx.fs.draw_text(c, x, widgets::text_origin(row_y, ROW), &i18n::tr_s(s), col);
 }
 
-fn text_r(c: &mut Canvas<Window>, ctx: &Ctx, right: i32, row_y: i32, s: &str, col: Color) {
+fn text_r(c: &mut Canvas, ctx: &Ctx, right: i32, row_y: i32, s: &str, col: Color) {
     let w = ctx.fs.measure_text(&i18n::tr_s(s));
     text_l(c, ctx, right - w, row_y, s, col);
 }
 
 /// A 1 px rule on the last pixel row of the row starting at `row_y`.
-fn rule(c: &mut Canvas<Window>, x: i32, row_y: i32, w: i32, col: Color) {
+fn rule(c: &mut Canvas, x: i32, row_y: i32, w: i32, col: Color) {
     ui::line(c, x, row_y + ROW - 1, x + w - 1, row_y + ROW - 1, col);
 }
 
 /// Label on the left (secondary ink), value on the right, rule underneath.
-fn kv(c: &mut Canvas<Window>, ctx: &Ctx, p: &Pal, x: i32, w: i32, row_y: i32, key: &str, val: &str) {
+fn kv(c: &mut Canvas, ctx: &Ctx, p: &Pal, x: i32, w: i32, row_y: i32, key: &str, val: &str) {
     text_l(c, ctx, x, row_y, key, p.faint);
     let kw = ctx.fs.measure_text(&i18n::tr_s(key));
     let v = chrome::fit_text(ctx.fs, &i18n::tr_s(val), w - kw - 8);
@@ -377,7 +376,7 @@ fn kv(c: &mut Canvas<Window>, ctx: &Ctx, p: &Pal, x: i32, w: i32, row_y: i32, ke
 }
 
 /// A header band: zebra tone, a rule, left and right text.
-fn band(c: &mut Canvas<Window>, ctx: &Ctx, p: &Pal, y: i32, left: &str, right: &str) {
+fn band(c: &mut Canvas, ctx: &Ctx, p: &Pal, y: i32, left: &str, right: &str) {
     let r = Rect::new(0, y, grid::SCREEN_W as u32, ROW as u32);
     ui::fill_rect(c, r, p.alt);
     ui::line(c, 0, y + ROW - 1, grid::SCREEN_W - 1, y + ROW - 1, p.ink);
@@ -394,7 +393,7 @@ enum Style {
 }
 
 /// An outlined graph: columns of 2 px, newest at the right edge, values scaled `lo..hi`.
-fn graph(c: &mut Canvas<Window>, p: &Pal, r: Rect, series: &[(&Ring, Style)], lo: f32, hi: f32) {
+fn graph(c: &mut Canvas, p: &Pal, r: Rect, series: &[(&Ring, Style)], lo: f32, hi: f32) {
     ui::fill_rect(c, r, p.paper);
     let inner = Rect::new(r.x() + 1, r.y() + 1, r.width() - 2, r.height() - 2);
     let h = inner.height() as i32;
@@ -424,7 +423,7 @@ fn graph(c: &mut Canvas<Window>, p: &Pal, r: Rect, series: &[(&Ring, Style)], lo
 }
 
 /// A bar split into parts (fraction of the whole, dithered or solid), on the meter's frame.
-fn stacked_bar(c: &mut Canvas<Window>, p: &Pal, r: Rect, parts: &[(f32, bool)]) {
+fn stacked_bar(c: &mut Canvas, p: &Pal, r: Rect, parts: &[(f32, bool)]) {
     ui::fill_rect(c, r, p.paper);
     ui::draw_rect(c, r, p.ink);
     let inner = Rect::new(r.x() + 2, r.y() + 2, r.width() - 4, r.height() - 4);
@@ -445,7 +444,7 @@ fn stacked_bar(c: &mut Canvas<Window>, p: &Pal, r: Rect, parts: &[(f32, bool)]) 
 }
 
 /// A framed card of the Overview: title row (label left, value right), a rule, then the body.
-fn card(c: &mut Canvas<Window>, ctx: &Ctx, p: &Pal, r: Rect, title: &str, value: &str) {
+fn card(c: &mut Canvas, ctx: &Ctx, p: &Pal, r: Rect, title: &str, value: &str) {
     ui::fill_rect(c, r, p.paper);
     ui::draw_rect(c, r, p.ink);
     text_l(c, ctx, r.x() + 4, r.y(), title, p.faint);
@@ -456,7 +455,7 @@ fn card(c: &mut Canvas<Window>, ctx: &Ctx, p: &Pal, r: Rect, title: &str, value:
 // ------------------------------------------------------------------ pages
 
 impl Monitor {
-    fn draw_overview(&self, c: &mut Canvas<Window>, ctx: &Ctx, p: &Pal) {
+    fn draw_overview(&self, c: &mut Canvas, ctx: &Ctx, p: &Pal) {
         let t = &self.cur;
         let cw = 152;
         // Two rows of cards, 1 px clear of the tab strip's rule, the lower one ending on the bottom
@@ -508,7 +507,7 @@ impl Monitor {
         text_l(c, ctx, r.x() + 4, r.y() + 47, &chrome::fit_text(ctx.fs, &line, cw - 8), p.faint);
     }
 
-    fn draw_cpu(&self, c: &mut Canvas<Window>, ctx: &Ctx, p: &Pal) {
+    fn draw_cpu(&self, c: &mut Canvas, ctx: &Ctx, p: &Pal) {
         let t = &self.cur;
         let y0 = BODY_Y;
         ui::fill_rect(c, Rect::new(0, y0, grid::SCREEN_W as u32, ROW as u32), p.alt);
@@ -549,7 +548,7 @@ impl Monitor {
         kv(c, ctx, p, kx, kw, gy + 4 * ROW, "Cores", &cores);
     }
 
-    fn draw_memory(&self, c: &mut Canvas<Window>, ctx: &Ctx, p: &Pal) {
+    fn draw_memory(&self, c: &mut Canvas, ctx: &Ctx, p: &Pal) {
         let m = &self.cur.mem;
         let total = m.total_kb.max(1) as f32;
         let rows: [(&str, u64, u64); 4] = [("Used", m.used_kb(), m.total_kb), ("Cache", m.cache_kb(), m.total_kb), ("Free", m.free_only_kb(), m.total_kb), ("Swap", m.swap_used_kb(), m.swap_total_kb)];
@@ -580,7 +579,7 @@ impl Monitor {
         kv(c, ctx, p, kx, kw, gy + 3 * ROW, "Buffers", &fmt_kb(m.buffers_kb));
     }
 
-    fn draw_power(&self, c: &mut Canvas<Window>, ctx: &Ctx, p: &Pal) {
+    fn draw_power(&self, c: &mut Canvas, ctx: &Ctx, p: &Pal) {
         let t = &self.cur;
         let b = &t.power;
         let lw = 144;
@@ -624,7 +623,7 @@ impl Monitor {
         kv(c, ctx, p, kx, kw, BODY_Y + 7 * ROW, "Cell temp", &fmt_temp(b.temp_c));
     }
 
-    fn draw_net(&self, c: &mut Canvas<Window>, ctx: &Ctx, p: &Pal) {
+    fn draw_net(&self, c: &mut Canvas, ctx: &Ctx, p: &Pal) {
         if self.net.is_empty() {
             text_l(c, ctx, X0, BODY_Y, "No network interfaces.", p.faint);
             return;
@@ -659,7 +658,7 @@ impl Monitor {
         }
     }
 
-    fn draw_disk(&self, c: &mut Canvas<Window>, ctx: &Ctx, p: &Pal) {
+    fn draw_disk(&self, c: &mut Canvas, ctx: &Ctx, p: &Pal) {
         let t = &self.cur;
         let used = t.disk_total_mb.saturating_sub(t.disk_free_mb);
         let frac = if t.disk_total_mb == 0 { 0.0 } else { used as f32 / t.disk_total_mb as f32 };
@@ -771,7 +770,8 @@ impl LauncherApp for Monitor {
             self.info = Some(ctx.sys.sysinfo());
         }
         let now = Instant::now();
-        let due = self.last.map(|t| now.saturating_duration_since(t) >= SAMPLE_EVERY).unwrap_or(true);
+        // (A frozen run takes one sample and stops: the graphs would otherwise depend on timing.)
+        let due = self.last.map(|t| !crate::rt::frozen() && now.saturating_duration_since(t) >= SAMPLE_EVERY).unwrap_or(true);
         let mut redraw = std::mem::take(&mut self.dirty);
         if due && !self.paused {
             self.sample(ctx.sys, now);
@@ -780,7 +780,7 @@ impl LauncherApp for Monitor {
         redraw
     }
 
-    fn draw(&mut self, c: &mut Canvas<Window>, _assets: &mut AssetStore, ctx: &Ctx) {
+    fn draw(&mut self, c: &mut Canvas, _assets: &mut AssetStore, ctx: &Ctx) {
         let tm = ctx.tm;
         let p = Pal {
             ink: tm.get_color("foreground"),

@@ -26,6 +26,10 @@ pub struct WifiStatus {
     pub ip: Option<String>,
     /// 0..=100
     pub signal: Option<u8>,
+    /// DNS servers of the Wi-Fi connection, in order (empty when unknown).
+    pub dns: Vec<String>,
+    /// Default gateway (the router).
+    pub gateway: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -87,6 +91,10 @@ pub trait Backend: Send + Sync {
 
     fn wifi_status(&self) -> WifiStatus;
     fn wifi_set_radio(&self, on: bool) -> R<()>;
+    /// Airplane mode: on when Wi-Fi and Bluetooth are both off.
+    fn airplane(&self) -> bool;
+    /// On switches every radio off (remembering Wi-Fi/Bluetooth); off restores what was on before.
+    fn set_airplane(&self, on: bool) -> R<()>;
     /// Blocking (several seconds): call from a worker thread.
     fn wifi_scan(&self) -> R<Vec<Ap>>;
     /// Blocking: call from a worker thread.

@@ -9,11 +9,10 @@
 
 use std::time::{Duration, Instant};
 
-use sdl2::keyboard::Keycode;
-use sdl2::pixels::Color;
-use sdl2::rect::Rect;
-use sdl2::render::Canvas;
-use sdl2::video::Window;
+use crate::keys::Keycode;
+use crate::gfx::Color;
+use crate::gfx::Rect;
+use crate::gfx::Canvas;
 
 use crate::dither::{self, Pattern};
 use crate::font::FontSystem;
@@ -192,25 +191,25 @@ fn stands_out(tm: &ThemeManager, a: Color, b: Color) -> bool {
 
 /// Full-width selection plate for a row: one pixel shorter than the row so neighbouring plates
 /// never touch. Pair it with [`draw_row_text`] (same row rectangle).
-pub fn draw_row_plate(c: &mut Canvas<Window>, tm: &ThemeManager, row: Rect) {
+pub fn draw_row_plate(c: &mut Canvas, tm: &ThemeManager, row: Rect) {
     plate(c, row, selection(tm).bg);
 }
 
 /// [`draw_row_plate`] on a page of colour `page` (see [`selection_on`]); returns the selection, whose
 /// `fg` is the row's text colour.
-pub fn draw_row_plate_on(c: &mut Canvas<Window>, tm: &ThemeManager, row: Rect, page: Color) -> Selection {
+pub fn draw_row_plate_on(c: &mut Canvas, tm: &ThemeManager, row: Rect, page: Color) -> Selection {
     let s = selection_on(tm, page);
     plate(c, row, s.bg);
     s
 }
 
-fn plate(c: &mut Canvas<Window>, row: Rect, bg: Color) {
+fn plate(c: &mut Canvas, row: Rect, bg: Color) {
     ui::fill_rect(c, Rect::new(row.x(), row.y(), row.width(), row.height().saturating_sub(1)), bg);
 }
 
 /// The 1 px `line` rule on the last pixel row of a 16 px list row, across the row's full width.
 /// Draw it after the plate (the plate is one pixel shorter, so the rule is never covered).
-pub fn draw_row_rule(c: &mut Canvas<Window>, tm: &ThemeManager, row: Rect) {
+pub fn draw_row_rule(c: &mut Canvas, tm: &ThemeManager, row: Rect) {
     ui::fill_rect(c, row_rule_rect(row), tm.get_color("line"));
 }
 
@@ -221,7 +220,7 @@ pub fn row_rule_rect(row: Rect) -> Rect {
 
 /// One line of body text in a row, capitals vertically centred (the plate above is symmetric
 /// around them). Returns the text width.
-pub fn draw_row_text(c: &mut Canvas<Window>, fs: &FontSystem, tm: &ThemeManager, row: Rect, x: i32, text: &str, selected: bool, ink: Color) -> i32 {
+pub fn draw_row_text(c: &mut Canvas, fs: &FontSystem, tm: &ThemeManager, row: Rect, x: i32, text: &str, selected: bool, ink: Color) -> i32 {
     let y = text_origin(row.y(), row.height() as i32);
     fs.draw_text(c, x, y, text, row_ink(tm, selected, ink));
     fs.measure_text(text)
@@ -229,7 +228,7 @@ pub fn draw_row_text(c: &mut Canvas<Window>, fs: &FontSystem, tm: &ThemeManager,
 
 /// Like [`draw_row_text`] but the plate only hugs the text (3 px either side), as the label of a
 /// control-panel row does.
-pub fn draw_label_plate(c: &mut Canvas<Window>, fs: &FontSystem, tm: &ThemeManager, row: Rect, x: i32, text: &str, selected: bool, ink: Color) {
+pub fn draw_label_plate(c: &mut Canvas, fs: &FontSystem, tm: &ThemeManager, row: Rect, x: i32, text: &str, selected: bool, ink: Color) {
     if selected {
         let w = fs.measure_text(text);
         draw_row_plate(c, tm, Rect::new(x - 3, row.y(), (w + 6) as u32, row.height()));
@@ -296,8 +295,8 @@ pub fn rule_ink(tm: &ThemeManager, page: Color) -> Color {
 
 /// A tab body with its top corners cut by a 2 px stair-step: border `ink`, inside `fill`; rows
 /// `top..=bottom` (the bottom row is drawn as part of the sides).
-fn chamfered(c: &mut Canvas<Window>, x: i32, top: i32, w: i32, bottom: i32, ink: Color, fill: Color) {
-    let px = |c: &mut Canvas<Window>, x0: i32, y: i32, n: i32, col: Color| ui::fill_rect(c, Rect::new(x0, y, n.max(1) as u32, 1), col);
+fn chamfered(c: &mut Canvas, x: i32, top: i32, w: i32, bottom: i32, ink: Color, fill: Color) {
+    let px = |c: &mut Canvas, x0: i32, y: i32, n: i32, col: Color| ui::fill_rect(c, Rect::new(x0, y, n.max(1) as u32, 1), col);
     px(c, x + 2, top, w - 4, ink);
     px(c, x + 1, top + 1, 1, ink);
     px(c, x + w - 2, top + 1, 1, ink);
@@ -391,7 +390,7 @@ impl<'a> Tabs<'a> {
     }
 
     /// The strip's full-width `home_bg` band, then the tabs on it.
-    pub fn draw_strip(&self, c: &mut Canvas<Window>, fs: &FontSystem, tm: &ThemeManager) {
+    pub fn draw_strip(&self, c: &mut Canvas, fs: &FontSystem, tm: &ThemeManager) {
         ui::fill_rect(c, Rect::new(0, self.origin.1, grid::sw() as u32, self.h as u32), tm.get_color("home_bg"));
         self.draw(c, fs, tm);
     }
@@ -503,7 +502,7 @@ impl<'a> FolderScroll<'a> {
     }
 
     /// The `home_bg` band, the window of tabs, the rule and the two arrow tabs.
-    pub fn draw_strip(&self, c: &mut Canvas<Window>, fs: &FontSystem, tm: &ThemeManager) {
+    pub fn draw_strip(&self, c: &mut Canvas, fs: &FontSystem, tm: &ThemeManager) {
         let y0 = grid::BAR_H;
         ui::fill_rect(c, Rect::new(0, y0, grid::sw() as u32, FOLDER_TABS_H as u32), tm.get_color("home_bg"));
         let strip = self.strip(tm);
@@ -557,7 +556,7 @@ impl Tabs<'_> {
         (0..self.labels.len()).find(|&i| contains(self.tab_rect(i), x, y))
     }
 
-    fn label(&self, c: &mut Canvas<Window>, fs: &FontSystem, x: i32, w: i32, y: i32, text: &str, col: Color) {
+    fn label(&self, c: &mut Canvas, fs: &FontSystem, x: i32, w: i32, y: i32, text: &str, col: Color) {
         if self.display {
             let tw = fs.measure_display_text(text);
             fs.draw_display_text(c, x + (w - tw) / 2, y, text, col);
@@ -567,7 +566,7 @@ impl Tabs<'_> {
         }
     }
 
-    fn draw_folder(&self, c: &mut Canvas<Window>, fs: &FontSystem, tm: &ThemeManager) {
+    fn draw_folder(&self, c: &mut Canvas, fs: &FontSystem, tm: &ThemeManager) {
         let ink = tm.get_color("foreground");
         let sel = selection(tm);
         let (x0, y0) = self.origin;
@@ -594,7 +593,7 @@ impl Tabs<'_> {
         ui::fill_rect(c, Rect::new(x0, last, (right - x0) as u32, 1), rule);
     }
 
-    pub fn draw(&self, c: &mut Canvas<Window>, fs: &FontSystem, tm: &ThemeManager) {
+    pub fn draw(&self, c: &mut Canvas, fs: &FontSystem, tm: &ThemeManager) {
         if self.folder {
             return self.draw_folder(c, fs, tm);
         }
@@ -622,7 +621,7 @@ impl Tabs<'_> {
 
 /// A framed card: solid 1 px drop shadow, a surface face and a
 /// 2 px outline. Dialogs, alerts, the launch screen and toasts all use it.
-pub fn draw_panel(c: &mut Canvas<Window>, tm: &ThemeManager, r: Rect) {
+pub fn draw_panel(c: &mut Canvas, tm: &ThemeManager, r: Rect) {
     let ink = tm.get_color("foreground");
     hard_shadow(c, r, ink);
     ui::fill_rect(c, r, tm.get_color("widget_face_active"));
@@ -643,7 +642,7 @@ impl ProgressBar {
         Self { rect, fraction, tick }
     }
 
-    pub fn draw(&self, c: &mut Canvas<Window>, tm: &ThemeManager) {
+    pub fn draw(&self, c: &mut Canvas, tm: &ThemeManager) {
         let t = tones(tm);
         let r = self.rect;
         // Outer ring in the light tone (it shows on dark panels and melts into light ones), then the
@@ -692,7 +691,7 @@ pub struct BtnState {
 
 /// A rounded push button. `pressed` inverts it; `hover` tints the face;
 /// `disabled` greys the label with a dither.
-pub fn draw_button(c: &mut Canvas<Window>, fs: &FontSystem, tm: &ThemeManager, r: Rect, label: &str, st: BtnState) {
+pub fn draw_button(c: &mut Canvas, fs: &FontSystem, tm: &ThemeManager, r: Rect, label: &str, st: BtnState) {
     let ink = tm.get_color("foreground");
     // Buttons are white (the theme's icon white) like the calculator keys.
     let surface = tm.get_color("icon_white");
@@ -734,7 +733,7 @@ pub fn draw_button(c: &mut Canvas<Window>, fs: &FontSystem, tm: &ThemeManager, r
 /// A rounded push button with a small picture instead of a label: `glyph` rows of '#' (ink) and '.'
 /// (nothing), centred. Same states as [`draw_button`]: pressed inverts, hover tints, disabled greys
 /// the frame and dithers the picture away.
-pub fn draw_icon_button(c: &mut Canvas<Window>, tm: &ThemeManager, r: Rect, glyph: &[&str], st: BtnState) {
+pub fn draw_icon_button(c: &mut Canvas, tm: &ThemeManager, r: Rect, glyph: &[&str], st: BtnState) {
     let ink = tm.get_color("foreground");
     let surface = tm.get_color("icon_white");
     let faint = tm.get_color("text_faint");
@@ -771,7 +770,7 @@ pub fn draw_icon_button(c: &mut Canvas<Window>, tm: &ThemeManager, r: Rect, glyp
 }
 
 /// 1px frame with the corners notched (a Mac "rounded rectangle" at this size).
-pub fn rounded_frame(c: &mut Canvas<Window>, r: Rect, color: Color) {
+pub fn rounded_frame(c: &mut Canvas, r: Rect, color: Color) {
     c.set_draw_color(color);
     let (x0, y0, x1, y1) = (r.x(), r.y(), r.x() + r.width() as i32 - 1, r.y() + r.height() as i32 - 1);
     let _ = c.draw_line((x0 + 2, y0), (x1 - 2, y0));
@@ -820,7 +819,7 @@ impl<'a> Field<'a> {
     }
 }
 
-pub fn draw_field(c: &mut Canvas<Window>, fs: &FontSystem, tm: &ThemeManager, r: Rect, f: &Field) {
+pub fn draw_field(c: &mut Canvas, fs: &FontSystem, tm: &ThemeManager, r: Rect, f: &Field) {
     let ink = f.ink.unwrap_or_else(|| tm.get_color("foreground"));
     let fill = f.fill.unwrap_or_else(|| tm.get_color("surface_sunken"));
     let faint = if f.ink.is_some() { ink } else { secondary_ink(tm) };
@@ -844,12 +843,12 @@ pub fn draw_field(c: &mut Canvas<Window>, fs: &FontSystem, tm: &ThemeManager, r:
     let prev = c.clip_rect();
     let inner = Rect::new(x0 - 1, r.y() + 1, (room + 2) as u32, r.height().saturating_sub(2));
     match prev {
-        sdl2::render::ClippingRect::Some(p) => match p.intersection(inner) {
+        crate::gfx::ClipRect::Some(p) => match p.intersection(inner) {
             Some(q) => c.set_clip_rect(q),
             None => return,
         },
-        sdl2::render::ClippingRect::Zero => return,
-        sdl2::render::ClippingRect::None => c.set_clip_rect(inner),
+        crate::gfx::ClipRect::Zero => return,
+        crate::gfx::ClipRect::None => c.set_clip_rect(inner),
     }
     if shown.is_empty() {
         if !f.placeholder.is_empty() {
@@ -871,7 +870,7 @@ pub fn draw_field(c: &mut Canvas<Window>, fs: &FontSystem, tm: &ThemeManager, r:
 // -------------------------------------------------------- check box / radio
 
 /// 12x12 check box. `mixed` shows a dash (some of a group selected).
-pub fn draw_checkbox(c: &mut Canvas<Window>, tm: &ThemeManager, x: i32, y: i32, checked: bool, mixed: bool, st: BtnState) {
+pub fn draw_checkbox(c: &mut Canvas, tm: &ThemeManager, x: i32, y: i32, checked: bool, mixed: bool, st: BtnState) {
     let ink = tm.get_color("foreground");
     let well = tm.get_color("surface_sunken");
     let faint = tm.get_color("text_faint");
@@ -896,7 +895,7 @@ pub fn draw_checkbox(c: &mut Canvas<Window>, tm: &ThemeManager, x: i32, y: i32, 
 pub const CHECKBOX_SIZE: i32 = 12;
 
 /// 12x12 round radio button.
-pub fn draw_radio(c: &mut Canvas<Window>, tm: &ThemeManager, x: i32, y: i32, selected: bool, st: BtnState) {
+pub fn draw_radio(c: &mut Canvas, tm: &ThemeManager, x: i32, y: i32, selected: bool, st: BtnState) {
     let ink = tm.get_color("foreground");
     let well = tm.get_color("surface_sunken");
     let fg = if st.disabled { tm.get_color("text_faint") } else { ink };
@@ -948,7 +947,7 @@ impl Slider {
         contains(Rect::new(self.track.x(), self.track.y() - 4, self.track.width(), self.track.height() + 8), x, y)
     }
 
-    pub fn draw(&self, c: &mut Canvas<Window>, tm: &ThemeManager, value: u32, dragging: bool, hover: bool) {
+    pub fn draw(&self, c: &mut Canvas, tm: &ThemeManager, value: u32, dragging: bool, hover: bool) {
         let ink = tm.get_color("foreground");
         let line = tm.get_color("line");
         let well = tm.get_color("surface_sunken");
@@ -1069,21 +1068,21 @@ impl ScrollBar {
 
     /// Always drawn (the thumb fills the track when everything fits), so a screen keeps the same
     /// layout whether or not it scrolls; only `hit` ignores a bar that is not needed.
-    pub fn draw(&self, c: &mut Canvas<Window>, tm: &ThemeManager, active: Option<SbPart>) {
+    pub fn draw(&self, c: &mut Canvas, tm: &ThemeManager, active: Option<SbPart>) {
         self.paint(c, tm.get_color("foreground"), tm.get_color("widget_face_active"), tm.get_color("surface_sunken"), tm.get_color("line"), active);
     }
 
     /// [`ScrollBar::draw`] on a page of colour `page` that is not `home_bg` (Infoscope's face):
     /// boxes and track in the page's colour, outlined in [`rule_ink`], so the bar reads on every
     /// theme (the plain ink is the face's own tone on the Invert themes).
-    pub fn draw_on(&self, c: &mut Canvas<Window>, tm: &ThemeManager, active: Option<SbPart>, page: Color) {
+    pub fn draw_on(&self, c: &mut Canvas, tm: &ThemeManager, active: Option<SbPart>, page: Color) {
         let ink = rule_ink(tm, page);
         let line = tm.get_color("line");
         let line = if stands_out(tm, line, page) { line } else { ink };
         self.paint(c, ink, page, page, line, active);
     }
 
-    fn paint(&self, c: &mut Canvas<Window>, ink: Color, surface: Color, well: Color, line: Color, active: Option<SbPart>) {
+    fn paint(&self, c: &mut Canvas, ink: Color, surface: Color, well: Color, line: Color, active: Option<SbPart>) {
         let t = self.track();
         dither::fill_two_tone(c, t, well, line, Pattern::Half);
         let a = self.arrow_h();
@@ -1136,7 +1135,7 @@ impl Dropdown {
         (0..self.items.len()).find(|&i| contains(self.item_rect(i), x, y))
     }
 
-    pub fn draw_closed(&self, c: &mut Canvas<Window>, fs: &FontSystem, tm: &ThemeManager, selected: usize, st: BtnState) {
+    pub fn draw_closed(&self, c: &mut Canvas, fs: &FontSystem, tm: &ThemeManager, selected: usize, st: BtnState) {
         let ink = tm.get_color("foreground");
         let surface = tm.get_color("icon_white");
         let r = self.rect;
@@ -1155,14 +1154,42 @@ impl Dropdown {
         }
     }
 
-    pub fn draw_popup(&self, c: &mut Canvas<Window>, fs: &FontSystem, tm: &ThemeManager, selected: usize, hover: Option<usize>) {
+    pub fn draw_popup(&self, c: &mut Canvas, fs: &FontSystem, tm: &ThemeManager, selected: usize, hover: Option<usize>) {
         draw_menu_list(c, fs, tm, self.popup_rect(), &self.items.iter().map(String::as_str).collect::<Vec<_>>(), hover.unwrap_or(selected), Some(selected));
+    }
+}
+
+/// An indeterminate "barber pole" bar (the same look as the launch screen): a label centred
+/// above an outlined bar 12 px high with diagonal stripes, 4 px on / 4 px off, sliding right as
+/// `tick` grows. `r` is 28 px high (label, then the bar from `r.y() + 16`).
+pub fn draw_barber(c: &mut Canvas, fs: &FontSystem, tm: &ThemeManager, r: Rect, label: &str, tick: u32) {
+    let ink = tm.get_color("foreground");
+    let surface = tm.get_color("widget_face_active");
+    let lw = fs.measure_text(label);
+    fs.draw_text(c, r.x() + (r.width() as i32 - lw) / 2, r.y(), label, ink);
+    let bar = Rect::new(r.x(), r.y() + 16, r.width(), 12);
+    ui::draw_rect(c, bar, ink);
+    let inner = Rect::new(bar.x() + 1, bar.y() + 1, bar.width() - 2, bar.height() - 2);
+    ui::fill_rect(c, inner, surface);
+    c.set_draw_color(ink);
+    let shift = (tick / 2) as i32;
+    for y in 0..inner.height() as i32 {
+        let mut x = -(y + shift).rem_euclid(8) - 8;
+        while x < inner.width() as i32 {
+            for k in 0..4 {
+                let px = x + k;
+                if px >= 0 && px < inner.width() as i32 {
+                    let _ = c.draw_point((inner.x() + px, inner.y() + y));
+                }
+            }
+            x += 8;
+        }
     }
 }
 
 /// A small horizontal meter (signal strength, levels): surface track, ink outline
 /// and an ink gauge inset by 2 px. Works from 6 px high; `frac` is 0.0..=1.0.
-pub fn draw_meter(c: &mut Canvas<Window>, tm: &ThemeManager, r: Rect, frac: f32) {
+pub fn draw_meter(c: &mut Canvas, tm: &ThemeManager, r: Rect, frac: f32) {
     let ink = tm.get_color("foreground");
     ui::fill_rect(c, r, tm.get_color("widget_face_active"));
     ui::draw_rect(c, r, ink);
@@ -1174,7 +1201,7 @@ pub fn draw_meter(c: &mut Canvas<Window>, tm: &ThemeManager, r: Rect, frac: f32)
 }
 
 /// Drop shadow: a solid 1px line down the right and along the bottom, offset by 1.
-pub fn hard_shadow(c: &mut Canvas<Window>, r: Rect, color: Color) {
+pub fn hard_shadow(c: &mut Canvas, r: Rect, color: Color) {
     c.set_draw_color(color);
     let (x1, y1) = (r.x() + r.width() as i32, r.y() + r.height() as i32);
     let _ = c.draw_line((x1, r.y() + 2), (x1, y1));
@@ -1182,7 +1209,7 @@ pub fn hard_shadow(c: &mut Canvas<Window>, r: Rect, color: Color) {
 }
 
 /// A framed list of choices with a solid shadow. `current` gets a check mark.
-fn draw_menu_list(c: &mut Canvas<Window>, fs: &FontSystem, tm: &ThemeManager, r: Rect, items: &[&str], highlight: usize, current: Option<usize>) {
+fn draw_menu_list(c: &mut Canvas, fs: &FontSystem, tm: &ThemeManager, r: Rect, items: &[&str], highlight: usize, current: Option<usize>) {
     let ink = tm.get_color("foreground");
     let surface = tm.get_color("widget_face_active");
     hard_shadow(c, r, ink);
@@ -1323,7 +1350,7 @@ impl AppMenu {
         &self.items[self.cursor.min(self.items.len() - 1)]
     }
 
-    pub fn draw(&self, c: &mut Canvas<Window>, fs: &FontSystem, tm: &ThemeManager) {
+    pub fn draw(&self, c: &mut Canvas, fs: &FontSystem, tm: &ThemeManager) {
         let ink = tm.get_color("foreground");
         let surface = tm.get_color("widget_face_active");
         let line = tm.get_color("line");
@@ -1642,7 +1669,7 @@ impl TreeList {
     }
 
     /// Draw `visible` rows into `rect` (rows are 16 px; the area below the last row stays empty).
-    pub fn draw(&self, c: &mut Canvas<Window>, fs: &FontSystem, tm: &ThemeManager, rect: Rect) {
+    pub fn draw(&self, c: &mut Canvas, fs: &FontSystem, tm: &ThemeManager, rect: Rect) {
         let ink = tm.get_color("foreground");
         let faint = secondary_ink(tm);
         let rule = tm.get_color("line");
@@ -1850,7 +1877,7 @@ mod tests {
     #[test]
     fn a_folder_rule_always_stands_out_from_the_page_under_it() {
         use crate::theme::{Theme, ThemeManager};
-        let lum = |c: sdl2::pixels::Color| c.r as i32 * 3 + c.g as i32 * 6 + c.b as i32;
+        let lum = |c: crate::gfx::Color| c.r as i32 * 3 + c.g as i32 * 6 + c.b as i32;
         for name in ["black", "paper", "mobile", "terminal"] {
             for inv in ["", "-invert"] {
                 let tm = ThemeManager::new(Theme::load_from_yaml(&format!("assets/themes/theme-{name}{inv}.yaml")).unwrap());

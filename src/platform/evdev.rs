@@ -141,7 +141,7 @@ pub fn spawn(path: String, tx: Sender<Input>, shared: Arc<Shared>) -> io::Result
                                 continue;
                             }
                             let inputs = if value == 0 {
-                                sdl2::keyboard::Keycode::from_i32(ch as i32).map(|key| Input::KeyUp { key }).into_iter().collect()
+                                crate::keys::Keycode::from_i32(ch as i32).map(|key| Input::KeyUp { key }).into_iter().collect()
                             } else {
                                 super::keys::sym_press(ch, value == 2, &mods)
                             };

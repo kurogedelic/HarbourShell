@@ -6,10 +6,9 @@
 //! The owner keeps the `Alert` as state, calls `draw` and routes keys and clicks through `key` / `click`, which
 //! return the index of the button that was chosen.
 
-use sdl2::keyboard::Keycode;
-use sdl2::rect::Rect;
-use sdl2::render::Canvas;
-use sdl2::video::Window;
+use crate::keys::Keycode;
+use crate::gfx::Rect;
+use crate::gfx::Canvas;
 
 use crate::font::FontSystem;
 use crate::grid;
@@ -126,7 +125,7 @@ impl Alert {
         None
     }
 
-    pub fn draw(&self, c: &mut Canvas<Window>, fs: &FontSystem, tm: &ThemeManager) {
+    pub fn draw(&self, c: &mut Canvas, fs: &FontSystem, tm: &ThemeManager) {
         let ink = tm.get_color("foreground");
         let white = tm.get_color("icon_white");
         let r = self.rect(fs);
@@ -157,8 +156,8 @@ impl Alert {
 }
 
 /// Draws a 24 x 24 alert icon at (x, y): shapes in `ink`, detail cut out in `white`.
-pub fn draw_icon(c: &mut Canvas<Window>, icon: AlertIcon, x: i32, y: i32, ink: sdl2::pixels::Color, white: sdl2::pixels::Color) {
-    let px = |c: &mut Canvas<Window>, col: sdl2::pixels::Color, rows: &[(i32, i32, i32)]| {
+pub fn draw_icon(c: &mut Canvas, icon: AlertIcon, x: i32, y: i32, ink: crate::gfx::Color, white: crate::gfx::Color) {
+    let px = |c: &mut Canvas, col: crate::gfx::Color, rows: &[(i32, i32, i32)]| {
         c.set_draw_color(col);
         for &(row, x0, x1) in rows {
             let _ = c.draw_line((x + x0, y + row), (x + x1, y + row));

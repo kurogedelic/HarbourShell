@@ -23,11 +23,9 @@ use std::sync::mpsc::{channel, Receiver};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use sdl2::image::{InitFlag, Sdl2ImageContext};
-use sdl2::keyboard::{Keycode, Mod};
-use sdl2::rect::{Point, Rect};
-use sdl2::render::Canvas;
-use sdl2::video::Window;
+use crate::keys::{Keycode, Mod};
+use crate::gfx::{Point, Rect};
+use crate::gfx::Canvas;
 
 use crate::assets::AssetStore;
 use crate::chrome;
@@ -490,7 +488,7 @@ pub mod tags {
     }
 
     /// Horizontal runs of dark pixels, offset to (ox, oy).
-    pub fn dark_runs(a: &Art, ox: i32, oy: i32) -> Vec<sdl2::rect::Rect> {
+    pub fn dark_runs(a: &Art, ox: i32, oy: i32) -> Vec<crate::gfx::Rect> {
         let (w, h) = (a.w as usize, a.h as usize);
         let mut v = Vec::new();
         for y in 0..h {
@@ -500,7 +498,7 @@ pub mod tags {
                 match (dark, start) {
                     (true, None) => start = Some(x),
                     (false, Some(st)) => {
-                        v.push(sdl2::rect::Rect::new(ox + st as i32, oy + y as i32, (x - st) as u32, 1));
+                        v.push(crate::gfx::Rect::new(ox + st as i32, oy + y as i32, (x - st) as u32, 1));
                         start = None;
                     }
                     _ => {}
@@ -1101,7 +1099,6 @@ pub struct Music {
     serial: u64,
     meta: Option<tags::Meta>,
     art_runs: Option<Vec<Rect>>,
-    _img: Option<Sdl2ImageContext>,
     cover_stage: Arc<AtomicUsize>,
     disk: Option<PathBuf>,
     // The library loading in the background (None when finished).
@@ -1136,7 +1133,6 @@ pub fn make() -> Box<dyn LauncherApp> {
     m.disk = library::cache_dir();
     m.loader = Some((library::spawn_loader(root, m.disk.clone(), delay, progress.clone()), progress));
     // The host starts PNG only; covers are often JPEG.
-    m._img = sdl2::image::init(InitFlag::PNG | InitFlag::JPG).or_else(|_| sdl2::image::init(InitFlag::PNG)).ok();
     m.async_meta = true;
     m.audio = Box::new(Ffplay { min_start: if mock { Duration::from_millis(3000) } else { Duration::ZERO } });
     m.mock = mock;
@@ -1162,7 +1158,7 @@ fn list_h() -> i32 {
 impl Music {
     pub fn new(audio: Box<dyn Audio>, tracks: Vec<Track>) -> Self {
         Music { audio, tracks, cursor: 0, scroll: 0, screen: Screen::List, playing: None, error: None, sb_drag: false,
-            cache: Default::default(), mock: false, async_meta: false, rx: None, dur_rx: None, born: Instant::now(), serial: 0, meta: None, art_runs: None, _img: None,
+            cache: Default::default(), mock: false, async_meta: false, rx: None, dur_rx: None, born: Instant::now(), serial: 0, meta: None, art_runs: None,
             cover_stage: Default::default(), disk: None, loader: None,
             eq: Eq::default(), eq_changed: None, prefs_dirty: false, cfg_path: None, eq_focus: 1, eq_back: Screen::List, eq_drag: None,
             view: View::Cover, tap_maker: ffmpeg_tap, tap: None, meter: Meter::default(), wave: Vec::new(), vis_at: None, vis_error: None, gen: 0 }
@@ -1745,7 +1741,7 @@ impl LauncherApp for Music {
         changed || ticking || loading
     }
 
-    fn draw(&mut self, c: &mut Canvas<Window>, _assets: &mut AssetStore, ctx: &Ctx) {
+    fn draw(&mut self, c: &mut Canvas, _assets: &mut AssetStore, ctx: &Ctx) {
         ui::fill_rect(c, chrome::app_rect(), ctx.tm.get_color("home_bg"));
         match self.screen {
             Screen::List => self.draw_list(c, ctx),
@@ -1815,7 +1811,7 @@ impl Music {
     }
 
     /// Band bars or the waveform inside `r` (the panel), dark on the white panel like the cover.
-    fn draw_vis(&self, c: &mut Canvas<Window>, ctx: &Ctx, r: Rect, ready: bool, tick: u32) {
+    fn draw_vis(&self, c: &mut Canvas, ctx: &Ctx, r: Rect, ready: bool, tick: u32) {
         let (tm, fs) = (ctx.tm, ctx.fs);
         let (paper, dark) = tone::paper_ink(tm);
         let inner = Rect::new(r.x() + 6, r.y() + 6, r.width() - 12, r.height() - 12);
@@ -1952,7 +1948,7 @@ impl Music {
         }
     }
 
-    fn draw_eq(&mut self, c: &mut Canvas<Window>, ctx: &Ctx) {
+    fn draw_eq(&mut self, c: &mut Canvas, ctx: &Ctx) {
         let (tm, fs) = (ctx.tm, ctx.fs);
         let ink = tm.get_color("foreground");
         let faint = widgets::secondary_ink(tm);
@@ -2069,7 +2065,7 @@ impl Music {
 }
 
 /// A small solid triangle 8 px high pointing left (`dir` < 0) or right, its tip at `x`.
-fn draw_arrow(c: &mut Canvas<Window>, x: i32, y: i32, dir: i32, color: sdl2::pixels::Color) {
+fn draw_arrow(c: &mut Canvas, x: i32, y: i32, dir: i32, color: crate::gfx::Color) {
     c.set_draw_color(color);
     for i in 0..4 {
         let px = x - dir * i;
@@ -2078,7 +2074,7 @@ fn draw_arrow(c: &mut Canvas<Window>, x: i32, y: i32, dir: i32, color: sdl2::pix
 }
 
 impl Music {
-    fn draw_list(&mut self, c: &mut Canvas<Window>, ctx: &Ctx) {
+    fn draw_list(&mut self, c: &mut Canvas, ctx: &Ctx) {
         let (tm, fs) = (ctx.tm, ctx.fs);
         let ink = tm.get_color("foreground");
         let paper = tm.get_color("widget_face_active");
@@ -2126,7 +2122,7 @@ impl Music {
         }
     }
 
-    fn draw_now(&mut self, c: &mut Canvas<Window>, ctx: &Ctx) {
+    fn draw_now(&mut self, c: &mut Canvas, ctx: &Ctx) {
         let (tm, fs) = (ctx.tm, ctx.fs);
         let ink = tm.get_color("foreground");
         let faint = crate::launcher::widgets::secondary_ink(tm);
@@ -2222,7 +2218,7 @@ impl Music {
 }
 
 /// A progress bar: a label above an outlined bar with a dithered fill.
-fn draw_progress(c: &mut Canvas<Window>, ctx: &Ctx, r: Rect, frac: f32, label: &str) {
+fn draw_progress(c: &mut Canvas, ctx: &Ctx, r: Rect, frac: f32, label: &str) {
     let (tm, fs) = (ctx.tm, ctx.fs);
     let ink = tm.get_color("foreground");
     let line = tm.get_color("line");
@@ -2239,36 +2235,13 @@ fn draw_progress(c: &mut Canvas<Window>, ctx: &Ctx, r: Rect, frac: f32, label: &
     ui::draw_rect(c, bar, ink);
 }
 
-/// An indeterminate "barber pole" bar (the same look as the launch screen): a label above an
-/// outlined bar with diagonal stripes, 4 px on / 4 px off, sliding right as `tick` grows.
-fn draw_barber(c: &mut Canvas<Window>, ctx: &Ctx, r: Rect, label: &str, tick: u32) {
-    let (tm, fs) = (ctx.tm, ctx.fs);
-    let ink = tm.get_color("foreground");
-    let surface = tm.get_color("widget_face_active");
-    let lw = fs.measure_text(label);
-    fs.draw_text(c, r.x() + (r.width() as i32 - lw) / 2, r.y(), label, ink);
-    let bar = Rect::new(r.x(), r.y() + 16, r.width(), 12);
-    ui::draw_rect(c, bar, ink);
-    let inner = Rect::new(bar.x() + 1, bar.y() + 1, bar.width() - 2, bar.height() - 2);
-    ui::fill_rect(c, inner, surface);
-    c.set_draw_color(ink);
-    let shift = (tick / 2) as i32;
-    for y in 0..inner.height() as i32 {
-        let mut x = -(y + shift).rem_euclid(8) - 8;
-        while x < inner.width() as i32 {
-            for k in 0..4 {
-                let px = x + k;
-                if px >= 0 && px < inner.width() as i32 {
-                    let _ = c.draw_point((inner.x() + px, inner.y() + y));
-                }
-            }
-            x += 8;
-        }
-    }
+/// An indeterminate "barber pole" bar (see [`widgets::draw_barber`](crate::launcher::widgets::draw_barber)).
+fn draw_barber(c: &mut Canvas, ctx: &Ctx, r: Rect, label: &str, tick: u32) {
+    crate::launcher::widgets::draw_barber(c, ctx.fs, ctx.tm, r, label, tick);
 }
 
 /// A right-pointing triangle `s` high, built from vertical lines.
-fn draw_play_icon(c: &mut Canvas<Window>, x: i32, y: i32, s: i32, color: sdl2::pixels::Color) {
+fn draw_play_icon(c: &mut Canvas, x: i32, y: i32, s: i32, color: crate::gfx::Color) {
     c.set_draw_color(color);
     let pts: Vec<Point> = (0..s)
         .flat_map(|i| {

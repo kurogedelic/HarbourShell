@@ -17,7 +17,7 @@ mod backend;
 mod convert;
 #[cfg(unix)]
 mod csi;
-mod png;
+pub(crate) mod png;
 mod view;
 #[cfg(target_os = "linux")]
 mod v4l2;
@@ -29,11 +29,9 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use sdl2::image::{InitFlag, Sdl2ImageContext};
-use sdl2::keyboard::{Keycode, Mod};
-use sdl2::rect::{Point, Rect};
-use sdl2::render::Canvas;
-use sdl2::video::Window;
+use crate::keys::{Keycode, Mod};
+use crate::gfx::{Point, Rect};
+use crate::gfx::Canvas;
 
 use crate::assets::AssetStore;
 use crate::chrome;
@@ -321,7 +319,6 @@ fn run(backend: Arc<dyn Backend>, dev: Device, size: Option<(u32, u32)>, jpg: bo
 pub struct Camera {
     backend: Arc<dyn Backend>,
     jpg_ok: bool,
-    _img: Option<Sdl2ImageContext>,
     probe: Probe,
     probed_at: Instant,
     dev: usize,
@@ -410,13 +407,11 @@ fn real_backend() -> Arc<dyn Backend> {
 
 impl Camera {
     pub fn new(backend: Arc<dyn Backend>, pictures: PathBuf) -> Self {
-        let img = sdl2::image::init(InitFlag::JPG).ok();
         let probe = backend.probe();
         let photos = count_photos(&pictures);
         Camera {
             backend,
-            jpg_ok: img.is_some(),
-            _img: img,
+            jpg_ok: crate::imgload::jpg_available(),
             probe,
             probed_at: Instant::now(),
             dev: 0,
@@ -512,7 +507,7 @@ impl Camera {
         let cur = self.device().map(|d| d.path.clone());
         self.probe = self.backend.probe();
         self.probed_at = Instant::now();
-        self.last_scan = chrono::Local::now().format("%H:%M:%S").to_string();
+        self.last_scan = crate::rt::now().format("%H:%M:%S").to_string();
         // Keep the same camera selected (by path) when the list changes around it.
         let want = cur.unwrap_or_else(|| self.prefs.device.clone());
         self.dev = self.probe.devices.iter().position(|d| d.path == want).unwrap_or_else(|| self.dev.min(self.probe.devices.len().saturating_sub(1)));
@@ -752,7 +747,7 @@ impl LauncherApp for Camera {
         dirty
     }
 
-    fn draw(&mut self, c: &mut Canvas<Window>, assets: &mut AssetStore, ctx: &Ctx) {
+    fn draw(&mut self, c: &mut Canvas, assets: &mut AssetStore, ctx: &Ctx) {
         if let Some(s) = &self.sess {
             s.shared.touch();
         } else if self.error.is_none() && !self.probe.devices.is_empty() {

@@ -18,13 +18,10 @@
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use sdl2::image::{InitFlag, LoadSurface, Sdl2ImageContext};
-use sdl2::keyboard::{Keycode, Mod};
-use sdl2::pixels::{Color, PixelFormatEnum};
-use sdl2::rect::Rect;
-use sdl2::render::Canvas;
-use sdl2::surface::Surface;
-use sdl2::video::Window;
+use crate::keys::{Keycode, Mod};
+use crate::gfx::Color;
+use crate::gfx::Rect;
+use crate::gfx::Canvas;
 
 use crate::assets::AssetStore;
 use crate::chrome;
@@ -134,25 +131,17 @@ pub struct Picture {
 
 /// Decode a file and scale it to fit the area.
 pub fn load(path: &Path) -> Result<Picture, String> {
-    from_surface(Surface::from_file(path)?, area_w() as u32, area_h() as u32)
+    let (rgb, w, h) = crate::imgload::load_rgb24(path)?;
+    from_rgb(rgb, w, h, area_w() as u32, area_h() as u32)
 }
 
 /// Decode in-memory image data (an embedded cover) and scale it to fit `max_w` x `max_h`.
 pub fn decode_bytes(bytes: &[u8], max_w: u32, max_h: u32) -> Result<Picture, String> {
-    use sdl2::image::ImageRWops;
-    let surf = sdl2::rwops::RWops::from_bytes(bytes)?.load()?;
-    from_surface(surf, max_w, max_h)
+    let (rgb, w, h) = crate::imgload::decode_rgb24(bytes)?;
+    from_rgb(rgb, w, h, max_w, max_h)
 }
 
-fn from_surface(surf: Surface, max_w: u32, max_h: u32) -> Result<Picture, String> {
-    let surf = surf.convert_format(PixelFormatEnum::RGB24)?;
-    let (sw, sh, pitch) = (surf.width() as usize, surf.height() as usize, surf.pitch() as usize);
-    let mut tight = Vec::with_capacity(sw * sh * 3);
-    surf.with_lock(|px| {
-        for y in 0..sh {
-            tight.extend_from_slice(&px[y * pitch..y * pitch + sw * 3]);
-        }
-    });
+fn from_rgb(tight: Vec<u8>, sw: usize, sh: usize, max_w: u32, max_h: u32) -> Result<Picture, String> {
     let (dw, dh) = fit(sw as u32, sh as u32, max_w, max_h);
     let rgb = if (dw as usize, dh as usize) == (sw, sh) { tight } else { resize_box(&tight, sw, sh, dw as usize, dh as usize) };
     Ok(Picture { w: dw, h: dh, rgb })
@@ -201,7 +190,6 @@ enum Ask {
 pub struct ImageViewer {
     modal: Option<Dialog<Ask>>,
     trash: Option<PathBuf>,
-    _img: Option<Sdl2ImageContext>,
     files: Vec<PathBuf>,
     index: usize,
     pic: Option<Result<Picture, String>>,
@@ -218,8 +206,7 @@ pub fn make() -> Box<dyn LauncherApp> {
 impl ImageViewer {
     pub fn new(files: Vec<PathBuf>) -> Self {
         // The host initialises PNG only; JPG is requested here when the library has it.
-        let ctx = sdl2::image::init(InitFlag::PNG | InitFlag::JPG).or_else(|_| sdl2::image::init(InitFlag::PNG)).ok();
-        ImageViewer { modal: None, trash: fileops::trash_dir(), _img: ctx, files, index: 0, pic: None, runs: None, mono: false, caption_until: None }
+        ImageViewer { modal: None, trash: fileops::trash_dir(), files, index: 0, pic: None, runs: None, mono: false, caption_until: None }
     }
 
     fn show(&mut self, index: usize) {
@@ -439,7 +426,7 @@ impl LauncherApp for ImageViewer {
         }
     }
 
-    fn draw(&mut self, c: &mut Canvas<Window>, _assets: &mut AssetStore, ctx: &Ctx) {
+    fn draw(&mut self, c: &mut Canvas, _assets: &mut AssetStore, ctx: &Ctx) {
         let (tm, fs) = (ctx.tm, ctx.fs);
         let ink = tm.get_color("foreground");
         let paper = if self.mono { tm.get_color("home_bg") } else { Color::RGB(0, 0, 0) };

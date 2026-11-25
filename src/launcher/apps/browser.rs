@@ -27,11 +27,9 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::{channel, Receiver, TryRecvError};
 use std::sync::Arc;
 
-use sdl2::image::{InitFlag, Sdl2ImageContext};
-use sdl2::keyboard::{Keycode, Mod};
-use sdl2::rect::Rect;
-use sdl2::render::Canvas;
-use sdl2::video::Window;
+use crate::keys::{Keycode, Mod};
+use crate::gfx::Rect;
+use crate::gfx::Canvas;
 
 use crate::assets::AssetStore;
 use crate::chrome;
@@ -284,7 +282,6 @@ struct ImgJob {
 pub struct Browser {
     fetcher: Arc<dyn Fetcher>,
     persist: bool,
-    _img: Option<Sdl2ImageContext>,
     started: bool,
     /// The first page to load: the home page, or a web address another app handed over
     /// (Infoscope's news and web search, via `AppAction::Open { app: Some("Browser"), path: url }`).
@@ -358,11 +355,9 @@ pub fn make() -> Box<dyn LauncherApp> {
 
 impl Browser {
     pub fn new(fetcher: Arc<dyn Fetcher>, mock: bool) -> Self {
-        let img = sdl2::image::init(InitFlag::PNG | InitFlag::JPG).or_else(|_| sdl2::image::init(InitFlag::PNG)).ok();
         Browser {
             fetcher,
             persist: !mock,
-            _img: img,
             started: false,
             first: "about:home".into(),
             page: None,
@@ -1419,7 +1414,7 @@ impl LauncherApp for Browser {
         changed
     }
 
-    fn draw(&mut self, c: &mut Canvas<Window>, _assets: &mut AssetStore, ctx: &Ctx) {
+    fn draw(&mut self, c: &mut Canvas, _assets: &mut AssetStore, ctx: &Ctx) {
         if !self.started {
             self.started = true;
             self.navigate(self.first.clone(), None, Mode::Push, ctx);
@@ -1676,7 +1671,7 @@ fn wrap_chars(s: &str, n: i32, rows: usize) -> Vec<String> {
     out
 }
 
-fn draw_runs(c: &mut Canvas<Window>, t: &tone::ToneRuns, ox: i32, oy: i32, ramp: &[sdl2::pixels::Color; tone::TONES]) {
+fn draw_runs(c: &mut Canvas, t: &tone::ToneRuns, ox: i32, oy: i32, ramp: &[crate::gfx::Color; tone::TONES]) {
     c.set_draw_color(ramp[0]);
     let _ = c.fill_rect(Rect::new(ox, oy, t.bounds.width(), t.bounds.height()));
     for i in 1..tone::TONES {

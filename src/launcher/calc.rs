@@ -9,10 +9,9 @@
 
 use std::time::{Duration, Instant};
 
-use sdl2::keyboard::{Keycode, Mod};
-use sdl2::rect::Rect;
-use sdl2::render::Canvas;
-use sdl2::video::Window;
+use crate::keys::{Keycode, Mod};
+use crate::gfx::Rect;
+use crate::gfx::Canvas;
 
 use crate::font::FontSystem;
 use crate::theme::ThemeManager;
@@ -620,7 +619,7 @@ pub struct Calc {
 
 impl Calc {
     pub fn new(settings: Settings) -> Self {
-        let seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos() as u64).unwrap_or(1);
+        let seed = if crate::rt::frozen() { 1 } else { std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos() as u64).unwrap_or(1) };
         Self {
             settings,
             expr: String::new(),
@@ -1110,7 +1109,7 @@ impl Calc {
         }
     }
 
-    pub fn draw(&self, c: &mut Canvas<Window>, fs: &FontSystem, tm: &ThemeManager, x: i32, y: i32, w: u32, _h: u32) {
+    pub fn draw(&self, c: &mut Canvas, fs: &FontSystem, tm: &ThemeManager, x: i32, y: i32, w: u32, _h: u32) {
         let ink = tm.get_color("foreground");
         let muted = tm.get_color("muted");
         let paper = tm.get_color("widget_face_active");
@@ -1189,7 +1188,7 @@ impl Calc {
         }
     }
 
-    fn draw_modal(&self, c: &mut Canvas<Window>, fs: &FontSystem, tm: &ThemeManager, x: i32, y: i32, w: i32, row: usize) {
+    fn draw_modal(&self, c: &mut Canvas, fs: &FontSystem, tm: &ThemeManager, x: i32, y: i32, w: i32, row: usize) {
         let ink = tm.get_color("foreground");
         let muted = tm.get_color("muted");
         let paper = tm.get_color("widget_face_active");
@@ -1224,7 +1223,7 @@ impl Calc {
 }
 
 /// A flat little key of the digit strip.
-fn draw_pad_key(c: &mut Canvas<Window>, fs: &FontSystem, tm: &ThemeManager, r: Rect, ch: char, pressed: bool) {
+fn draw_pad_key(c: &mut Canvas, fs: &FontSystem, tm: &ThemeManager, r: Rect, ch: char, pressed: bool) {
     let ink = tm.get_color("foreground");
     let paper = tm.get_color("icon_white");
     ui::fill_rect(c, r, if pressed { ink } else { paper });
@@ -1236,7 +1235,7 @@ fn draw_pad_key(c: &mut Canvas<Window>, fs: &FontSystem, tm: &ThemeManager, r: R
 
 /// A classic bevelled button: paper face, 1px frame, hard 2px shadow. `legend` is
 /// the keyboard key (small, top left), `label` the function (bottom).
-fn draw_button(c: &mut Canvas<Window>, fs: &FontSystem, tm: &ThemeManager, r: Rect, legend: &str, label: &str, pressed: bool) {
+fn draw_button(c: &mut Canvas, fs: &FontSystem, tm: &ThemeManager, r: Rect, legend: &str, label: &str, pressed: bool) {
     let ink = tm.get_color("foreground");
     // Key tops are white (the theme's icon white); a pressed key inverts to ink on the key colour.
     let paper = tm.get_color("icon_white");

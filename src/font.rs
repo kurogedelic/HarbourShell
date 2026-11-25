@@ -1,7 +1,6 @@
-use sdl2::pixels::Color;
-use sdl2::rect::Rect;
-use sdl2::render::Canvas;
-use sdl2::video::Window;
+use crate::gfx::Color;
+use crate::gfx::Rect;
+use crate::gfx::Canvas;
 
 /// A Unicode bitmap font with sparse character support
 pub struct UnicodeFont {
@@ -85,7 +84,7 @@ impl UnicodeFont {
     }
 
     /// Draw text at the given position using the canvas.
-    pub fn draw_text(&self, c: &mut Canvas<Window>, x: i32, y: i32, text: &str, color: Color) {
+    pub fn draw_text(&self, c: &mut Canvas, x: i32, y: i32, text: &str, color: Color) {
         let mut cursor_x = x;
         for ch in text.chars() {
             if let Some(data) = self.glyph_data(ch) {
@@ -99,7 +98,7 @@ impl UnicodeFont {
         }
     }
 
-    fn draw_glyph(&self, c: &mut Canvas<Window>, x: i32, y: i32, data: &[u16], color: Color) {
+    fn draw_glyph(&self, c: &mut Canvas, x: i32, y: i32, data: &[u16], color: Color) {
         // M+ font data is stored as u16 but contains 8-bit bitmap data
         // Each row is one u16 value (but only lower 8 bits are used for 6px wide fonts)
         for (row, word) in data.iter().enumerate() {
@@ -116,7 +115,7 @@ impl UnicodeFont {
         }
     }
 
-    fn draw_missing(&self, c: &mut Canvas<Window>, x: i32, y: i32, color: Color) {
+    fn draw_missing(&self, c: &mut Canvas, x: i32, y: i32, color: Color) {
         // Draw a small question mark or box for missing characters
         let w = self.width as i32;
         let h = self.height as i32;
@@ -231,7 +230,7 @@ impl FontSystem {
     ///
     /// The display face has no Japanese: a text with a character it lacks (a Japanese file name in
     /// a dialog) is drawn whole in the body face instead of leaving gaps.
-    pub fn draw_display_text(&self, c: &mut Canvas<Window>, x: i32, y: i32, text: &str, color: Color) {
+    pub fn draw_display_text(&self, c: &mut Canvas, x: i32, y: i32, text: &str, color: Color) {
         match self.display_face(text) {
             Some(f) => f.draw(c, x, y + 2, text, color),
             // The text font stands in (Japanese): its 12 px glyphs reach a pixel lower than the
@@ -287,7 +286,7 @@ impl FontSystem {
         }
     }
 
-    pub fn draw_text(&self, c: &mut Canvas<Window>, x: i32, y: i32, text: &str, color: Color) {
+    pub fn draw_text(&self, c: &mut Canvas, x: i32, y: i32, text: &str, color: Color) {
         let cursor_x = x;
         // ASCII from Shinonome 6x12 with proportional spacing and kerning, everything else
         // through the Japanese / M+ fallback.
@@ -302,7 +301,7 @@ impl FontSystem {
     /// Latin face proportionally: every glyph is trimmed to its ink and the gap to the next
     /// glyph is the tightest that keeps one blank pixel between inks (so `To`, `AV`, `r.`
     /// tuck together while `ll` and `mm` stay apart).
-    fn layout(&self, mut c: Option<&mut Canvas<Window>>, x: i32, y: i32, text: &str, color: Color) -> i32 {
+    fn layout(&self, mut c: Option<&mut Canvas>, x: i32, y: i32, text: &str, color: Color) -> i32 {
         let lat = self.body_latin.as_ref().expect("latin face");
         let chars: Vec<char> = text.chars().collect();
         let glyph_of = |ch: char| if ch.is_ascii_graphic() { lat.glyph_unicode(ch as u32) } else { None };
@@ -341,7 +340,7 @@ impl FontSystem {
     }
 
     /// Japanese glyphs (Shinonome) and the M+ Latin-1 fallback; returns the width drawn.
-    fn draw_text_plain(&self, c: &mut Canvas<Window>, x: i32, y: i32, text: &str, color: Color) -> i32 {
+    fn draw_text_plain(&self, c: &mut Canvas, x: i32, y: i32, text: &str, color: Color) -> i32 {
         let mut cursor_x = x;
         for ch in text.chars() {
             // まず日本語フォントで描けるか試す
@@ -368,7 +367,7 @@ impl FontSystem {
     /// JIS グリフを描画。各行のビットマップ（MSB first）を Ambe ドットで。
     fn draw_jis_glyph(
         &self,
-        c: &mut Canvas<Window>,
+        c: &mut Canvas,
         x: i32,
         y: i32,
         glyph: &crate::bdf::BdfGlyph,
@@ -396,7 +395,7 @@ impl FontSystem {
         }
     }
 
-    pub fn draw_text_bold(&self, c: &mut Canvas<Window>, x: i32, y: i32, text: &str, color: Color) {
+    pub fn draw_text_bold(&self, c: &mut Canvas, x: i32, y: i32, text: &str, color: Color) {
         // Bold: glyphs smear right by one pixel (see `draw_jis_glyph`), keeping 1 px gaps open.
         BOLD.with(|b| b.set(true));
         self.draw_text(c, x, y, text, color);
@@ -438,7 +437,7 @@ impl FontSystem {
 
     pub fn draw_system_text(
         &self,
-        c: &mut Canvas<Window>,
+        c: &mut Canvas,
         x: i32,
         y: i32,
         text: &str,

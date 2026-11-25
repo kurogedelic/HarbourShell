@@ -13,10 +13,9 @@
 //! - 行の Vec（各行は String）。空ドキュメントは [String::new()] 1行。
 //! - カーソルは (row, col)。常に 0..=len の範囲。
 
-use sdl2::keyboard::{Keycode, Mod};
-use sdl2::rect::Rect;
-use sdl2::render::Canvas;
-use sdl2::video::Window;
+use crate::keys::{Keycode, Mod};
+use crate::gfx::Rect;
+use crate::gfx::Canvas;
 
 use crate::font::FontSystem;
 use crate::theme::ThemeManager;
@@ -327,7 +326,7 @@ impl TextEditor {
     /// エディタを描画。枠 + テキスト + カーソル。
     pub fn draw(
         &self,
-        c: &mut Canvas<Window>,
+        c: &mut Canvas,
         font: &FontSystem,
         theme: &ThemeManager,
         x: i32,
@@ -403,7 +402,7 @@ impl App for TextEditor {
 
     fn draw(
         &mut self,
-        c: &mut Canvas<Window>,
+        c: &mut Canvas,
         font: &FontSystem,
         theme: &ThemeManager,
         x: i32,

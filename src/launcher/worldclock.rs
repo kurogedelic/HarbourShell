@@ -6,10 +6,9 @@
 
 use chrono::{DateTime, Datelike, Local, NaiveDate, Offset, Timelike, Utc};
 use chrono_tz::Tz;
-use sdl2::keyboard::Keycode;
-use sdl2::rect::Rect;
-use sdl2::render::Canvas;
-use sdl2::video::Window;
+use crate::keys::Keycode;
+use crate::gfx::Rect;
+use crate::gfx::Canvas;
 
 use crate::assets::AssetStore;
 use crate::chrome::SCREEN_W;
@@ -189,7 +188,7 @@ impl WorldClock {
     /// For the Agent's `current_screen`: the selected city and its local time.
     pub fn describe(&self, local: DateTime<Local>) -> String {
         let c = &CITIES[self.selected % CITIES.len()];
-        let t = city_time(c.zone, chrono::Utc::now(), local, local.date_naive());
+        let t = city_time(c.zone, crate::rt::now().with_timezone(&Utc), local, local.date_naive());
         format!("World Clock: {} {:02}:{:02}, UTC{}", c.name, t.hour, t.minute, offset_label(t.utc_offset))
     }
 
@@ -236,7 +235,7 @@ impl WorldClock {
         }
     }
 
-    pub fn draw(&mut self, c: &mut Canvas<Window>, assets: &mut AssetStore, fs: &FontSystem, tm: &ThemeManager, local: DateTime<Local>) {
+    pub fn draw(&mut self, c: &mut Canvas, assets: &mut AssetStore, fs: &FontSystem, tm: &ThemeManager, local: DateTime<Local>) {
         self.tick();
         // The app shows the whole map (121 rows): the rule under it is on y 137 and the clock plate
         // ends on y 168, so the screen is used down to its bottom.
@@ -247,12 +246,12 @@ impl WorldClock {
     /// The map strip under the menu bar (x 4.., y 16..16 + the returned height): sea, land, the
     /// night side, the selected city's time zone and the cities. `blink`: the selected city blinks
     /// (the lock screen, redrawn once a second, shows it steady).
-    pub fn draw_map(&mut self, c: &mut Canvas<Window>, assets: &mut AssetStore, tm: &ThemeManager, local: DateTime<Local>, blink: bool) -> i32 {
+    pub fn draw_map(&mut self, c: &mut Canvas, assets: &mut AssetStore, tm: &ThemeManager, local: DateTime<Local>, blink: bool) -> i32 {
         self.draw_map_rows(c, assets, tm, local, blink, MAP_MAX_H)
     }
 
     /// [`Self::draw_map`] with at most `max_h` rows of the map (cropped at its southern edge).
-    pub fn draw_map_rows(&mut self, c: &mut Canvas<Window>, assets: &mut AssetStore, tm: &ThemeManager, local: DateTime<Local>, blink: bool, max_h: i32) -> i32 {
+    pub fn draw_map_rows(&mut self, c: &mut Canvas, assets: &mut AssetStore, tm: &ThemeManager, local: DateTime<Local>, blink: bool, max_h: i32) -> i32 {
         let minute = local.timestamp() / 60;
         if minute != self.night_minute {
             self.night_minute = minute;
@@ -271,7 +270,7 @@ impl WorldClock {
 
         // --- map: a LIGHT sea with dark land (the lighter of ink / paper is the sea), graticule,
         //     night shading, date line, cities ---
-        let lum = |c: sdl2::pixels::Color| c.r as u32 * 3 + c.g as u32 * 6 + c.b as u32;
+        let lum = |c: crate::gfx::Color| c.r as u32 * 3 + c.g as u32 * 6 + c.b as u32;
         let (sea, land) = if lum(paper) >= lum(ink) { (paper, ink) } else { (ink, paper) };
         // The lock screen crops the map to 112 rows (its southern edge, below about 47 S, is cut) so
         // its clock plate ends on y 160; the app shows all of it.
@@ -291,7 +290,7 @@ impl WorldClock {
         let start = map::start_col(self.pan);
         // Night side: a flat light grey over the sea (drawn under the land); runs that wrap
         // around the map edge are split.
-        let grey = sdl2::pixels::Color::RGB(
+        let grey = crate::gfx::Color::RGB(
             (sea.r as u32 * 3 / 4 + land.r as u32 / 4) as u8,
             (sea.g as u32 * 3 / 4 + land.g as u32 / 4) as u8,
             (sea.b as u32 * 3 / 4 + land.b as u32 / 4) as u8,
@@ -373,7 +372,7 @@ impl WorldClock {
     }
 
     /// The strip below the map: the selected city's 7-segment clock, its name and date.
-    fn draw_details(&self, c: &mut Canvas<Window>, assets: &mut AssetStore, fs: &FontSystem, tm: &ThemeManager, local: DateTime<Local>, mh: i32) {
+    fn draw_details(&self, c: &mut Canvas, assets: &mut AssetStore, fs: &FontSystem, tm: &ThemeManager, local: DateTime<Local>, mh: i32) {
         let ink = tm.get_color("foreground");
         let muted = tm.get_color("muted");
         let paper = tm.get_color("widget_face_active");
@@ -448,7 +447,7 @@ pub const DATE_LINE: [(f32, f32); 15] = [
 
 /// Draw [`DATE_LINE`] on the map panned to `pan`, 1 px in `col`, clipped to the map; the line
 /// crosses the map's wrap-around seam continuously (a copy is drawn one map width to each side).
-fn draw_date_line(c: &mut Canvas<Window>, pan: f32, mw: i32, mh: i32, col: sdl2::pixels::Color) {
+fn draw_date_line(c: &mut Canvas, pan: f32, mw: i32, mh: i32, col: crate::gfx::Color) {
     let px_per_deg = map::W as f32 / 360.0;
     // Screen x of each corner, unwrapped along the line so no segment jumps across the map.
     let mut pts: Vec<(f32, f32)> = Vec::with_capacity(DATE_LINE.len());

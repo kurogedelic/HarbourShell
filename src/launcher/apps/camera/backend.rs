@@ -245,7 +245,8 @@ impl Source for MockSource {
             }
         }
         self.last = Instant::now();
-        self.t += 1;
+        // The test pattern moves with the frame count; a frozen run stays on one frame.
+        self.t = if crate::rt::frozen() { 1 } else { self.t + 1 };
         let mut data = convert::test_pattern(self.size.0, self.size.1, self.t);
         let (b, c) = ((self.bright - 50) * 2, 100 + (self.contrast - 50));
         if b != 0 || c != 100 {

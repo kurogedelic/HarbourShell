@@ -3,11 +3,10 @@
 //! on plates) and a compact list (2 columns x 9 rows of names). Both scroll by
 //! row, show a scroll bar, and have no footer.
 
-use sdl2::keyboard::Keycode;
-use sdl2::pixels::Color;
-use sdl2::rect::Rect;
-use sdl2::render::Canvas;
-use sdl2::video::Window;
+use crate::keys::Keycode;
+use crate::gfx::Color;
+use crate::gfx::Rect;
+use crate::gfx::Canvas;
 
 use std::path::PathBuf;
 
@@ -985,7 +984,7 @@ impl Home {
         })
     }
 
-    pub fn draw(&self, c: &mut Canvas<Window>, assets: &mut AssetStore, fs: &FontSystem, tm: &ThemeManager) {
+    pub fn draw(&self, c: &mut Canvas, assets: &mut AssetStore, fs: &FontSystem, tm: &ThemeManager) {
         let ink = tm.get_color("foreground");
         // The selected tile uses the palette's otherwise unused grey (tile_sel_bg), not the white.
         let sel_bg = tm.get_color("tile_sel_bg");
@@ -1109,7 +1108,7 @@ fn folder_id(name: &str) -> String {
 
 /// A folder as a plain square card (no tab) in a 32x32 box, with up to four app icons (12 px, drawn in the
 /// same three tones as the tiles) inside. A square with 2 px chamfered corners; an empty folder is a dotted one.
-fn draw_folder_icon(c: &mut Canvas<Window>, assets: &mut AssetStore, r: Rect, minis: &[String], ink: Color, fill: Color, palette: IconPalette) {
+fn draw_folder_icon(c: &mut Canvas, assets: &mut AssetStore, r: Rect, minis: &[String], ink: Color, fill: Color, palette: IconPalette) {
     let (x, y) = (r.x() + 1, r.y() + 1); // 30 x 30 card, 1 px margin like the other icons
     const S: i32 = 30;
     let corner = |px: i32, py: i32| (px == 0 || px == S - 1) && (py == 0 || py == S - 1);
@@ -1125,7 +1124,6 @@ fn draw_folder_icon(c: &mut Canvas<Window>, assets: &mut AssetStore, r: Rect, mi
     ui::fill_rect(c, Rect::new(x, y, S as u32, S as u32), ink);
     ui::fill_rect(c, Rect::new(x + 1, y + 1, (S - 2) as u32, (S - 2) as u32), fill);
     // Chamfer the four corners (transparent notch).
-    c.set_blend_mode(sdl2::render::BlendMode::None);
     let _ = corner;
     for (cx, cy) in [(0, 0), (S - 1, 0), (0, S - 1), (S - 1, S - 1)] {
         // Replace the corner pixel by the colour the card sits on: skip (leave the ink pixel): a 1 px notch
@@ -1139,7 +1137,7 @@ fn draw_folder_icon(c: &mut Canvas<Window>, assets: &mut AssetStore, r: Rect, mi
 }
 
 /// The back tile's glyph: a left arrow with a shaft.
-fn draw_back_icon(c: &mut Canvas<Window>, r: Rect, ink: Color) {
+fn draw_back_icon(c: &mut Canvas, r: Rect, ink: Color) {
     let (cx, cy) = (r.x() + 16, r.y() + 16);
     for j in 0..9 {
         ui::fill_rect(c, Rect::new(cx - 11 + j, cy - j, 1, (2 * j + 1) as u32), ink);
@@ -1148,7 +1146,7 @@ fn draw_back_icon(c: &mut Canvas<Window>, r: Rect, ink: Color) {
 }
 
 /// A 4 x 9 pointer triangle (list rows: "opens" on the right, "back" on the left).
-fn draw_triangle(c: &mut Canvas<Window>, x: i32, y: i32, right: bool, col: Color) {
+fn draw_triangle(c: &mut Canvas, x: i32, y: i32, right: bool, col: Color) {
     for i in 0..5 {
         let h = 9 - 2 * i;
         let col_x = if right { x + i } else { x + 4 - i };
@@ -1157,13 +1155,13 @@ fn draw_triangle(c: &mut Canvas<Window>, x: i32, y: i32, right: bool, col: Color
 }
 
 /// Small folder glyph for list rows (9 x 8).
-fn draw_folder_glyph(c: &mut Canvas<Window>, x: i32, y: i32, col: Color) {
+fn draw_folder_glyph(c: &mut Canvas, x: i32, y: i32, col: Color) {
     ui::fill_rect(c, Rect::new(x, y, 4, 2), col);
     ui::fill_rect(c, Rect::new(x, y + 2, 10, 7), col);
 }
 
 /// Draw an app icon in the given three-tone palette (the old `_selected` variants are not used).
-fn draw_icon(c: &mut Canvas<Window>, assets: &mut AssetStore, item: &Item, rect: Rect, palette: IconPalette) {
+fn draw_icon(c: &mut Canvas, assets: &mut AssetStore, item: &Item, rect: Rect, palette: IconPalette) {
     let _ = assets.blit_icon(c, &item.icon, rect, palette);
 }
 

@@ -107,6 +107,9 @@ pub const JA: &[(&str, &str)] = &[
     // Network / Bluetooth
     ("Wi-Fi", "Wi-Fi"),
     ("IP address", "IPアドレス"),
+    ("Airplane mode", "機内モード"),
+    ("DNS", "DNS"),
+    ("Router", "ルーター"),
     ("Signal", "電波"),
     ("Ethernet", "有線LAN"),
     ("Scan Wi-Fi", "Wi-Fi検索"),
@@ -288,6 +291,8 @@ pub const JA_PAT: &[(&str, &str)] = &[
     ("Move \"{}\" to:", "「{}」の移動先:"),
     ("in {}", "{} 内"),
     ("Connected to {}", "{}に接続しました"),
+    ("Locked {}%", "鍵あり {}%"),
+    ("Open {}%", "鍵なし {}%"),
     ("Scan failed: {}", "検索に失敗: {}"),
     ("Update check failed: {}", "更新確認に失敗: {}"),
     ("No app opens .{} files", ".{}を開くアプリがありません"),
@@ -295,6 +300,7 @@ pub const JA_PAT: &[(&str, &str)] = &[
 
 mod ja_camera;
 mod ja_files;
+mod ja_graph;
 mod ja_infoscope;
 mod ja_media;
 mod ja_talk;
@@ -303,11 +309,11 @@ mod ja_tools;
 /// Every table: the core one above plus one per group of apps (`i18n/ja_*.rs`, each exporting
 /// `JA` and `JA_PAT`).
 fn all_ja() -> impl Iterator<Item = &'static (&'static str, &'static str)> {
-    JA.iter().chain(ja_files::JA).chain(ja_infoscope::JA).chain(ja_media::JA).chain(ja_tools::JA).chain(ja_camera::JA).chain(ja_talk::JA)
+    JA.iter().chain(ja_files::JA).chain(ja_infoscope::JA).chain(ja_media::JA).chain(ja_tools::JA).chain(ja_camera::JA).chain(ja_talk::JA).chain(ja_graph::JA)
 }
 
 fn all_pat() -> impl Iterator<Item = &'static (&'static str, &'static str)> {
-    JA_PAT.iter().chain(ja_files::JA_PAT).chain(ja_infoscope::JA_PAT).chain(ja_media::JA_PAT).chain(ja_tools::JA_PAT).chain(ja_camera::JA_PAT).chain(ja_talk::JA_PAT)
+    JA_PAT.iter().chain(ja_files::JA_PAT).chain(ja_infoscope::JA_PAT).chain(ja_media::JA_PAT).chain(ja_tools::JA_PAT).chain(ja_camera::JA_PAT).chain(ja_talk::JA_PAT).chain(ja_graph::JA_PAT)
 }
 
 fn pattern(english: &str) -> Option<String> {

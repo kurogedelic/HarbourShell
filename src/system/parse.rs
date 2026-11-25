@@ -141,9 +141,42 @@ pub fn cpu_summary(text: &str) -> String {
     }
 }
 
+/// `nmcli -g IP4.DNS dev show` output (one server per line, or `|`-joined) → the addresses.
+pub fn dns_list(text: &str) -> Vec<String> {
+    text.lines()
+        .flat_map(|l| l.split(|c| c == '|' || c == ','))
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
+/// `nmcli -g IP4.GATEWAY dev show` output → the gateway (`--` and empty mean none).
+pub fn gateway(text: &str) -> Option<String> {
+    text.lines().map(str::trim).find(|l| !l.is_empty() && *l != "--").map(String::from)
+}
+
+/// The airplane-mode memory file (`wifi=1`, `bt=0`) → (Wi-Fi was on, Bluetooth was on); a missing key means on.
+pub fn airplane_prev(text: &str) -> (bool, bool) {
+    let get = |k: &str| text.lines().find_map(|l| l.trim().strip_prefix(k)).map_or(true, |v| v.trim() != "0");
+    (get("wifi="), get("bt="))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dns_and_gateway() {
+        assert_eq!(dns_list("192.168.3.1\n8.8.8.8\n"), ["192.168.3.1", "8.8.8.8"]);
+        assert_eq!(dns_list("1.1.1.1 | 9.9.9.9"), ["1.1.1.1", "9.9.9.9"]);
+        assert!(dns_list("\n").is_empty());
+        assert_eq!(gateway("192.168.3.1\n"), Some("192.168.3.1".into()));
+        assert_eq!(gateway("--\n"), None);
+        assert_eq!(gateway(""), None);
+        assert_eq!(airplane_prev("wifi=1\nbt=0\n"), (true, false));
+        assert_eq!(airplane_prev("wifi=0\n"), (false, true));
+        assert_eq!(airplane_prev(""), (true, true));
+    }
 
     #[test]
     fn terse_escapes() {

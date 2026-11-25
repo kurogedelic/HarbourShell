@@ -13,7 +13,7 @@ TARGET=${CARGO_TARGET_DIR:-$ROOT/../target-web}
 STAGE=$TARGET/web-stage
 DIST=$ROOT/web/dist
 # Yacht is not ready for a release (see RELEASE_HIDE in packaging/build_deb.sh): HARBOUR_WEB_APPS="... yacht" adds it for a try.
-WEB_APPS=${HARBOUR_WEB_APPS:-"calculator calendar clock files harbourtalk images paint settings sheet snake texteditor timer"}
+WEB_APPS=${HARBOUR_WEB_APPS:-"calculator calendar clock files graph harbourtalk images paint settings sheet snake texteditor timer"}
 
 rm -rf "$STAGE" && mkdir -p "$STAGE/apps"
 cp -R "$ROOT/assets" "$STAGE/assets"

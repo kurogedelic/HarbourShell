@@ -3,7 +3,7 @@
 //! SDL events are translated into small OS-level input records before apps or
 //! shell surfaces consume them. Pointer coordinates are integer pixels only.
 
-use sdl2::keyboard::{Keycode, Mod};
+use crate::keys::{Keycode, Mod};
 use sdl2::mouse::MouseButton;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

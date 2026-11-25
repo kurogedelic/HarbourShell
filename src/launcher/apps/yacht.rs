@@ -17,10 +17,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::Instant;
 
-use sdl2::keyboard::{Keycode, Mod};
-use sdl2::rect::Rect;
-use sdl2::render::Canvas;
-use sdl2::video::Window;
+use crate::keys::{Keycode, Mod};
+use crate::gfx::Rect;
+use crate::gfx::Canvas;
 
 use crate::assets::AssetStore;
 use crate::dither::{self, Pattern as Dith};
@@ -666,7 +665,7 @@ impl LauncherApp for Yacht {
     }
 
     fn tick(&mut self, _ctx: &Ctx) -> bool {
-        let on = (self.started.elapsed().as_millis() / 200) % 2 == 0;
+        let on = crate::rt::frozen() || (self.started.elapsed().as_millis() / 200) % 2 == 0;
         let step = self.play_step();
         let dirty = on != self.blink_on || step != self.shown_step;
         self.blink_on = on;
@@ -674,7 +673,7 @@ impl LauncherApp for Yacht {
         dirty
     }
 
-    fn draw(&mut self, c: &mut Canvas<Window>, _assets: &mut AssetStore, ctx: &Ctx) {
+    fn draw(&mut self, c: &mut Canvas, _assets: &mut AssetStore, ctx: &Ctx) {
         let (tm, fs) = (ctx.tm, ctx.fs);
         let ink = tm.get_color("foreground");
         let paper = tm.get_color("widget_face_active");

@@ -5,40 +5,29 @@
 //!   boot_splash [theme.yaml] [out.bmp]      (defaults: assets/themes/theme-black.yaml, dist/boot/splash.bmp)
 use harbour_shell::font::{load_display_font, FontSystem};
 use harbour_shell::theme::{Theme, ThemeManager};
-use sdl2::image::LoadSurface;
-use sdl2::pixels::{Color, PixelFormatEnum};
-use sdl2::rect::Rect;
-use sdl2::surface::Surface;
+use harbour_shell::gfx::{Canvas, Color, PixelFormat, Rect, Surface};
 
 fn main() {
-    std::env::set_var("SDL_VIDEODRIVER", "dummy");
-    let sdl = sdl2::init().unwrap();
-    let video = sdl.video().unwrap();
-    let _img = sdl2::image::init(sdl2::image::InitFlag::PNG).unwrap();
     let args: Vec<String> = std::env::args().skip(1).collect();
     let theme_path = args.first().cloned().unwrap_or_else(|| "assets/themes/theme-black.yaml".into());
     let out = args.get(1).cloned().unwrap_or_else(|| "dist/boot/splash.bmp".into());
     let tm = ThemeManager::new(Theme::load_from_yaml(&theme_path).expect("theme"));
     let (bg, fg, muted) = (tm.get_color("background"), tm.get_color("foreground"), tm.get_color("muted"));
 
-    let window = video.window("splash", 320, 170).build().unwrap();
-    let mut c = window.into_canvas().software().build().unwrap();
+    let mut c = Canvas::new(Surface::new(320, 170));
     c.set_draw_color(bg);
     c.clear();
 
     // The wordmark: every opaque pixel in the theme's ink.
-    let mark = Surface::from_file("assets/images/splash.png").expect("splash.png").convert_format(PixelFormatEnum::RGBA32).unwrap();
-    let (w, h, pitch) = (mark.width() as i32, mark.height() as i32, mark.pitch() as usize);
+    let (mark, w, h) = harbour_shell::imgload::load_rgba(std::path::Path::new("assets/images/splash.png")).expect("splash.png");
     c.set_draw_color(fg);
-    mark.with_lock(|px| {
-        for y in 0..h {
-            for x in 0..w {
-                if px[y as usize * pitch + x as usize * 4 + 3] > 127 {
-                    let _ = c.fill_rect(Rect::new(x, y, 1, 1));
-                }
+    for y in 0..h {
+        for x in 0..w {
+            if mark[(y * w + x) * 4 + 3] > 127 {
+                let _ = c.fill_rect(Rect::new(x as i32, y as i32, 1, 1));
             }
         }
-    });
+    }
 
     // Version and device, centred at the bottom.
     let mut fs = FontSystem::new();
@@ -50,7 +39,7 @@ fn main() {
         fs.draw_display_text(&mut c, (320 - tw) / 2, y, text, col);
     }
 
-    let px = c.read_pixels(None, PixelFormatEnum::RGB24).unwrap();
+    let px = c.read_pixels(None, PixelFormat::Rgb24).unwrap();
     if let Some(dir) = std::path::Path::new(&out).parent() {
         let _ = std::fs::create_dir_all(dir);
     }

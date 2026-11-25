@@ -16,11 +16,10 @@ mod net;
 use std::path::PathBuf;
 use std::sync::mpsc::{channel, Receiver, Sender};
 
-use sdl2::keyboard::{Keycode, Mod};
-use sdl2::pixels::Color;
-use sdl2::rect::Rect;
-use sdl2::render::Canvas;
-use sdl2::video::Window;
+use crate::keys::{Keycode, Mod};
+use crate::gfx::Color;
+use crate::gfx::Rect;
+use crate::gfx::Canvas;
 
 use crate::assets::AssetStore;
 use crate::chrome;
@@ -474,7 +473,7 @@ thread_local! {
 }
 
 /// A small filled lamp: a ring, with the centre filled when lit.
-fn lamp(c: &mut Canvas<Window>, cx: i32, cy: i32, lit: bool, on: sdl2::pixels::Color, off: sdl2::pixels::Color) {
+fn lamp(c: &mut Canvas, cx: i32, cy: i32, lit: bool, on: crate::gfx::Color, off: crate::gfx::Color) {
     ui::fill_rect(c, Rect::new(cx - 5, cy - 5, 11, 11), off);
     ui::draw_circle(c, (cx, cy), 5, on);
     if lit {
@@ -484,13 +483,13 @@ fn lamp(c: &mut Canvas<Window>, cx: i32, cy: i32, lit: bool, on: sdl2::pixels::C
     }
 }
 
-fn draw_dial(app: &Radio, c: &mut Canvas<Window>, assets: &mut AssetStore, ctx: &Ctx) {
+fn draw_dial(app: &Radio, c: &mut Canvas, assets: &mut AssetStore, ctx: &Ctx) {
     let (tm, fs) = (ctx.tm, ctx.fs);
     let land = widgets::tones(tm).dark;
     let (mw, my) = (312i32, CONTENT_Y);
     let mx = 4;
     let station = app.stations.get(app.cursor);
-    let blink = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.subsec_millis() < 500).unwrap_or(true);
+    let blink = crate::rt::subsec_millis() < 500;
     let snap = audio::snapshot().filter(|p| !p.podcast);
 
     // The panel: the band on an ink plate, On air (playing) and Loading (blinks while the station
@@ -581,7 +580,7 @@ fn panel_face(tm: &ThemeManager) -> Color {
 }
 
 /// Lamps with labels, right-aligned so the last one ends at `right` (text origin `y`).
-fn draw_lamps(c: &mut Canvas<Window>, fs: &FontSystem, right: i32, y: i32, lamps: &[(&str, bool)], ink: Color, under: Color) -> i32 {
+fn draw_lamps(c: &mut Canvas, fs: &FontSystem, right: i32, y: i32, lamps: &[(&str, bool)], ink: Color, under: Color) -> i32 {
     let mut rx = right;
     for (label, lit) in lamps.iter().rev() {
         let lw = fs.measure_text(label);
@@ -593,7 +592,7 @@ fn draw_lamps(c: &mut Canvas<Window>, fs: &FontSystem, right: i32, y: i32, lamps
 }
 
 /// A small heart: a saved station, a subscribed show (7 x 6 px, top-left at x, y).
-fn heart(c: &mut Canvas<Window>, x: i32, y: i32, ink: Color) {
+fn heart(c: &mut Canvas, x: i32, y: i32, ink: Color) {
     const ROWS: [&str; 6] = [".XX.XX.", "XXXXXXX", "XXXXXXX", ".XXXXX.", "..XXX..", "...X..."];
     for (dy, row) in ROWS.iter().enumerate() {
         for (dx, ch) in row.chars().enumerate() {
@@ -604,7 +603,7 @@ fn heart(c: &mut Canvas<Window>, x: i32, y: i32, ink: Color) {
 
 /// The readout under the dial and the deck: a number in 7-segment digits (of `total`) on an
 /// outlined plate, the name on an ink plate and the detail on an outlined plate beside it.
-fn draw_readout(c: &mut Canvas<Window>, assets: &mut AssetStore, ctx: &Ctx, n: usize, total: usize, name: &str, detail: &str) {
+fn draw_readout(c: &mut Canvas, assets: &mut AssetStore, ctx: &Ctx, n: usize, total: usize, name: &str, detail: &str) {
     use crate::launcher::sevenseg as seg;
     let (tm, fs) = (ctx.tm, ctx.fs);
     let sea = tm.get_color("icon_white"); // the theme's own "white" (a dark tone on Invert, which keeps the text readable)
@@ -643,7 +642,7 @@ fn draw_readout(c: &mut Canvas<Window>, assets: &mut AssetStore, ctx: &Ctx, n: u
 /// The panel frame shared by the dial and the deck: inset 2 px from the title bar and 4 px from
 /// the separator, a label on an ink plate at the top left, lamps at the top right and the keys
 /// on an outlined plate at the bottom left.
-fn draw_panel(c: &mut Canvas<Window>, ctx: &Ctx, label: &str, lamps: &[(&str, bool)], keys: &str) {
+fn draw_panel(c: &mut Canvas, ctx: &Ctx, label: &str, lamps: &[(&str, bool)], keys: &str) {
     let fs = ctx.fs;
     let (face, ink) = (panel_face(ctx.tm), widgets::tones(ctx.tm).dark);
     let (mx, my, mw) = (4, CONTENT_Y, 312);
@@ -665,7 +664,7 @@ fn draw_panel(c: &mut Canvas<Window>, ctx: &Ctx, label: &str, lamps: &[(&str, bo
 
 /// The genre grid above the station list: three columns of round lamps, the chosen genre lit
 /// (and the search lamp while a search is active), on the panel face.
-fn draw_genres(app: &Radio, c: &mut Canvas<Window>, ctx: &Ctx) {
+fn draw_genres(app: &Radio, c: &mut Canvas, ctx: &Ctx) {
     let fs = ctx.fs;
     let (face, ink) = (panel_face(ctx.tm), widgets::tones(ctx.tm).dark);
     let r = genre_rect();
@@ -698,7 +697,7 @@ fn genre_cell(i: usize) -> Rect {
 }
 
 /// The header row of the podcast lists: the list's name on an ink plate, lamps on the right.
-fn draw_header(c: &mut Canvas<Window>, ctx: &Ctx, title: &str, lamps: &[(&str, bool)], saved: bool) {
+fn draw_header(c: &mut Canvas, ctx: &Ctx, title: &str, lamps: &[(&str, bool)], saved: bool) {
     let (tm, fs) = (ctx.tm, ctx.fs);
     let (ink, bg) = (tm.get_color("foreground"), tm.get_color("background"));
     // Centred in the header band.
@@ -714,7 +713,7 @@ fn draw_header(c: &mut Canvas<Window>, ctx: &Ctx, title: &str, lamps: &[(&str, b
 
 /// The list rows (stations, shows, episodes): a lamp column (lit for what is on air; a heart for
 /// a subscribed show), the name, the detail right-aligned, row rules and the scroll bar.
-fn draw_rows(app: &Radio, c: &mut Canvas<Window>, ctx: &Ctx) {
+fn draw_rows(app: &Radio, c: &mut Canvas, ctx: &Ctx) {
     let (tm, fs) = (ctx.tm, ctx.fs);
     let ink = tm.get_color("foreground");
     let bg = tm.get_color("background");
@@ -767,7 +766,7 @@ fn draw_rows(app: &Radio, c: &mut Canvas<Window>, ctx: &Ctx) {
 
 /// A 1-bit cassette (shell, label, window with two reels, head opening) with its top-left at x, y.
 /// The reel hubs turn with `angle`.
-fn draw_cassette(c: &mut Canvas<Window>, x: i32, y: i32, angle: f32, ink: Color, face: Color) {
+fn draw_cassette(c: &mut Canvas, x: i32, y: i32, angle: f32, ink: Color, face: Color) {
     let shell = Rect::new(x, y, CASSETTE_W as u32, 60);
     ui::draw_rect(c, shell, ink);
     for (cx, cy) in [(shell.x(), shell.y()), (shell.right() - 1, shell.y()), (shell.x(), shell.bottom() - 1), (shell.right() - 1, shell.bottom() - 1)] {
@@ -824,7 +823,7 @@ fn draw_cassette(c: &mut Canvas<Window>, x: i32, y: i32, angle: f32, ink: Color,
 
 /// The podcast deck: a cassette, the tape counter (play time) in 7-segment digits, On air /
 /// Paused lamps, and the episode under the separator (number, title, show).
-fn draw_deck(app: &Radio, c: &mut Canvas<Window>, assets: &mut AssetStore, ctx: &Ctx) {
+fn draw_deck(app: &Radio, c: &mut Canvas, assets: &mut AssetStore, ctx: &Ctx) {
     use crate::launcher::sevenseg as seg;
     let (tm, fs) = (ctx.tm, ctx.fs);
     let (face, ink) = (panel_face(tm), widgets::tones(tm).dark);
@@ -865,7 +864,7 @@ fn draw_deck(app: &Radio, c: &mut Canvas<Window>, assets: &mut AssetStore, ctx: 
 }
 
 /// The search field over the top of the screen: "Search:" on an ink plate, the text, a caret.
-fn draw_search(app: &Radio, c: &mut Canvas<Window>, ctx: &Ctx) {
+fn draw_search(app: &Radio, c: &mut Canvas, ctx: &Ctx) {
     let (tm, fs) = (ctx.tm, ctx.fs);
     let (face, ink) = (panel_face(tm), widgets::tones(tm).dark);
     let r = match app.screen {
@@ -894,7 +893,7 @@ fn draw_search(app: &Radio, c: &mut Canvas<Window>, ctx: &Ctx) {
 }
 
 /// A message (a network error) on an outlined plate in the last row.
-fn draw_error(c: &mut Canvas<Window>, ctx: &Ctx, err: &str) {
+fn draw_error(c: &mut Canvas, ctx: &Ctx, err: &str) {
     let (tm, fs) = (ctx.tm, ctx.fs);
     let (face, ink) = (panel_face(tm), widgets::tones(tm).dark);
     let r = Rect::new(4, BOTTOM - 15, 304, 15);
@@ -1111,8 +1110,8 @@ impl LauncherApp for Radio {
         changed
     }
 
-    fn draw(&mut self, c: &mut Canvas<Window>, assets: &mut AssetStore, ctx: &Ctx) {
-        let blink = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.subsec_millis() < 500).unwrap_or(true);
+    fn draw(&mut self, c: &mut Canvas, assets: &mut AssetStore, ctx: &Ctx) {
+        let blink = crate::rt::subsec_millis() < 500;
         if !matches!(self.screen, Screen::Dial | Screen::Episodes) {
             ui::fill_rect(c, chrome::app_rect(), ctx.tm.get_color("background"));
         }

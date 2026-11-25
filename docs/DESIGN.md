@@ -123,6 +123,30 @@ Every list, table and panel is built from the same 1 px rules (`line`), so apps 
 * Pipeline: `fetch.rs` (curl, file, mock) -> `load.rs` (charset, parse, layout in a worker thread) -> `layout::Page` (y-sorted items,
   only the visible range is drawn). Fixtures for `HARBOUR_MOCK=1` live in `tests/fixtures/`.
 
+## Graph (`src/launcher/apps/graph/`)
+* A mathematical sketchbook (after Grapher, Mathematica and the Dynabook's "try it and see"). Six modes, one way of
+  working: function y = f(x), polar r = f(theta), parametric x(u), y(u), terrain h(x, y), Voronoi cells (point i at x(i),
+  y(i), shade v(i)) and vector fields (vx, vy). The mode is chosen from the app menu (it opens the mode's first preset).
+* Layout at 320 x 170: the canvas in a 1 px ink frame (x 4..207, y 18..166, picture 202 x 147), the panel at x 212..315:
+  a title row (the picture's name, bold; the mode in the secondary ink when it fits), an ink rule on y 34, then 16 px rows
+  from y 35 (8 fit): one per formula (`r=cos(k*theta)`, cut with `..`), one per slider (name 36 px, a `widgets::Slider`
+  31 px with a 3 px track, the value right-aligned), and a `t` row with a drawn play / pause mark when a formula reads
+  `t`. More rows scroll (scroll bar in the panel's last 3 px). `M` / double click gives the canvas the whole surface
+  (frame x 1..318, y 17..167); a short note ("k = 5") shows over it while keys change things. Flexible: on a desk the
+  panel keeps its width and the canvas grows.
+* Sliders are made from the formulas: any name that is not the mode's variable becomes one (new: 1, from -5 to 5), and
+  each mode adds the ones its drawing reads (`pen`, `turns`, `sea`, `lines`, `sun`, `n`, `edge`, `norm`, `gap`, `shade`;
+  Japanese labels from `graph.<name>` in `i18n/ja_graph.rs`). The formula editor is a screen of its own: one field per
+  formula, the hint for the focused one, the problem (or the function list), the variables and sliders, Cancel / Apply
+  (Apply is greyed while a formula does not compile).
+* Tones: the raster holds tones (paper 0 .. ink 200) and lines (grid, axis / contour, ink). `tones::Ramp` maps them to
+  the theme's paper, the palette tones between paper and ink, and the ink, with the shell's dither patterns (`dither.rs`,
+  on screen coordinates) between neighbouring tones; a black-and-white panel gets paper and ink only. Grid lines are
+  dotted in the `line` colour, axes and contours in the secondary ink. PNG export uses the same mapping.
+* Engines apart: `expr.rs` (parser and stack program, seeded `rand` / `noise` / `fbm`), `doc.rs` (document, `.graph`
+  text), `render.rs` (a `Job` per picture, advanced by a work budget each frame, dropped when the document changes;
+  heavy modes preview at half size while dragging), `tones.rs` (raster to colours). No threads, so the web build is the same.
+
 ## Keys (one scheme for the whole system)
 The device has 46 keys; Fn, Sym and Shift latch in the keyboard hardware, so the host's own gestures use Tab, Esc and Alt.
 Rule of thumb: **the host takes chords, holds and the Tab double tap; a single Tab and a short Esc belong to the screen in front.**
@@ -184,7 +208,7 @@ Harbour is drawn for the Cardputer Zero's 320 x 170. On a bigger screen (`HARBOU
     Radio, Camera, Monitor, Music, Voice Memo.
   * `Flexible`: laid out from the surface (`grid::sw()` / `grid::sh()`, `grid::scroll_x()`, `grid::frame_bottom()`,
     `grid::app_frame()`...), never under 320 x 170. They open at about two thirds of the desk and resize from the
-    window's bottom-right corner. Browser, Calendar, HarbourTalk, Infoscope, Interceptor, Files, Sheet, Images, Paint (the sheet's view fills the
+    window's bottom-right corner. Browser, Calendar, Graph, HarbourTalk, Infoscope, Interceptor, Files, Sheet, Images, Paint (the sheet's view fills the
     window), Settings, Text Editor, Terminal.
   * Rule for a flexible app: anything that depends on the screen size is computed when drawing or handling input
     (a small `fn`, not a `const`); at 320 x 170 it gives exactly the old numbers.
@@ -212,6 +236,25 @@ Harbour runs on any Linux device with a DRM (or 16-bit fbdev) screen; the pictur
   the guess (also for headless screenshots).
 * Examples (by their published specs): uConsole 1280 x 720 at 2x = 640 x 360, desk; DevTerm 1280 x 480 at 1x, desk;
   HackberryPi 720 x 720 at 2x = 360 x 360, full; Beepy 400 x 240 1-bit, full; an HDMI monitor, desk.
+
+## Drawing (`src/gfx/`, `src/imgload.rs`)
+Every screen is drawn by Harbour's own integer rasterizer into a memory buffer; SDL2 is only the outer shell (window,
+events, audio, decoding PNG/JPG files).
+* **Types.** `gfx::{Canvas, Rect, Point, Color, Surface, Image}` have SDL's names and edge cases, so an app's `use`
+  line is all that tells them apart. The canvas draws into an RGB565 `Surface` (what the panel takes): colours are
+  rounded to 5-6-5 bits when drawn, so a screenshot compared with an old 24-bit one must be rounded the same way first.
+* **What it does.** clear, fill and outline rects, lines and polylines (SDL's end-point rules), points, clip rect,
+  viewport, whole-number scale, blits (nearest-neighbour scaling, tint, alpha 0 or 255), 1-bit bitmaps and glyphs,
+  dither fills. No floats, only `core` and `alloc`: the module is meant to build `no_std` and to be turned into C.
+* **Pixel for pixel.** `tests/gfx_vs_sdl.rs` draws the same seeded cases with SDL2's software renderer and with
+  `gfx` and compares every pixel (tens of thousands of cases). Two known gaps: a scaled blit cut by a clip at an exact
+  half-pixel, and a scaled line crossing a picture edge.
+* **Images.** `imgload` is the one place that decodes PNG/JPG (SDL_image) into a `gfx::Image`.
+* **Host.** The frame is a `gfx::Canvas`. On a panel (`HARBOUR_FB`) its RGB565 buffer goes straight to
+  `platform::Display`; on macOS and the web it is copied into one streaming SDL texture.
+* **Golden images.** `HARBOUR_FROZEN=1` pins the clock and every moving value; `tools/golden.sh shoot|compare` takes
+  and compares 155 screens (English, Japanese, desk). The plan for the rest (a memory framebuffer for any back end,
+  older machines, Rust to C) is in `memos/portability-phase0.md`.
 
 ## Gamepad and on-screen keyboard (`src/platform/gamepad.rs`, `src/launcher/osk.rs`)
 For handhelds with only a gamepad (Anbernic and kin) and for USB / Bluetooth pads (SDL's game controllers in a desktop

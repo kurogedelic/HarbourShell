@@ -5,7 +5,7 @@
 //! Text baselines are the one exception (a glyph sits wherever its font puts it
 //! inside its row). Dense key clusters (the calculator) may use a 2 px hairline gap.
 
-use sdl2::rect::Rect;
+use crate::gfx::Rect;
 
 pub const UNIT: i32 = 4;
 
@@ -204,7 +204,7 @@ pub fn app_frame_span(y: i32) -> Option<(i32, i32)> {
 
 /// Draws the app frame from row `top` down: the line in `line`, and when `fill` is given the inside
 /// in that colour first.
-pub fn draw_app_frame(c: &mut sdl2::render::Canvas<sdl2::video::Window>, top: i32, line: sdl2::pixels::Color, fill: Option<sdl2::pixels::Color>) {
+pub fn draw_app_frame(c: &mut crate::gfx::Canvas, top: i32, line: crate::gfx::Color, fill: Option<crate::gfx::Color>) {
     if let Some(f) = fill {
         c.set_draw_color(f);
         for y in top + 1..frame_bottom() {

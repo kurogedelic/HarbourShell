@@ -3,10 +3,9 @@
 //!
 //! [`encode`] returns the module matrix; [`draw`] paints it 1-bit black on white with the quiet zone.
 
-use sdl2::pixels::Color;
-use sdl2::rect::Rect;
-use sdl2::render::Canvas;
-use sdl2::video::Window;
+use crate::gfx::Color;
+use crate::gfx::Rect;
+use crate::gfx::Canvas;
 
 /// (data codewords, error correction codewords) at level L, versions 1..=5 (a single block each).
 const CAPACITY: [(usize, usize); 5] = [(19, 7), (34, 10), (55, 15), (80, 20), (108, 26)];
@@ -342,7 +341,7 @@ pub fn encode(data: &[u8]) -> Result<Qr, String> {
 
 /// Paint the code at (x, y) with `scale` pixels per module and a 4 module quiet zone, black on
 /// white whatever the theme. Returns the side length of the whole square in pixels.
-pub fn draw(c: &mut Canvas<Window>, qr: &Qr, x: i32, y: i32, scale: i32) -> i32 {
+pub fn draw(c: &mut Canvas, qr: &Qr, x: i32, y: i32, scale: i32) -> i32 {
     let total = (qr.size as i32 + 8) * scale;
     c.set_draw_color(Color::RGB(255, 255, 255));
     let _ = c.fill_rect(Rect::new(x, y, total as u32, total as u32));

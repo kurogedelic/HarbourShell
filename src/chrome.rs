@@ -2,9 +2,8 @@
 //! command bar, sliders and the on-screen toast. Everything is drawn at native
 //! 320x170 pixels with the amber theme; nothing is scaled.
 
-use sdl2::rect::Rect;
-use sdl2::render::Canvas;
-use sdl2::video::Window;
+use crate::gfx::Rect;
+use crate::gfx::Canvas;
 
 use crate::assets::AssetStore;
 use crate::font::FontSystem;
@@ -62,7 +61,7 @@ pub fn app_rect() -> Rect {
 }
 
 /// 1px dotted outline (every other pixel), as in the zoom rectangles.
-fn dotted_rect(c: &mut Canvas<Window>, r: Rect) {
+fn dotted_rect(c: &mut Canvas, r: Rect) {
     let (x0, y0) = (r.x(), r.y());
     let (x1, y1) = (r.x() + r.width() as i32 - 1, r.y() + r.height() as i32 - 1);
     for x in x0..=x1 {
@@ -81,7 +80,7 @@ fn dotted_rect(c: &mut Canvas<Window>, r: Rect) {
 
 /// "Zoom rects": a few dotted outlines chase each other from `from`
 /// to `to` as `t` goes 0 -> 1 (opening a window: icon -> window; closing: reversed).
-pub fn draw_zoom(c: &mut Canvas<Window>, tm: &ThemeManager, from: Rect, to: Rect, t: f32) {
+pub fn draw_zoom(c: &mut Canvas, tm: &ThemeManager, from: Rect, to: Rect, t: f32) {
     c.set_draw_color(tm.get_color("foreground"));
     let lerp = |a: i32, b: i32, k: f32| (a as f32 + (b - a) as f32 * k).round() as i32;
     for i in 0..4 {
@@ -99,7 +98,7 @@ pub fn draw_zoom(c: &mut Canvas<Window>, tm: &ThemeManager, from: Rect, to: Rect
 }
 
 /// Desktop: orange with faint scanlines (every other row a touch darker).
-pub fn draw_desktop(c: &mut Canvas<Window>, tm: &ThemeManager) {
+pub fn draw_desktop(c: &mut Canvas, tm: &ThemeManager) {
     let a = tm.get_color("background");
     let b = tm.get_color("shadow");
     // fill_rect, not clear(): clear() ignores the viewport and would wipe the other windows on a desk.
@@ -115,11 +114,11 @@ pub fn draw_desktop(c: &mut Canvas<Window>, tm: &ThemeManager) {
 
 /// Round the two top corners of the screen like a CRT / compact Mac (the bottom ones stay square,
 /// so the framed screens can run down to y 168). Call last.
-pub fn draw_corners(c: &mut Canvas<Window>, tm: &ThemeManager) {
+pub fn draw_corners(c: &mut Canvas, tm: &ThemeManager) {
     const R: [i32; 6] = crate::grid::CORNER_MASK; // pixels masked per row, from the corner
     // Always pure black, whatever the theme or Invert: the corners are the bezel, not part of the picture.
     let _ = tm;
-    c.set_draw_color(sdl2::pixels::Color::RGB(0, 0, 0));
+    c.set_draw_color(crate::gfx::Color::RGB(0, 0, 0));
     let w = screen_w() as i32;
     for (row, n) in R.iter().enumerate() {
         let row = row as i32;
@@ -174,7 +173,7 @@ pub fn fit_display_text(fs: &FontSystem, text: &str, max_w: i32) -> String {
 }
 
 /// Classic-Mac titled window: single outer border, striped title bar.
-pub fn draw_app_window(c: &mut Canvas<Window>, fs: &FontSystem, tm: &ThemeManager, rect: &Rect, title: &str) {
+pub fn draw_app_window(c: &mut Canvas, fs: &FontSystem, tm: &ThemeManager, rect: &Rect, title: &str) {
     let ink = tm.get_color("foreground");
     let stripe = tm.get_color("muted");
     let paper = tm.get_color("widget_face_active");
@@ -219,7 +218,7 @@ pub fn draw_app_window(c: &mut Canvas<Window>, fs: &FontSystem, tm: &ThemeManage
 
 /// Transient message overlaid on the bottom of a window (nothing is drawn when
 /// `status` is empty). `_commands` is kept for call-site compatibility and unused.
-pub fn draw_command_bar(c: &mut Canvas<Window>, fs: &FontSystem, tm: &ThemeManager, inner: &Rect, status: &str, _commands: &str) {
+pub fn draw_command_bar(c: &mut Canvas, fs: &FontSystem, tm: &ThemeManager, inner: &Rect, status: &str, _commands: &str) {
     if status.trim().is_empty() || inner.height() < COMMANDBAR_H as u32 {
         return;
     }
@@ -241,7 +240,7 @@ pub use statusbar::Icon;
 /// Draws one frame of a status-bar icon from the atlas (`assets/images/statusbar/atlas_*.png`,
 /// built from private drafts (assets/statusbar-src, not published) by `tools/gen_statusbar.py`): the grey layer in
 /// `tint`, the dark layer in `fg`. Every icon is 12 x 12.
-pub fn status_icon(c: &mut Canvas<Window>, assets: &mut AssetStore, icon: Icon, frame: i32, x: i32, y: i32, fg: sdl2::pixels::Color, tint: sdl2::pixels::Color) {
+pub fn status_icon(c: &mut Canvas, assets: &mut AssetStore, icon: Icon, frame: i32, x: i32, y: i32, fg: crate::gfx::Color, tint: crate::gfx::Color) {
     let s = statusbar::SIZE;
     let frame = frame.clamp(0, icon.frames() - 1);
     let src = Rect::new(frame * s, icon as i32 * s, s as u32, s as u32);
@@ -251,7 +250,7 @@ pub fn status_icon(c: &mut Canvas<Window>, assets: &mut AssetStore, icon: Icon, 
 }
 
 /// Wi-Fi: frame 0 = radio off, then no signal / 1 / 2 / 3 bars from the signal strength (0..=100).
-pub fn draw_wifi(c: &mut Canvas<Window>, assets: &mut AssetStore, x: i32, y: i32, signal: Option<u8>, radio: bool, ink: sdl2::pixels::Color, dim: sdl2::pixels::Color) {
+pub fn draw_wifi(c: &mut Canvas, assets: &mut AssetStore, x: i32, y: i32, signal: Option<u8>, radio: bool, ink: crate::gfx::Color, dim: crate::gfx::Color) {
     use statusbar::wifi_frame as f;
     let frame = if !radio {
         f::DISABLED
@@ -265,7 +264,7 @@ pub fn draw_wifi(c: &mut Canvas<Window>, assets: &mut AssetStore, x: i32, y: i32
 }
 
 /// Battery: 0 / 1 / 2 / 3 (full) from the percentage, charging, or disabled (no gauge).
-pub fn draw_battery(c: &mut Canvas<Window>, assets: &mut AssetStore, x: i32, y: i32, percent: Option<u8>, charging: bool, ink: sdl2::pixels::Color, dim: sdl2::pixels::Color) {
+pub fn draw_battery(c: &mut Canvas, assets: &mut AssetStore, x: i32, y: i32, percent: Option<u8>, charging: bool, ink: crate::gfx::Color, dim: crate::gfx::Color) {
     use statusbar::battery_frame as f;
     let frame = if charging {
         f::CHARGE
@@ -280,7 +279,7 @@ pub fn draw_battery(c: &mut Canvas<Window>, assets: &mut AssetStore, x: i32, y: 
 
 /// 16 px menu strip: anchor, the current context title, and on the
 /// right Wi-Fi, battery and clock (real values, never invented).
-pub fn draw_menu_bar(c: &mut Canvas<Window>, assets: &mut AssetStore, fs: &FontSystem, tm: &ThemeManager, context: &str, st: &StatusView) {
+pub fn draw_menu_bar(c: &mut Canvas, assets: &mut AssetStore, fs: &FontSystem, tm: &ThemeManager, context: &str, st: &StatusView) {
     // "Black" and "White" use the theme palette's darkest and brightest colours (not pure black / white), so
     // the bar stays in the palette; the dim tone for inactive marks sits halfway between them.
     // The brightest and the darkest colour anywhere in the theme's palette.
@@ -288,14 +287,14 @@ pub fn draw_menu_bar(c: &mut Canvas<Window>, assets: &mut AssetStore, fs: &FontS
         "foreground", "background", "topbar_bg", "widget_face", "widget_face_active", "widget_highlight",
         "icon_white", "select_bg", "select_fg", "surface_alt", "home_bg", "widget_shadow",
     ];
-    let lum = |c: sdl2::pixels::Color| c.r as u32 * 3 + c.g as u32 * 6 + c.b as u32;
-    let pal: Vec<sdl2::pixels::Color> = KEYS.iter().map(|k| tm.get_color(k)).collect();
-    let light = pal.iter().copied().max_by_key(|c| lum(*c)).unwrap_or(sdl2::pixels::Color::RGB(255, 255, 255));
-    let dark = pal.iter().copied().min_by_key(|c| lum(*c)).unwrap_or(sdl2::pixels::Color::RGB(0, 0, 0));
-    struct T { light: sdl2::pixels::Color, dark: sdl2::pixels::Color }
+    let lum = |c: crate::gfx::Color| c.r as u32 * 3 + c.g as u32 * 6 + c.b as u32;
+    let pal: Vec<crate::gfx::Color> = KEYS.iter().map(|k| tm.get_color(k)).collect();
+    let light = pal.iter().copied().max_by_key(|c| lum(*c)).unwrap_or(crate::gfx::Color::RGB(255, 255, 255));
+    let dark = pal.iter().copied().min_by_key(|c| lum(*c)).unwrap_or(crate::gfx::Color::RGB(0, 0, 0));
+    struct T { light: crate::gfx::Color, dark: crate::gfx::Color }
     let t = T { light, dark };
-    let mid = |a: sdl2::pixels::Color, b: sdl2::pixels::Color| {
-        sdl2::pixels::Color::RGB(((a.r as u16 + b.r as u16) / 2) as u8, ((a.g as u16 + b.g as u16) / 2) as u8, ((a.b as u16 + b.b as u16) / 2) as u8)
+    let mid = |a: crate::gfx::Color, b: crate::gfx::Color| {
+        crate::gfx::Color::RGB(((a.r as u16 + b.r as u16) / 2) as u8, ((a.g as u16 + b.g as u16) / 2) as u8, ((a.b as u16 + b.b as u16) / 2) as u8)
     };
     let (ink, dim, paper) = match st.bar_style {
         1 => (t.light, mid(t.light, t.dark), t.dark),
@@ -419,7 +418,7 @@ pub fn status_hit(fs: &FontSystem, st: &StatusView, x: i32) -> Option<(StatusIte
 }
 
 /// Horizontal slider 0..=100 inside `r` (1px frame, filled portion).
-pub fn draw_slider(c: &mut Canvas<Window>, r: Rect, value: u32, fg: sdl2::pixels::Color, bg: sdl2::pixels::Color) {
+pub fn draw_slider(c: &mut Canvas, r: Rect, value: u32, fg: crate::gfx::Color, bg: crate::gfx::Color) {
     ui::fill_rect(c, r, bg);
     ui::draw_rect(c, r, fg);
     let inner_w = r.width().saturating_sub(4) as u32;
@@ -430,7 +429,7 @@ pub fn draw_slider(c: &mut Canvas<Window>, r: Rect, value: u32, fg: sdl2::pixels
 }
 
 /// Mouse pointer: an arrow with an ink fill and a paper outline (visible on any theme).
-pub fn draw_cursor(c: &mut Canvas<Window>, tm: &ThemeManager, x: i32, y: i32) {
+pub fn draw_cursor(c: &mut Canvas, tm: &ThemeManager, x: i32, y: i32) {
     for (row, line) in CURSOR_ART.iter().enumerate() {
         for (col, ch) in line.bytes().enumerate() {
             let color = match ch {
@@ -466,7 +465,7 @@ pub const CURSOR_ART: [&str; 16] = [
 ];
 
 /// Centered toast near the bottom, e.g. "Volume 45%".
-pub fn draw_toast(c: &mut Canvas<Window>, fs: &FontSystem, tm: &ThemeManager, text: &str, fraction: Option<u32>) {
+pub fn draw_toast(c: &mut Canvas, fs: &FontSystem, tm: &ThemeManager, text: &str, fraction: Option<u32>) {
     let ink = tm.get_color("foreground");
     // Long messages (e.g. a failed app start) must never overflow the screen.
     let text = &fit_text(fs, &crate::launcher::i18n::tr_s(text), screen_w() as i32 - 32);
@@ -486,7 +485,7 @@ pub fn draw_toast(c: &mut Canvas<Window>, fs: &FontSystem, tm: &ThemeManager, te
 
 /// "Hold Esc to quit": a small plate near the bottom with a dithered gauge that
 /// fills as the key is held. `fraction` is 0.0..=1.0.
-pub fn draw_hold_gauge(c: &mut Canvas<Window>, fs: &FontSystem, tm: &ThemeManager, label: &str, fraction: f32) {
+pub fn draw_hold_gauge(c: &mut Canvas, fs: &FontSystem, tm: &ThemeManager, label: &str, fraction: f32) {
     let ink = tm.get_color("foreground");
     let label = &crate::launcher::i18n::tr_s(label);
     let w = (fs.measure_text(label) + 24).max(132) as u32;
@@ -501,7 +500,7 @@ pub fn draw_hold_gauge(c: &mut Canvas<Window>, fs: &FontSystem, tm: &ThemeManage
 /// "Opening <app>": the launch screen shown while an external app starts. The bar is a
 /// A "barber pole" (diagonal stripes sliding along), since nobody knows
 /// how long the app will take; `tick` advances the stripes.
-pub fn draw_launching(c: &mut Canvas<Window>, fs: &FontSystem, tm: &ThemeManager, name: &str, tick: u32) {
+pub fn draw_launching(c: &mut Canvas, fs: &FontSystem, tm: &ThemeManager, name: &str, tick: u32) {
     draw_desktop(c, tm);
     let ink = tm.get_color("foreground");
     let w = (fs.measure_display_text(name).max(120) + 56).min(screen_w() as i32 - 24) as u32;

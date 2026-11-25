@@ -6,11 +6,10 @@
 //! keyboard would have produced, so the line editors, Text Editor, Terminal, Agent chat and Sheet
 //! need no changes.
 
-use sdl2::keyboard::{Keycode, Mod};
-use sdl2::pixels::Color;
-use sdl2::rect::Rect;
-use sdl2::render::Canvas;
-use sdl2::video::Window;
+use crate::keys::{Keycode, Mod};
+use crate::gfx::Color;
+use crate::gfx::Rect;
+use crate::gfx::Canvas;
 
 use crate::font::FontSystem;
 use crate::ime::{Ime, Key, KeyIn, Mode, View, CAND_PAGE};
@@ -305,7 +304,7 @@ impl ImeGlue {
 
     /// Draw the composition (an underlined line at the bottom of `area`) and, while converting, the
     /// candidate window above it. Nothing is drawn when there is no composition.
-    pub fn draw(&self, c: &mut Canvas<Window>, fs: &FontSystem, tm: &ThemeManager, area: Rect) {
+    pub fn draw(&self, c: &mut Canvas, fs: &FontSystem, tm: &ThemeManager, area: Rect) {
         let Some(view) = self.ime.view().filter(|_| self.enabled) else { return };
         let ink = tm.get_color("foreground");
         let paper = tm.get_color("background");

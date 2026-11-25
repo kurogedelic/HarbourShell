@@ -8,12 +8,9 @@
 
 use std::collections::HashMap;
 
-use sdl2::image::ImageRWops;
-use sdl2::pixels::{Color, PixelFormatEnum};
-use sdl2::rect::Point;
-use sdl2::render::Canvas;
-use sdl2::rwops::RWops;
-use sdl2::video::Window;
+use crate::gfx::Color;
+use crate::gfx::Point;
+use crate::gfx::Canvas;
 
 pub struct PlaydateFont {
     pub cell_w: i32,
@@ -72,17 +69,14 @@ impl PlaydateFont {
         let data_at = text.find("\ndata=").ok_or("no data=")? + 1;
         let data_end = text[data_at..].find('\n').map(|i| data_at + i).ok_or("data= is not terminated")?;
         let png = base64_decode(&text[data_at + 5..data_end])?;
-        let surf = RWops::from_bytes(&png)?.load()?.convert_format(PixelFormatEnum::RGBA32)?;
-        let (aw, ah, pitch) = (surf.width() as usize, surf.height() as usize, surf.pitch() as usize);
+        let (px, aw, ah) = crate::imgload::decode_rgba(&png)?;
         let mut lit = vec![false; aw * ah];
-        surf.with_lock(|px| {
-            for y in 0..ah {
-                for x in 0..aw {
-                    let p = &px[y * pitch + x * 4..y * pitch + x * 4 + 4];
-                    lit[y * aw + x] = p[3] > 127 && (p[0] as u32 + p[1] as u32 + p[2] as u32) / 3 < 128;
-                }
+        for y in 0..ah {
+            for x in 0..aw {
+                let p = &px[(y * aw + x) * 4..(y * aw + x) * 4 + 4];
+                lit[y * aw + x] = p[3] > 127 && (p[0] as u32 + p[1] as u32 + p[2] as u32) / 3 < 128;
             }
-        });
+        }
         let cols = aw / cell_w as usize;
         // Glyph lines follow the data line, in sheet order.
         let mut glyphs = HashMap::new();
@@ -173,7 +167,7 @@ impl PlaydateFont {
     }
 
     /// Draw one glyph centred in a fixed `pitch` (for terminals / monospace grids).
-    pub fn draw_char_centered(&self, c: &mut Canvas<Window>, x: i32, y: i32, ch: char, pitch: i32, color: Color) {
+    pub fn draw_char_centered(&self, c: &mut Canvas, x: i32, y: i32, ch: char, pitch: i32, color: Color) {
         let px = self.glyph_pixels(ch);
         if px.is_empty() {
             return;
@@ -205,13 +199,13 @@ impl PlaydateFont {
     }
 
     /// Like `draw`, but every pixel becomes a `scale` x `scale` block (big numerals).
-    pub fn draw_scaled(&self, c: &mut Canvas<Window>, x: i32, y: i32, text: &str, color: Color, scale: i32) {
-        let mut rects: Vec<sdl2::rect::Rect> = Vec::new();
+    pub fn draw_scaled(&self, c: &mut Canvas, x: i32, y: i32, text: &str, color: Color, scale: i32) {
+        let mut rects: Vec<crate::gfx::Rect> = Vec::new();
         let mut cx = x + self.lead_adjust(text) * scale;
         let chars: Vec<char> = text.chars().collect();
         for (i, &ch) in chars.iter().enumerate() {
             for (gx, gy) in self.glyph_pixels(ch) {
-                rects.push(sdl2::rect::Rect::new(cx + gx * scale, y + gy * scale, scale as u32, scale as u32));
+                rects.push(crate::gfx::Rect::new(cx + gx * scale, y + gy * scale, scale as u32, scale as u32));
             }
             cx += self.step(ch, chars.get(i + 1).copied()) * scale;
         }
@@ -219,7 +213,7 @@ impl PlaydateFont {
         let _ = c.fill_rects(&rects);
     }
 
-    pub fn draw(&self, c: &mut Canvas<Window>, x: i32, y: i32, text: &str, color: Color) {
+    pub fn draw(&self, c: &mut Canvas, x: i32, y: i32, text: &str, color: Color) {
         let mut pts: Vec<Point> = Vec::new();
         let mut cx = x + self.lead_adjust(text);
         let chars: Vec<char> = text.chars().collect();
@@ -239,7 +233,6 @@ mod tests {
     use super::*;
 
     fn load(name: &str) -> PlaydateFont {
-        sdl2::image::init(sdl2::image::InitFlag::PNG).unwrap();
         let path = format!("{}/assets/fonts/{name}", env!("CARGO_MANIFEST_DIR"));
         PlaydateFont::parse(&std::fs::read(path).unwrap()).unwrap()
     }

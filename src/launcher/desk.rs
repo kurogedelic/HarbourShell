@@ -14,7 +14,7 @@
 //! This module is the geometry and the pointer gestures only (placement, stacking, focus, moving
 //! and resizing); what each window shows (`T`) belongs to the host.
 
-use sdl2::rect::Rect;
+use crate::gfx::Rect;
 
 use crate::grid;
 

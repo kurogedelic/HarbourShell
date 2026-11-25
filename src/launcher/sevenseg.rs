@@ -1,10 +1,6 @@
 //! Seven-segment digits (a classic LCD / LED clock look), drawn with rectangles.
 
-use sdl2::pixels::{Color, PixelFormatEnum};
-use sdl2::rect::Rect;
-use sdl2::render::{Canvas, TextureCreator};
-use sdl2::surface::Surface;
-use sdl2::video::{Window, WindowContext};
+use crate::gfx::{Canvas, Color, Image, Rect};
 
 use crate::assets::AssetStore;
 
@@ -28,23 +24,16 @@ pub fn atlas_rgba(px: &[u8]) -> Vec<u8> {
         .collect()
 }
 
-pub fn insert_atlas<'r>(assets: &mut AssetStore<'r>, creator: &'r TextureCreator<WindowContext>, key: &str, path: &str) -> Result<(), String> {
+pub fn insert_atlas(assets: &mut AssetStore, key: &str, path: &str) -> Result<(), String> {
     let (px, w, h) = crate::launcher::icons::load_rgba(std::path::Path::new(path))?;
     let rgba = atlas_rgba(&px);
-    let mut surf = Surface::new(w as u32, h as u32, PixelFormatEnum::RGBA32)?;
-    let pitch = surf.pitch() as usize;
-    surf.with_lock_mut(|buf| {
-        for y in 0..h {
-            buf[y * pitch..y * pitch + w * 4].copy_from_slice(&rgba[y * w * 4..(y + 1) * w * 4]);
-        }
-    });
-    let tex = creator.create_texture_from_surface(&surf).map_err(|e| e.to_string())?;
-    assets.insert(key.to_string(), tex);
+    let img = Image::from_rgba(w as u32, h as u32, rgba).ok_or("atlas size mismatch")?;
+    assets.insert(key.to_string(), img);
     Ok(())
 }
 
 /// Draw one atlas digit (`cw` x `ch` cell) at (x, y).
-pub fn draw_atlas_digit(c: &mut Canvas<Window>, assets: &mut AssetStore, key: &str, cw: i32, ch: i32, digit: usize, x: i32, y: i32, color: Color) {
+pub fn draw_atlas_digit(c: &mut Canvas, assets: &mut AssetStore, key: &str, cw: i32, ch: i32, digit: usize, x: i32, y: i32, color: Color) {
     let src = Rect::new(atlas_cell(digit) as i32 * cw, 0, cw as u32, ch as u32);
     let _ = assets.blit_tinted_src(c, key, src, Rect::new(x, y, cw as u32, ch as u32), color);
 }
@@ -80,7 +69,7 @@ pub fn shear(h: i32, row: i32) -> i32 {
 
 /// Fill `r` row by row, each row shifted by the slant of the digit box that
 /// starts at `top` and is `h` high.
-fn fill_slanted(c: &mut Canvas<Window>, r: Rect, top: i32, h: i32) {
+fn fill_slanted(c: &mut Canvas, r: Rect, top: i32, h: i32) {
     for row in r.y()..r.y() + r.height() as i32 {
         let _ = c.fill_rect(Rect::new(r.x() + shear(h, row - top), row, r.width(), 1));
     }
@@ -88,7 +77,7 @@ fn fill_slanted(c: &mut Canvas<Window>, r: Rect, top: i32, h: i32) {
 
 /// One italic digit in a `w` x `h` box with segments `t` pixels thick.
 /// The top of the digit leans `shear(h, 0)` pixels to the right of the box.
-pub fn draw_digit(c: &mut Canvas<Window>, x: i32, y: i32, w: i32, h: i32, t: i32, digit: usize, color: Color) {
+pub fn draw_digit(c: &mut Canvas, x: i32, y: i32, w: i32, h: i32, t: i32, digit: usize, color: Color) {
     c.set_draw_color(color);
     let mask = SEGMENTS[digit % 10];
     let mid = y + (h - t) / 2;
@@ -110,14 +99,14 @@ pub fn draw_digit(c: &mut Canvas<Window>, x: i32, y: i32, w: i32, h: i32, t: i32
 }
 
 /// Two upright (not slanted) dots, vertically placed for digits `h` high.
-pub fn draw_colon_upright(c: &mut Canvas<Window>, x: i32, y: i32, h: i32, t: i32, color: Color) {
+pub fn draw_colon_upright(c: &mut Canvas, x: i32, y: i32, h: i32, t: i32, color: Color) {
     c.set_draw_color(color);
     let _ = c.fill_rect(Rect::new(x, y + h / 3 - t / 2, t as u32, t as u32));
     let _ = c.fill_rect(Rect::new(x, y + 2 * h / 3 - t / 2, t as u32, t as u32));
 }
 
 /// Two italic dots, matching the slant of digits of height `h`.
-pub fn draw_colon(c: &mut Canvas<Window>, x: i32, y: i32, h: i32, t: i32, color: Color) {
+pub fn draw_colon(c: &mut Canvas, x: i32, y: i32, h: i32, t: i32, color: Color) {
     c.set_draw_color(color);
     for cy in [y + h / 3 - t / 2, y + 2 * h / 3 - t / 2] {
         fill_slanted(c, Rect::new(x, cy, t as u32, t as u32), y, h);

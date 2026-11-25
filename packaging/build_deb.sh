@@ -9,7 +9,7 @@ VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
 # A build that is not the tagged release gets a later Debian version (0.1.0+git202611200135.abc1234),
 # so apt / dpkg install it over the release or an older dev build instead of saying "already newest".
 # HARBOUR_RELEASE=1 forces the plain version.
-if [ "${HARBOUR_RELEASE:-0}" != 1 ] && ! git describe --exact-match --tags "v$VERSION" >/dev/null 2>&1; then
+if [ "${HARBOUR_RELEASE:-0}" != 1 ] && [ "$(git describe --exact-match --tags HEAD 2>/dev/null)" != "v$VERSION" ]; then
   VERSION="$VERSION+git$(date -u +%Y%m%d%H%M).$(git rev-parse --short HEAD 2>/dev/null || echo local)"
 fi
 # Apps that are not ready for a release: left out of a release package (they stay in the +git

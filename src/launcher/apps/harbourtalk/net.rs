@@ -125,6 +125,9 @@ impl Settings {
 
 /// 8 hex digits from the process's random hash keys and the clock (no random crate needed).
 pub fn new_device_id() -> String {
+    if crate::rt::frozen() {
+        return "0badc0de".into();
+    }
     use std::collections::hash_map::RandomState;
     use std::hash::{BuildHasher, Hasher};
     let mut h = RandomState::new().build_hasher();

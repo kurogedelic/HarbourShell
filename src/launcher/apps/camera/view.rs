@@ -1,16 +1,15 @@
 //! Camera: everything that is drawn (the preview, the side column and the alerts).
 
-use sdl2::pixels::Color;
-use sdl2::rect::{Point, Rect};
-use sdl2::render::Canvas;
-use sdl2::video::Window;
+use crate::gfx::Color;
+use crate::gfx::{Point, Rect};
+use crate::gfx::Canvas;
 
 use super::*;
 use crate::launcher::i18n;
 use crate::ui;
 
 impl Camera {
-    pub(super) fn paint(&mut self, c: &mut Canvas<Window>, assets: &mut AssetStore, ctx: &Ctx) {
+    pub(super) fn paint(&mut self, c: &mut Canvas, assets: &mut AssetStore, ctx: &Ctx) {
         use crate::launcher::sevenseg as seg;
         let (tm, fs) = (ctx.tm, ctx.fs);
         ui::fill_rect(c, Rect::new(0, grid::BAR_H, grid::SCREEN_W as u32, (grid::SCREEN_H - grid::BAR_H) as u32), tm.get_color("home_bg"));
@@ -63,7 +62,7 @@ impl Camera {
         ui::fill_rect(c, panel, face);
         ui::draw_rect(c, panel, land);
         let (x0, w) = (COL_X, COL_W as i32);
-        let text = |c: &mut Canvas<Window>, y: i32, t: &str, col: Color| fs.draw_text(c, x0, y, &chrome::fit_text(fs, t, w), col);
+        let text = |c: &mut Canvas, y: i32, t: &str, col: Color| fs.draw_text(c, x0, y, &chrome::fit_text(fs, t, w), col);
 
         // Row 1: the mode on an ink plate, a lamp with the frame rate (or "Saved") on the right.
         let mode = self.prefs.mode.name().to_uppercase();
@@ -132,17 +131,17 @@ impl Camera {
     }
 
 
-    fn draw_card(&self, c: &mut Canvas<Window>, ctx: &Ctx) {
+    fn draw_card(&self, c: &mut Canvas, ctx: &Ctx) {
         self.alert().draw(c, ctx.fs, ctx.tm);
     }
 }
 
-fn text_at(c: &mut Canvas<Window>, fs: &crate::font::FontSystem, x: i32, y: i32, t: &str, col: Color, right: i32) {
+fn text_at(c: &mut Canvas, fs: &crate::font::FontSystem, x: i32, y: i32, t: &str, col: Color, right: i32) {
     fs.draw_text(c, x, y, &chrome::fit_text(fs, t, (right - x).max(0)), col);
 }
 
 /// A round lamp: an outline, filled when lit.
-fn lamp(c: &mut Canvas<Window>, cx: i32, cy: i32, lit: bool, on: Color, off: Color) {
+fn lamp(c: &mut Canvas, cx: i32, cy: i32, lit: bool, on: Color, off: Color) {
     ui::fill_rect(c, Rect::new(cx - 5, cy - 5, 11, 11), off);
     ui::draw_circle(c, (cx, cy), 5, on);
     if lit {

@@ -2,10 +2,6 @@
 //! white-on-transparent texture with lightly dithered land (25%, no outline), plus
 //! the projection helpers the World Clock uses (equirectangular, wrapping).
 
-use sdl2::pixels::PixelFormatEnum;
-use sdl2::render::TextureCreator;
-use sdl2::surface::Surface;
-use sdl2::video::WindowContext;
 
 use crate::assets::AssetStore;
 
@@ -125,17 +121,9 @@ pub fn dither_rgba() -> Vec<u8> {
     px
 }
 
-pub fn insert_map<'r>(assets: &mut AssetStore<'r>, creator: &'r TextureCreator<WindowContext>) -> Result<(), String> {
-    let rgba = dither_rgba();
-    let mut surf = Surface::new(W as u32, H as u32, PixelFormatEnum::RGBA32)?;
-    let pitch = surf.pitch() as usize;
-    surf.with_lock_mut(|buf| {
-        for y in 0..H {
-            buf[y * pitch..y * pitch + W * 4].copy_from_slice(&rgba[y * W * 4..(y + 1) * W * 4]);
-        }
-    });
-    let tex = creator.create_texture_from_surface(&surf).map_err(|e| e.to_string())?;
-    assets.insert(TEXTURE_KEY.to_string(), tex);
+pub fn insert_map(assets: &mut AssetStore) -> Result<(), String> {
+    let img = crate::gfx::Image::from_rgba(W as u32, H as u32, dither_rgba()).ok_or("map size mismatch")?;
+    assets.insert(TEXTURE_KEY.to_string(), img);
     Ok(())
 }
 

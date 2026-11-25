@@ -1,10 +1,9 @@
 //! A one-line text field with a caret (columns count characters, never bytes), shared by the
 //! Sheet cell editor and the Browser address bar / form fields.
 
-use sdl2::keyboard::{Keycode, Mod};
-use sdl2::rect::Rect;
-use sdl2::render::Canvas;
-use sdl2::video::Window;
+use crate::keys::{Keycode, Mod};
+use crate::gfx::Rect;
+use crate::gfx::Canvas;
 
 use crate::font::FontSystem;
 use crate::theme::ThemeManager;
@@ -84,7 +83,7 @@ impl LineEdit {
     }
 
     /// The caret as a 1 px bar in the field's row, with the capitals' height.
-    pub fn draw_caret(&self, c: &mut Canvas<Window>, fs: &FontSystem, tm: &ThemeManager, x: i32, row: Rect) {
+    pub fn draw_caret(&self, c: &mut Canvas, fs: &FontSystem, tm: &ThemeManager, x: i32, row: Rect) {
         let y = crate::launcher::widgets::text_origin(row.y(), row.height() as i32) + crate::launcher::widgets::CAP_TOP - 1;
         ui::fill_rect(c, Rect::new(x + self.caret_x(fs), y, 1, 11), tm.get_color("foreground"));
     }

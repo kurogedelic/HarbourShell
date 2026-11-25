@@ -4,9 +4,8 @@
 
 use std::sync::Mutex;
 
-use sdl2::keyboard::{Keycode, Mod};
-use sdl2::render::Canvas;
-use sdl2::video::Window;
+use crate::keys::{Keycode, Mod};
+use crate::gfx::Canvas;
 
 use crate::assets::AssetStore;
 use crate::launcher::app::{AppAction, Ctx, LauncherApp, Sizing};
@@ -99,7 +98,7 @@ impl LauncherApp for FolderWindow {
         format!("The folder {} with {} apps", self.name, self.home.items.len())
     }
 
-    fn draw(&mut self, c: &mut Canvas<Window>, assets: &mut AssetStore, ctx: &Ctx) {
+    fn draw(&mut self, c: &mut Canvas, assets: &mut AssetStore, ctx: &Ctx) {
         self.home.draw(c, assets, ctx.fs, ctx.tm);
     }
 }

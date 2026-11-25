@@ -17,6 +17,8 @@ struct State {
     grove: bool,
     ext: bool,
     bt_connected: Vec<String>,
+    /// (Wi-Fi, Bluetooth) before airplane mode was switched on.
+    prev_radios: Option<(bool, bool)>,
 }
 
 pub struct MockBackend {
@@ -39,6 +41,7 @@ impl MockBackend {
                 grove: false,
                 ext: false,
                 bt_connected: vec![],
+                prev_radios: None,
             }),
             delay: Duration::from_millis(400),
             start: Instant::now(),
@@ -76,14 +79,39 @@ impl Backend for MockBackend {
             ssid: if s.wifi_on { s.ssid.clone() } else { None },
             ip: (s.wifi_on && s.ssid.is_some()).then(|| "192.168.3.94".to_string()),
             signal: (s.wifi_on && s.ssid.is_some()).then_some(72),
+            dns: if s.wifi_on && s.ssid.is_some() { vec!["192.168.3.1".to_string()] } else { vec![] },
+            gateway: (s.wifi_on && s.ssid.is_some()).then(|| "192.168.3.1".to_string()),
         }
     }
     fn wifi_set_radio(&self, on: bool) -> R<()> {
         self.s.lock().unwrap().wifi_on = on;
         Ok(())
     }
+    fn airplane(&self) -> bool {
+        let s = self.s.lock().unwrap();
+        !s.wifi_on && !s.bt_on
+    }
+    fn set_airplane(&self, on: bool) -> R<()> {
+        let mut s = self.s.lock().unwrap();
+        if on {
+            if s.wifi_on || s.bt_on {
+                s.prev_radios = Some((s.wifi_on, s.bt_on));
+            }
+            s.wifi_on = false;
+            s.bt_on = false;
+        } else {
+            let (w, b) = s.prev_radios.take().unwrap_or((true, true));
+            s.wifi_on = w;
+            s.bt_on = b;
+        }
+        Ok(())
+    }
     fn wifi_scan(&self) -> R<Vec<Ap>> {
         std::thread::sleep(self.delay);
+        // HARBOUR_MOCK_NO_WIFI=1: a scan that finds nothing (to see the empty page).
+        if std::env::var_os("HARBOUR_MOCK_NO_WIFI").is_some() {
+            return Ok(Vec::new());
+        }
         let cur = self.s.lock().unwrap().ssid.clone();
         let mk = |n: &str, sig, sec, saved| Ap {
             ssid: n.into(),
@@ -150,7 +178,7 @@ impl Backend for MockBackend {
         Ok(())
     }
     fn clock_text(&self) -> String {
-        chrono::Local::now().format("%Y-%m-%d %H:%M").to_string()
+        crate::rt::now().format("%Y-%m-%d %H:%M").to_string()
     }
     fn timezone(&self) -> String {
         "Asia/Tokyo".into()
@@ -177,7 +205,8 @@ impl Backend for MockBackend {
     fn telemetry(&self) -> Telemetry {
         // Everything is a smooth function of the time since start, so counters grow like the
         // real ones and the monitor's deltas give plausible, moving rates.
-        let t = self.start.elapsed().as_secs_f64() + 40.0;
+        // (Frozen runs stand at one point of the curves, so every sample is the same.)
+        let t = if crate::rt::frozen() { 40.0 } else { self.start.elapsed().as_secs_f64() + 40.0 };
         let cores = 4;
         let hz = 10_000.0; // a fast fake jiffy clock, so even back-to-back snapshots differ
         let mut cpu = vec![CpuTimes::default()];

@@ -22,10 +22,9 @@ use std::process::{Command, Stdio};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::time::{Duration, Instant};
 
-use sdl2::keyboard::Keycode;
-use sdl2::rect::Rect;
-use sdl2::render::Canvas;
-use sdl2::video::Window;
+use crate::keys::Keycode;
+use crate::gfx::Rect;
+use crate::gfx::Canvas;
 
 use crate::chrome;
 use crate::font::FontSystem;
@@ -257,7 +256,7 @@ impl Installer {
         dirty
     }
 
-    pub fn draw(&self, c: &mut Canvas<Window>, fs: &FontSystem, tm: &ThemeManager) {
+    pub fn draw(&self, c: &mut Canvas, fs: &FontSystem, tm: &ThemeManager) {
         let ink = tm.get_color("foreground");
         let faint = crate::launcher::widgets::secondary_ink(tm);
         crate::dither::fill(c, Rect::new(0, grid::BAR_H, grid::sw() as u32, (grid::sh() - grid::BAR_H) as u32), tm.get_color("widget_shadow"), crate::dither::Pattern::Eighth);
@@ -265,8 +264,8 @@ impl Installer {
         widgets::draw_panel(c, tm, r);
         let tx = r.x() + 14;
         let w = r.width() as i32 - 28;
-        let title = |c: &mut Canvas<Window>, s: &str| fs.draw_display_text(c, tx, r.y() + 8, &chrome::fit_display_text(fs, s, w), ink);
-        let line = |c: &mut Canvas<Window>, i: i32, s: &str, col| fs.draw_text(c, tx, r.y() + 26 + i * 14, &chrome::fit_text(fs, s, w), col);
+        let title = |c: &mut Canvas, s: &str| fs.draw_display_text(c, tx, r.y() + 8, &chrome::fit_display_text(fs, s, w), ink);
+        let line = |c: &mut Canvas, i: i32, s: &str, col| fs.draw_text(c, tx, r.y() + 26 + i * 14, &chrome::fit_text(fs, s, w), col);
         match &self.stage {
             Stage::Ask => {
                 let q = if self.req.removes() { format!("Uninstall {}?", self.req.what()) } else { format!("Install {}?", self.req.what()) };

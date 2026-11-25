@@ -5,7 +5,7 @@
 //! media keys (volume, brightness) as real key codes, so no extra decoding is
 //! needed here.
 
-use sdl2::keyboard::{Keycode, Mod};
+use crate::keys::{Keycode, Mod};
 
 /// Hardware keys the launcher handles globally.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -11,6 +11,7 @@ pub mod calendar;
 pub mod devices;
 pub mod devtree;
 pub mod files;
+pub mod graph;
 pub mod harbourtalk;
 pub mod imageviewer;
 pub mod infoscope;
@@ -43,6 +44,7 @@ pub const REGISTRY: &[AppDef] = &[
     AppDef { id: "sheet", name: "Sheet", make: sheet::make },
     AppDef { id: "browser", name: "Browser", make: browser::make },
     AppDef { id: "calendar", name: "Calendar", make: calendar::make },
+    AppDef { id: "graph", name: "Graph", make: graph::make },
     AppDef { id: "interceptor", name: "Interceptor", make: interceptor::make },
     AppDef { id: "infoscope", name: "Infoscope", make: infoscope::make },
     AppDef { id: "yacht", name: "Yacht", make: yacht::make },

@@ -8,11 +8,6 @@
 
 use std::path::Path;
 
-use sdl2::image::LoadSurface;
-use sdl2::pixels::PixelFormatEnum;
-use sdl2::render::TextureCreator;
-use sdl2::surface::Surface;
-use sdl2::video::WindowContext;
 
 use crate::assets::AssetStore;
 
@@ -39,16 +34,7 @@ pub fn known_icon_for(name: &str) -> Option<String> {
 
 /// Load any image file as tightly packed RGBA bytes.
 pub fn load_rgba(path: &Path) -> Result<(Vec<u8>, usize, usize), String> {
-    let surface = Surface::from_file(path)?;
-    let surface = surface.convert_format(PixelFormatEnum::RGBA32)?;
-    let (w, h, pitch) = (surface.width() as usize, surface.height() as usize, surface.pitch() as usize);
-    let mut out = Vec::with_capacity(w * h * 4);
-    surface.with_lock(|px| {
-        for y in 0..h {
-            out.extend_from_slice(&px[y * pitch..y * pitch + w * 4]);
-        }
-    });
-    Ok((out, w, h))
+    crate::imgload::load_rgba(path)
 }
 
 /// Reduce an RGBA image to a 24x24 one-bit glyph.
@@ -252,22 +238,10 @@ pub fn gray_rgba(rgba: &[u8], w: usize, h: usize) -> Option<Vec<u8>> {
 
 /// Register `tile/<id>` as a plain texture and as black / grey / white layers (so the grey-scale picture is drawn
 /// in the theme's three tones; the generic box, a one-colour mask, comes out in the ink alone).
-pub fn insert_tile_rgba<'r>(
-    assets: &mut AssetStore<'r>,
-    creator: &'r TextureCreator<WindowContext>,
-    id: &str,
-    rgba: &[u8],
-) -> Result<(), String> {
-    let mut surf = Surface::new(TILE as u32, TILE as u32, PixelFormatEnum::RGBA32)?;
-    let pitch = surf.pitch() as usize;
-    surf.with_lock_mut(|buf| {
-        for y in 0..TILE {
-            buf[y * pitch..y * pitch + TILE * 4].copy_from_slice(&rgba[y * TILE * 4..(y + 1) * TILE * 4]);
-        }
-    });
-    let tex = creator.create_texture_from_surface(&surf).map_err(|e| e.to_string())?;
-    assets.insert(format!("tile/{id}"), tex);
-    assets.insert_icon_layers(creator, &format!("tile/{id}"), rgba, TILE, TILE)
+pub fn insert_tile_rgba(assets: &mut AssetStore, id: &str, rgba: &[u8]) -> Result<(), String> {
+    let img = crate::gfx::Image::from_rgba(TILE as u32, TILE as u32, rgba.to_vec()).ok_or("tile size mismatch")?;
+    assets.insert(format!("tile/{id}"), img);
+    assets.insert_icon_layers(&format!("tile/{id}"), rgba, TILE, TILE)
 }
 
 /// The icon tile for an app that Harbour has no hand-made icon for: its own picture in grey, or the

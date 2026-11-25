@@ -5,7 +5,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use sdl2::keyboard::{Keycode, Mod};
+use crate::keys::{Keycode, Mod};
 use serde_json::{json, Value};
 
 use super::settings;

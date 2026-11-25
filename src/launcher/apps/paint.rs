@@ -17,13 +17,11 @@
 
 use std::path::{Path, PathBuf};
 
-use sdl2::image::{InitFlag, LoadSurface, Sdl2ImageContext};
-use sdl2::keyboard::{Keycode, Mod};
-use sdl2::pixels::{Color, PixelFormatEnum};
-use sdl2::rect::Rect;
-use sdl2::render::Canvas;
-use sdl2::surface::Surface;
-use sdl2::video::Window;
+use crate::keys::{Keycode, Mod};
+use crate::gfx::Color;
+use crate::gfx::PixelFormat;
+use crate::gfx::Rect;
+use crate::gfx::Canvas;
 
 use crate::assets::AssetStore;
 use crate::launcher::alert::{Alert, AlertIcon};
@@ -184,7 +182,6 @@ struct TextEdit {
 }
 
 pub struct Paint {
-    _img: Option<Sdl2ImageContext>,
     dir: PathBuf,
     bm: Bitmap,
     hist: History,
@@ -231,9 +228,7 @@ pub fn make() -> Box<dyn LauncherApp> {
 
 impl Paint {
     pub fn new(dir: PathBuf) -> Self {
-        let img = sdl2::image::init(InitFlag::PNG | InitFlag::JPG).or_else(|_| sdl2::image::init(InitFlag::PNG)).ok();
         Paint {
-            _img: img,
             dir,
             bm: Bitmap::new(SHEET_W, SHEET_H),
             hist: History::new(20),
@@ -697,17 +692,10 @@ impl Paint {
     }
 
     pub fn open_path(&mut self, path: &Path) -> Result<(), String> {
-        let surf = Surface::from_file(path)?.convert_format(PixelFormatEnum::RGB24)?;
-        let (w, h, pitch) = (surf.width() as usize, surf.height() as usize, surf.pitch() as usize);
+        let (rgb, w, h) = crate::imgload::load_rgb24(path)?;
         if w > 1024 || h > 1024 {
             return Err(format!("{w} x {h} is larger than the 1024 x 1024 limit"));
         }
-        let mut rgb = Vec::with_capacity(w * h * 3);
-        surf.with_lock(|px| {
-            for y in 0..h {
-                rgb.extend_from_slice(&px[y * pitch..y * pitch + w * 3]);
-            }
-        });
         self.settle();
         self.bm = Bitmap::from_rgb_luma(&rgb, w, h);
         self.hist = History::new(20);
@@ -1273,7 +1261,7 @@ impl LauncherApp for Paint {
         self.toast.take().is_some()
     }
 
-    fn draw(&mut self, c: &mut Canvas<Window>, assets: &mut AssetStore, ctx: &Ctx) {
+    fn draw(&mut self, c: &mut Canvas, assets: &mut AssetStore, ctx: &Ctx) {
         let (tm, fs) = (ctx.tm, ctx.fs);
         let ink = tm.get_color("foreground");
         let paper = tm.get_color("home_bg");
@@ -1292,7 +1280,7 @@ impl LauncherApp for Paint {
                 c.set_draw_color(Color::RGB(0, 0, 0));
                 let _ = c.fill_rect(r);
                 fs.draw_text(c, 0, grid::BAR_H, &t.buf, Color::RGB(255, 255, 255));
-                if let Ok(px) = c.read_pixels(r, PixelFormatEnum::RGB24) {
+                if let Ok(px) = c.read_pixels(r, PixelFormat::Rgb24) {
                     for yy in 0..16usize {
                         for xx in 0..w as usize {
                             if px[(yy * w as usize + xx) * 3] > 127 {
@@ -1368,7 +1356,7 @@ impl Paint {
         self.bm.get(x, y)
     }
 
-    fn draw_sheet(&self, c: &mut Canvas<Window>, ink: Color, paper: Color, grid_col: Color) {
+    fn draw_sheet(&self, c: &mut Canvas, ink: Color, paper: Color, grid_col: Color) {
         let z = self.zoom;
         let (cols, rows) = ((vw() / z + 1).min(self.bm.w as i32 - self.sx), (vh() / z + 1).min(self.bm.h as i32 - self.sy));
         c.set_draw_color(paper);
@@ -1409,7 +1397,7 @@ impl Paint {
         (VX + (x - self.sx) * self.zoom, VY + (y - self.sy) * self.zoom)
     }
 
-    fn draw_overlays(&self, c: &mut Canvas<Window>, ink: Color, paper: Color) {
+    fn draw_overlays(&self, c: &mut Canvas, ink: Color, paper: Color) {
         let z = self.zoom;
         if let Some(s) = &self.sel {
             let (x0, y0) = self.to_screen(s.r.0, s.r.1);
@@ -1448,7 +1436,7 @@ impl Paint {
         }
     }
 
-    fn draw_strip(&self, c: &mut Canvas<Window>, ctx: &Ctx, assets: &mut AssetStore, ink: Color, paper: Color) {
+    fn draw_strip(&self, c: &mut Canvas, ctx: &Ctx, assets: &mut AssetStore, ink: Color, paper: Color) {
         let sel = widgets::selection(ctx.tm);
         for (i, t) in TOOLS.iter().enumerate() {
             let r = tool_cell(i);
@@ -1506,12 +1494,12 @@ impl Paint {
     }
 
     /// A 12 x 12 glyph for a tool, built from rectangles and lines.
-    fn draw_glyph(&self, c: &mut Canvas<Window>, ctx: &Ctx, t: Tool, x: i32, y: i32, col: Color) {
+    fn draw_glyph(&self, c: &mut Canvas, ctx: &Ctx, t: Tool, x: i32, y: i32, col: Color) {
         c.set_draw_color(col);
-        let line = |c: &mut Canvas<Window>, a: (i32, i32), b: (i32, i32)| {
+        let line = |c: &mut Canvas, a: (i32, i32), b: (i32, i32)| {
             let _ = c.draw_line((x + a.0, y + a.1), (x + b.0, y + b.1));
         };
-        let rect = |c: &mut Canvas<Window>, a: i32, b: i32, w: u32, h: u32, fill: bool| {
+        let rect = |c: &mut Canvas, a: i32, b: i32, w: u32, h: u32, fill: bool| {
             let r = Rect::new(x + a, y + b, w, h);
             let _ = if fill { c.fill_rect(r) } else { c.draw_rect(r) };
         };
@@ -1581,7 +1569,7 @@ impl Paint {
         }
     }
 
-    fn draw_popup(&self, c: &mut Canvas<Window>, ctx: &Ctx, ink: Color, paper: Color) {
+    fn draw_popup(&self, c: &mut Canvas, ctx: &Ctx, ink: Color, paper: Color) {
         let r = popup_rect();
         draw_panel(c, ctx.tm, r);
         let cur = self.popup.unwrap_or(0);

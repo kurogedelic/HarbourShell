@@ -16,10 +16,9 @@
 
 use std::time::{Duration, Instant};
 
-use sdl2::keyboard::{Keycode, Mod};
-use sdl2::rect::Rect;
-use sdl2::render::Canvas;
-use sdl2::video::Window;
+use crate::keys::{Keycode, Mod};
+use crate::gfx::Rect;
+use crate::gfx::Canvas;
 
 use crate::font::FontSystem;
 use crate::grid;
@@ -348,7 +347,7 @@ impl Osk {
         PAGES[self.page][row].chars().nth(col).map(String::from).unwrap_or_default()
     }
 
-    pub fn draw(&self, c: &mut Canvas<Window>, fs: &FontSystem, tm: &ThemeManager) {
+    pub fn draw(&self, c: &mut Canvas, fs: &FontSystem, tm: &ThemeManager) {
         let ink = tm.get_color("foreground");
         let r = Self::rect();
         widgets::draw_panel(c, tm, r);

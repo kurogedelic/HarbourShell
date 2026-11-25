@@ -3,10 +3,9 @@
 //! Patterns are defined on absolute screen coordinates, so two dithered areas
 //! that touch line up without a seam.
 
-use sdl2::pixels::Color;
-use sdl2::rect::{Point, Rect};
-use sdl2::render::Canvas;
-use sdl2::video::Window;
+use crate::gfx::Color;
+use crate::gfx::{Point, Rect};
+use crate::gfx::Canvas;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Pattern {
@@ -50,7 +49,7 @@ impl Pattern {
 }
 
 /// Fill `r` with `color` wherever the pattern is lit (the rest is left as it was).
-pub fn fill(c: &mut Canvas<Window>, r: Rect, color: Color, pattern: Pattern) {
+pub fn fill(c: &mut Canvas, r: Rect, color: Color, pattern: Pattern) {
     let mut pts: Vec<Point> = Vec::with_capacity((r.width() * r.height() / 2) as usize + 1);
     for y in r.y()..r.y() + r.height() as i32 {
         for x in r.x()..r.x() + r.width() as i32 {
@@ -64,7 +63,7 @@ pub fn fill(c: &mut Canvas<Window>, r: Rect, color: Color, pattern: Pattern) {
 }
 
 /// Solid `base` with a `color` dither on top: a "gray" between two tones.
-pub fn fill_two_tone(c: &mut Canvas<Window>, r: Rect, base: Color, color: Color, pattern: Pattern) {
+pub fn fill_two_tone(c: &mut Canvas, r: Rect, base: Color, color: Color, pattern: Pattern) {
     c.set_draw_color(base);
     let _ = c.fill_rect(r);
     fill(c, r, color, pattern);
@@ -72,7 +71,7 @@ pub fn fill_two_tone(c: &mut Canvas<Window>, r: Rect, base: Color, color: Color,
 
 /// Grey out something already drawn in `r`: knock out half of its pixels with
 /// the surface colour (the classic "disabled" look).
-pub fn gray_out(c: &mut Canvas<Window>, r: Rect, surface: Color) {
+pub fn gray_out(c: &mut Canvas, r: Rect, surface: Color) {
     fill(c, r, surface, Pattern::Half);
 }
 

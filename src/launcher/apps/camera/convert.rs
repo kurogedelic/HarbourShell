@@ -2,8 +2,6 @@
 //! grey for the preview and to RGB for the saved photo, MJPEG decoding. No hardware here,
 //! so everything is testable.
 
-use sdl2::image::ImageRWops;
-use sdl2::pixels::PixelFormatEnum;
 
 /// A frame as the device delivered it.
 pub enum Raw {
@@ -78,14 +76,7 @@ pub fn with_huffman_tables(jpeg: &[u8]) -> Option<std::borrow::Cow<'_, [u8]>> {
 /// Decode a JPEG to tightly packed RGB through SDL2_image (the caller has initialised JPG).
 pub fn decode_jpeg(jpeg: &[u8]) -> Result<(u32, u32, Vec<u8>), String> {
     let data = with_huffman_tables(jpeg).ok_or("not a JPEG frame")?;
-    let surf = sdl2::rwops::RWops::from_bytes(&data)?.load()?.convert_format(PixelFormatEnum::RGB24)?;
-    let (w, h, pitch) = (surf.width() as usize, surf.height() as usize, surf.pitch() as usize);
-    let mut out = Vec::with_capacity(w * h * 3);
-    surf.with_lock(|px| {
-        for y in 0..h {
-            out.extend_from_slice(&px[y * pitch..y * pitch + w * 3]);
-        }
-    });
+    let (out, w, h) = crate::imgload::decode_rgb24(&data)?;
     Ok((w as u32, h as u32, out))
 }
 
@@ -210,9 +201,7 @@ mod tests {
 
     const FIXTURE: &[u8] = include_bytes!("../../../../tests/fixtures/cam_32x24.jpg");
 
-    fn init_jpg() {
-        let _ = sdl2::image::init(sdl2::image::InitFlag::JPG).map(std::mem::forget);
-    }
+    fn init_jpg() {}
 
     #[test]
     fn yuyv_luma_maps_limited_range_to_full() {

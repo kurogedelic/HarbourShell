@@ -9,10 +9,9 @@
 //! horizontal runs per tone; colours are applied only when drawing, so a theme change
 //! needs no new decoding or quantising.
 
-use sdl2::pixels::Color;
-use sdl2::rect::Rect;
-use sdl2::render::Canvas;
-use sdl2::video::Window;
+use crate::gfx::Color;
+use crate::gfx::Rect;
+use crate::gfx::Canvas;
 
 use crate::launcher::apps::imageviewer::{luma, Picture};
 use crate::theme::ThemeManager;
@@ -118,7 +117,7 @@ pub fn build(p: &Picture, mode: Dither, ox: i32, oy: i32) -> ToneRuns {
     ToneRuns { bounds: Rect::new(ox, oy, p.w, p.h), runs }
 }
 
-pub fn draw(c: &mut Canvas<Window>, t: &ToneRuns, colors: &[Color; TONES]) {
+pub fn draw(c: &mut Canvas, t: &ToneRuns, colors: &[Color; TONES]) {
     c.set_draw_color(colors[0]);
     let _ = c.fill_rect(t.bounds);
     for i in 1..TONES {

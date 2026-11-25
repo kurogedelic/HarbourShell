@@ -9,10 +9,9 @@
 
 use std::path::{Path, PathBuf};
 
-use sdl2::keyboard::Keycode;
-use sdl2::rect::Rect;
-use sdl2::render::Canvas;
-use sdl2::video::Window;
+use crate::keys::Keycode;
+use crate::gfx::Rect;
+use crate::gfx::Canvas;
 
 use crate::chrome;
 use crate::dither::{self, Pattern};
@@ -26,12 +25,12 @@ use crate::theme::ThemeManager;
 use crate::ui;
 
 /// Dim everything behind a dialog with a light dither.
-fn dim_backdrop(c: &mut Canvas<Window>, tm: &ThemeManager) {
+fn dim_backdrop(c: &mut Canvas, tm: &ThemeManager) {
     let r = Rect::new(0, grid::BAR_H, grid::sw() as u32, (grid::sh() - grid::BAR_H) as u32);
     dither::fill(c, r, tm.get_color("widget_shadow"), Pattern::Eighth);
 }
 
-fn frame(c: &mut Canvas<Window>, tm: &ThemeManager, r: Rect) {
+fn frame(c: &mut Canvas, tm: &ThemeManager, r: Rect) {
     draw_panel(c, tm, r);
 }
 
@@ -44,7 +43,7 @@ fn alert_card(icon: AlertIcon, h: u32) -> Rect {
     Rect::new((grid::sw() as i32 - w as i32) / 2, grid::BAR_H + (grid::sh() - grid::BAR_H - h as i32) / 2, w, h)
 }
 
-fn card_icon(c: &mut Canvas<Window>, tm: &ThemeManager, r: Rect, icon: AlertIcon) -> i32 {
+fn card_icon(c: &mut Canvas, tm: &ThemeManager, r: Rect, icon: AlertIcon) -> i32 {
     if sysicon::draw(c, tm, icon, r.x() + 12, r.y() + 10) {
         r.x() + 12 + sysicon::SIZE + 10
     } else {
@@ -111,7 +110,7 @@ impl UnsavedCard {
         None
     }
 
-    pub fn draw(&self, c: &mut Canvas<Window>, fs: &FontSystem, tm: &ThemeManager) {
+    pub fn draw(&self, c: &mut Canvas, fs: &FontSystem, tm: &ThemeManager) {
         let ink = tm.get_color("foreground");
         dim_backdrop(c, tm);
         let r = Self::card_rect();
@@ -454,7 +453,7 @@ impl SavePanel {
         }
     }
 
-    pub fn draw(&self, c: &mut Canvas<Window>, fs: &FontSystem, tm: &ThemeManager) {
+    pub fn draw(&self, c: &mut Canvas, fs: &FontSystem, tm: &ThemeManager) {
         let ink = tm.get_color("foreground");
         let faint = crate::launcher::widgets::secondary_ink(tm);
         let sunken = tm.get_color("surface_sunken");
@@ -599,7 +598,7 @@ impl NamePrompt {
         }
     }
 
-    pub fn draw(&self, c: &mut Canvas<Window>, fs: &FontSystem, tm: &ThemeManager) {
+    pub fn draw(&self, c: &mut Canvas, fs: &FontSystem, tm: &ThemeManager) {
         let ink = tm.get_color("foreground");
         dim_backdrop(c, tm);
         let r = Self::card_rect();
@@ -678,7 +677,7 @@ impl ConfirmAlert {
         }
     }
 
-    pub fn draw(&self, c: &mut Canvas<Window>, fs: &FontSystem, tm: &ThemeManager) {
+    pub fn draw(&self, c: &mut Canvas, fs: &FontSystem, tm: &ThemeManager) {
         let ink = tm.get_color("foreground");
         dim_backdrop(c, tm);
         let r = self.card_rect();
@@ -799,7 +798,7 @@ impl ListPicker {
         None
     }
 
-    pub fn draw(&self, c: &mut Canvas<Window>, fs: &FontSystem, tm: &ThemeManager) {
+    pub fn draw(&self, c: &mut Canvas, fs: &FontSystem, tm: &ThemeManager) {
         let ink = tm.get_color("foreground");
         dim_backdrop(c, tm);
         let r = Self::card_rect();
@@ -950,7 +949,7 @@ impl<T> Dialog<T> {
         }
     }
 
-    pub fn draw(&self, c: &mut Canvas<Window>, fs: &FontSystem, tm: &ThemeManager) {
+    pub fn draw(&self, c: &mut Canvas, fs: &FontSystem, tm: &ThemeManager) {
         match &self.kind {
             DialogKind::Name(p) => p.draw(c, fs, tm),
             DialogKind::Confirm(a) => a.draw(c, fs, tm),

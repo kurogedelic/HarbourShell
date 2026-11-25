@@ -21,12 +21,12 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use sdl2::event::Event;
-use sdl2::keyboard::{Keycode, Mod};
-use sdl2::pixels::{Color, PixelFormatEnum};
-use sdl2::rect::Rect;
-use sdl2::render::Canvas;
-use sdl2::surface::Surface;
-use sdl2::video::Window;
+use harbour_shell::keys::{Keycode, Mod};
+use harbour_shell::gfx::Color;
+use sdl2::pixels::PixelFormatEnum;
+use harbour_shell::gfx::Rect;
+use harbour_shell::gfx::{Canvas, PixelFormat, Surface};
+use sdl2::surface::Surface as SdlSurface;
 
 use harbour_shell::assets::AssetStore;
 use harbour_shell::launcher::agent::{self, tools::HostReq, AgentApp};
@@ -251,15 +251,15 @@ fn main() -> Result<(), String> {
         .position_centered()
         .build()
         .map_err(|e| e.to_string())?;
-    let mut builder = window.into_canvas();
+    let mut host_builder = window.into_canvas();
     if headless {
-        builder = builder.software();
+        host_builder = host_builder.software();
     }
-    let mut canvas = builder.build().map_err(|e| e.to_string())?;
-    if scale > 1 {
-        canvas.set_scale(scale as f32, scale as f32)?;
-    }
-    let texture_creator = canvas.texture_creator();
+    let host_canvas = host_builder.build().map_err(|e| e.to_string())?;
+    let host_tc = host_canvas.texture_creator();
+    // Every screen is drawn by Harbour's own rasterizer into this canvas; the SDL window only shows it.
+    let mut canvas = Canvas::new(Surface::new(desk_size.0 as u32, desk_size.1 as u32));
+    let mut host = Host::new(host_canvas, &host_tc, desk_size.0 as u32, desk_size.1 as u32, !headless)?;
 
     // Fonts, theme, assets.
     let mut fs = FontSystem::new();
@@ -278,15 +278,15 @@ fn main() -> Result<(), String> {
     } else if let Err(e) = fs.load_jis_font("assets/fonts/mplus_j12r.bdf") {
         eprintln!("[font] JIS BDF load failed: {e}");
     }
-    let mut assets = AssetStore::new(&texture_creator)?;
+    let mut assets = AssetStore::new()?;
     // Built-in app packages: apps/<id>/<id>.desktop, icon.png and res/ (see launcher::packages).
     {
         let pkgs = packages::scan(Path::new(packages::APPS_ROOT));
-        packages::load_assets(&mut assets, &texture_creator, &pkgs);
+        packages::load_assets(&mut assets, &pkgs);
         eprintln!("[apps] {} built-in packages", pkgs.len());
         packages::install(pkgs);
     }
-    harbour_shell::launcher::worldmap::insert_map(&mut assets, &texture_creator)?;
+    harbour_shell::launcher::worldmap::insert_map(&mut assets)?;
     // ChiKareGo2 (Cavs as a fallback) for titles and the menu bar. The terminal uses the body face (Shinonome / M+).
     fs.display = harbour_shell::font::load_display_font();
     // Seven-segment digit atlases for the clock.
@@ -294,7 +294,7 @@ fn main() -> Result<(), String> {
         (harbour_shell::launcher::sevenseg::BIG_KEY, "assets/atlas/segments-table-14-20.png"),
         (harbour_shell::launcher::sevenseg::SMALL_KEY, "assets/atlas/segmentsSmall-table-9-15.png"),
     ] {
-        if let Err(e) = harbour_shell::launcher::sevenseg::insert_atlas(&mut assets, &texture_creator, key, path) {
+        if let Err(e) = harbour_shell::launcher::sevenseg::insert_atlas(&mut assets, key, path) {
             eprintln!("[atlas] {path}: {e}");
         }
     }
@@ -381,7 +381,7 @@ fn main() -> Result<(), String> {
     let mut home = Home::new(Vec::new());
     home.set_folders_path(order_path.parent().map(Path::to_path_buf).unwrap_or_default().join("folders.json"));
     home.set_recent_path(order_path.parent().map(Path::to_path_buf).unwrap_or_default().join("recent.txt"));
-    rebuild_home(&mut home, &apps, &mut assets, &texture_creator, &cfg);
+    rebuild_home(&mut home, &apps, &mut assets, &cfg);
     if cfg.lock().map(|c| c.get_int("harbour_view", 0)).unwrap_or(0) == 1 {
         home.toggle_view();
     }
@@ -391,9 +391,9 @@ fn main() -> Result<(), String> {
         let c = cfg.lock().unwrap();
         Calc::new(CalcSettings::from_ints(c.get_int("harbour_calc_rpn", 0), c.get_int("harbour_calc_rad", 0), c.get_int("harbour_calc_fmt", 0)))
     };
-    let mut world = WorldClock::new(chrono::Local::now());
+    let mut world = WorldClock::new(harbour_shell::rt::now());
     // The lock screen's own map (World Clock style), on the device's time zone.
-    let mut lock_world = WorldClock::new(chrono::Local::now());
+    let mut lock_world = WorldClock::new(harbour_shell::rt::now());
     let mut snake = SnakeState::new();
     // The note being edited: Documents/note.txt (or the old ~/.local/share/.../note.txt when only
     // that one exists) until "Save As" picks another file (remembered in `note_path.txt`).
@@ -540,9 +540,9 @@ fn main() -> Result<(), String> {
             match e {
                 Event::Quit { .. } => inputs.push(Input::Quit),
                 Event::KeyDown { keycode: Some(key), keymod, repeat, .. } => {
-                    inputs.push(Input::Key { key, mods: keymod, repeat })
+                    inputs.push(Input::Key { key: key.into(), mods: keymod.into(), repeat })
                 }
-                Event::KeyUp { keycode: Some(key), .. } => inputs.push(Input::KeyUp { key }),
+                Event::KeyUp { keycode: Some(key), .. } => inputs.push(Input::KeyUp { key: key.into() }),
                 Event::TextInput { text, .. } => inputs.push(Input::Text(text)),
                 Event::MouseMotion { x, y, .. } => {
                     let p = (x / scale as i32, y / scale as i32);
@@ -670,7 +670,7 @@ fn main() -> Result<(), String> {
                         Ok(t) => tm = ThemeManager::new(t),
                         Err(e) => eprintln!("script: theme: {e}"),
                     }
-                    rebuild_home(&mut home, &apps, &mut assets, &texture_creator, &cfg);
+                    rebuild_home(&mut home, &apps, &mut assets, &cfg);
                     dirty = true;
                 }
                 ScriptStep::Goto(name) => {
@@ -1017,7 +1017,7 @@ fn main() -> Result<(), String> {
                 }
                 if installed && inst.req.removes() {
                     apps = load_apps(&app_dir, &order_path);
-                    rebuild_home(&mut home, &apps, &mut assets, &texture_creator, &cfg);
+                    rebuild_home(&mut home, &apps, &mut assets, &cfg);
                     if let Screen::Settings(st) = &mut screen {
                         st.set_apps(app_refs(&apps));
                     }
@@ -1075,7 +1075,7 @@ fn main() -> Result<(), String> {
                         cursor.1 = (cursor.1 + dy).clamp(0, chrome::screen_h() as i32 - 1);
                         if agent_open && !locked && zoom.is_none() && app_menu.is_none() && home_modal.is_none() {
                             if let Some(ag) = agent.as_mut() {
-                                let ctx = Ctx { fs: &fs, tm: &tm, sys: sys.as_ref(), now: chrono::Local::now() };
+                                let ctx = Ctx { fs: &fs, tm: &tm, sys: sys.as_ref(), now: harbour_shell::rt::now() };
                                 let ev = if left_held { PointerEvent::Drag { x: cursor.0, y: cursor.1, dx, dy } }
                                     else { PointerEvent::Move { x: cursor.0, y: cursor.1 } };
                                 ag.pointer(ev, &ctx);
@@ -1095,7 +1095,7 @@ fn main() -> Result<(), String> {
                                 }
                             }
                             if let Screen::App(a) = &mut screen {
-                                let ctx = Ctx { fs: &fs, tm: &tm, sys: sys.as_ref(), now: chrono::Local::now() };
+                                let ctx = Ctx { fs: &fs, tm: &tm, sys: sys.as_ref(), now: harbour_shell::rt::now() };
                                 let ev = if left_held { PointerEvent::Drag { x: cursor.0, y: cursor.1, dx, dy } }
                                     else { PointerEvent::Move { x: cursor.0, y: cursor.1 } };
                                 let action = a.pointer(ev, &ctx);
@@ -1141,7 +1141,7 @@ fn main() -> Result<(), String> {
                         if button == 0 && app_menu.is_none() && !agent_open && cursor.1 < chrome::BAR_H {
                             let bar = desk.as_ref().map(|d| d.size).unwrap_or((harbour_shell::grid::sw(), harbour_shell::grid::sh()));
                             let mut st = status.lock().map(|s| s.clone()).unwrap_or_default();
-                            st.time = chrono::Local::now().format("%H:%M").to_string();
+                            st.time = harbour_shell::rt::now().format("%H:%M").to_string();
                             let text_screen = agent_open || (matches!(screen, Screen::Editor | Screen::Terminal(_) | Screen::Settings(_)) || matches!(&screen, Screen::App(a) if a.takes_text()));
                             st.ime = ime.indicator(text_screen).to_string();
                             let hit = harbour_shell::grid::with_surface(bar, || chrome::status_hit(&fs, &st, cursor.0));
@@ -1172,7 +1172,7 @@ fn main() -> Result<(), String> {
                         if agent_open && button == 0 {
                             left_held = true;
                             if let Some(ag) = agent.as_mut() {
-                                let ctx = Ctx { fs: &fs, tm: &tm, sys: sys.as_ref(), now: chrono::Local::now() };
+                                let ctx = Ctx { fs: &fs, tm: &tm, sys: sys.as_ref(), now: harbour_shell::rt::now() };
                                 ag.pointer(PointerEvent::Down { x: cursor.0, y: cursor.1, button: 0, clicks: 1 }, &ctx);
                             }
                             continue;
@@ -1219,7 +1219,7 @@ fn main() -> Result<(), String> {
                                     left_held = true;
                                     let clicks = if is_double_click(last_click, usize::MAX - 1, cursor.0, cursor.1) { 2 } else { 1 };
                                     last_click = if clicks == 2 { None } else { Some((usize::MAX - 1, now, cursor.0, cursor.1)) };
-                                    let ctx = harbour_shell::launcher::app::Ctx { fs: &fs, tm: &tm, sys: sys.as_ref(), now: chrono::Local::now() };
+                                    let ctx = harbour_shell::launcher::app::Ctx { fs: &fs, tm: &tm, sys: sys.as_ref(), now: harbour_shell::rt::now() };
                                     let action = a.pointer(PointerEvent::Down { x: cursor.0, y: cursor.1, button: 0, clicks }, &ctx);
                                     apply_app_action(action, &mut screen, &workdir, &shared, &mut toast);
                                 }
@@ -1249,7 +1249,7 @@ fn main() -> Result<(), String> {
                                         app_menu = Some(AppMenu::context(items, px, py));
                                     }
                                 } else if let Screen::App(a) = &mut screen {
-                                    let ctx = Ctx { fs: &fs, tm: &tm, sys: sys.as_ref(), now: chrono::Local::now() };
+                                    let ctx = Ctx { fs: &fs, tm: &tm, sys: sys.as_ref(), now: harbour_shell::rt::now() };
                                     app_menu = Some(match a.context_menu(px, py, &ctx).filter(|v| !v.is_empty()) {
                                         Some(items) => AppMenu::context(items, px, py),
                                         None => open_menu(&screen, &home, None),
@@ -1269,7 +1269,7 @@ fn main() -> Result<(), String> {
                             if button == 0 {
                                 left_held = false;
                                 if let Some(ag) = agent.as_mut() {
-                                    let ctx = Ctx { fs: &fs, tm: &tm, sys: sys.as_ref(), now: chrono::Local::now() };
+                                    let ctx = Ctx { fs: &fs, tm: &tm, sys: sys.as_ref(), now: harbour_shell::rt::now() };
                                     ag.pointer(PointerEvent::Up { x: cursor.0, y: cursor.1, button: 0 }, &ctx);
                                 }
                             }
@@ -1286,7 +1286,7 @@ fn main() -> Result<(), String> {
                                 mouse_ev = Some(st.release(cursor.0, cursor.1));
                                 expanded.push(key(Keycode::F24));
                             } else if let Screen::App(a) = &mut screen {
-                                let ctx = Ctx { fs: &fs, tm: &tm, sys: sys.as_ref(), now: chrono::Local::now() };
+                                let ctx = Ctx { fs: &fs, tm: &tm, sys: sys.as_ref(), now: harbour_shell::rt::now() };
                                 let action = a.pointer(PointerEvent::Up { x: cursor.0, y: cursor.1, button: 0 }, &ctx);
                                 apply_app_action(action, &mut screen, &workdir, &shared, &mut toast);
                             }
@@ -1313,7 +1313,7 @@ fn main() -> Result<(), String> {
                             }
                         } else if agent_open && zoom.is_none() {
                             if let Some(ag) = agent.as_mut() {
-                                let ctx = Ctx { fs: &fs, tm: &tm, sys: sys.as_ref(), now: chrono::Local::now() };
+                                let ctx = Ctx { fs: &fs, tm: &tm, sys: sys.as_ref(), now: harbour_shell::rt::now() };
                                 ag.pointer(PointerEvent::Wheel { x: cursor.0, y: cursor.1, dy }, &ctx);
                             }
                         } else if let (Screen::Settings(st), true) = (&mut screen, zoom.is_none()) {
@@ -1321,7 +1321,7 @@ fn main() -> Result<(), String> {
                             expanded.push(key(Keycode::F24));
                         } else if zoom.is_none() && matches!(screen, Screen::App(_)) {
                             if let Screen::App(a) = &mut screen {
-                                let ctx = Ctx { fs: &fs, tm: &tm, sys: sys.as_ref(), now: chrono::Local::now() };
+                                let ctx = Ctx { fs: &fs, tm: &tm, sys: sys.as_ref(), now: harbour_shell::rt::now() };
                                 let action = a.pointer(PointerEvent::Wheel { x: cursor.0, y: cursor.1, dy }, &ctx);
                                 apply_app_action(action, &mut screen, &workdir, &shared, &mut toast);
                             }
@@ -1744,7 +1744,7 @@ fn main() -> Result<(), String> {
                                 if id == harbour_shell::launcher::widgets::QUIT_ID {
                                     agent_open = false;
                                 } else if let Some(ag) = agent.as_mut() {
-                                    let ctx = Ctx { fs: &fs, tm: &tm, sys: sys.as_ref(), now: chrono::Local::now() };
+                                    let ctx = Ctx { fs: &fs, tm: &tm, sys: sys.as_ref(), now: harbour_shell::rt::now() };
                                     ag.menu_action(&id, &ctx);
                                 }
                             } else if id == harbour_shell::launcher::widgets::QUIT_ID {
@@ -1762,7 +1762,7 @@ fn main() -> Result<(), String> {
                                     screen = Screen::Home;
                                 }
                             } else if let Screen::App(a) = &mut screen {
-                                let ctx = Ctx { fs: &fs, tm: &tm, sys: sys.as_ref(), now: chrono::Local::now() };
+                                let ctx = Ctx { fs: &fs, tm: &tm, sys: sys.as_ref(), now: harbour_shell::rt::now() };
                                 let action = a.menu_action(&id, &ctx);
                                 apply_app_action(action, &mut screen, &workdir, &shared, &mut toast);
                             } else if matches!(screen, Screen::Home) {
@@ -1781,7 +1781,7 @@ fn main() -> Result<(), String> {
                                                 let _ = c.save();
                                             }
                                             apps = load_apps(&app_dir, &order_path);
-                                            rebuild_home(&mut home, &apps, &mut assets, &texture_creator, &cfg);
+                                            rebuild_home(&mut home, &apps, &mut assets, &cfg);
                                             toast = Some(Toast { text: harbour_shell::launcher::i18n::tr_s("Hidden. Settings > Apps shows it again."), fraction: None, until: Instant::now() + Duration::from_secs(3) });
                                         }
                                     }
@@ -1891,7 +1891,7 @@ fn main() -> Result<(), String> {
                 }
                 Input::Key { key, mods, .. } if key == Keycode::Tab && mods.intersects(Mod::LALTMOD | Mod::RALTMOD) => {}
                 Input::Key { key, mods, repeat } if agent_open && agent.is_some() => {
-                    let ctx = Ctx { fs: &fs, tm: &tm, sys: sys.as_ref(), now: chrono::Local::now() };
+                    let ctx = Ctx { fs: &fs, tm: &tm, sys: sys.as_ref(), now: harbour_shell::rt::now() };
                     if let Some(ag) = agent.as_mut() {
                         // Esc closes the chat (nothing in front of it to dismiss) and shows what was behind.
                         if ag.key(key, mods, repeat, &ctx) == AppAction::Quit {
@@ -1900,14 +1900,14 @@ fn main() -> Result<(), String> {
                     }
                 }
                 Input::Text(text) if agent_open && agent.is_some() => {
-                    let ctx = Ctx { fs: &fs, tm: &tm, sys: sys.as_ref(), now: chrono::Local::now() };
+                    let ctx = Ctx { fs: &fs, tm: &tm, sys: sys.as_ref(), now: harbour_shell::rt::now() };
                     if let Some(ag) = agent.as_mut() {
                         ag.text(&text, &ctx);
                     }
                 }
                 Input::Key { key, mods, repeat } => match &mut screen {
                     Screen::App(a) => {
-                        let ctx = Ctx { fs: &fs, tm: &tm, sys: sys.as_ref(), now: chrono::Local::now() };
+                        let ctx = Ctx { fs: &fs, tm: &tm, sys: sys.as_ref(), now: harbour_shell::rt::now() };
                         let action = a.key(key, mods, repeat, &ctx);
                         // The app's own Esc-at-top-level "Quit" is ignored: hold Esc or use the menu.
                         let action = if key == Keycode::Escape && action == AppAction::Quit && !a.esc_closes() { AppAction::None } else { action };
@@ -1925,7 +1925,7 @@ fn main() -> Result<(), String> {
                             _ => {}
                         }
                     }
-                    Screen::Settings(s) => match mouse_ev.take().unwrap_or_else(|| s.handle_key(key, mods)) {
+                    Screen::Settings(s) => match mouse_ev.take().unwrap_or_else(|| s.handle_key_repeat(key, mods, repeat)) {
                         SettingsEvent::None | SettingsEvent::ScreenChanged => {}
                         // Settings > Agent changed the provider or switched it off: the next open reloads it
                         // (the chat itself is on disk).
@@ -1943,7 +1943,7 @@ fn main() -> Result<(), String> {
                         SettingsEvent::Close => screen = Screen::Home,
                         SettingsEvent::AppsChanged => {
                             apps = load_apps(&app_dir, &order_path);
-                            rebuild_home(&mut home, &apps, &mut assets, &texture_creator, &cfg);
+                            rebuild_home(&mut home, &apps, &mut assets, &cfg);
                             if let Screen::Settings(s) = &mut screen {
                                 s.set_apps(app_refs(&apps));
                             }
@@ -1960,7 +1960,7 @@ fn main() -> Result<(), String> {
                                 mtime: None,
                                 user: false,
                             };
-                            run_external(&fs, &tm, &entry, &workdir, &shared, &mut canvas, &mut fb, &rx, &mut toast, &mut dirty, &mut last_input);
+                            run_external(&fs, &tm, &entry, &workdir, &shared, &mut canvas, &mut host, &mut fb, &rx, &mut toast, &mut dirty, &mut last_input);
                         }
                         SettingsEvent::Exit => {
                             harbour_shell::rt::sleep(Duration::from_millis(1500));
@@ -2026,7 +2026,7 @@ fn main() -> Result<(), String> {
                     Screen::Editor => text.chars().for_each(|c| editor.input_char(c)),
                     Screen::Terminal(t) => t.write(text.as_bytes()),
                     Screen::App(a) => {
-                        let ctx = Ctx { fs: &fs, tm: &tm, sys: sys.as_ref(), now: chrono::Local::now() };
+                        let ctx = Ctx { fs: &fs, tm: &tm, sys: sys.as_ref(), now: harbour_shell::rt::now() };
                         let action = a.text(&text, &ctx);
                         apply_app_action(action, &mut screen, &workdir, &shared, &mut toast);
                     }
@@ -2151,9 +2151,9 @@ fn main() -> Result<(), String> {
                                     Err(e) => toast = Some(Toast { text: format!("{}: {e}", app.name), fraction: None, until: Instant::now() + Duration::from_secs(3) }),
                                 }
                             } else {
-                                run_external(&fs, &tm, &app, &workdir, &shared, &mut canvas, &mut fb, &rx, &mut toast, &mut dirty, &mut last_input);
+                                run_external(&fs, &tm, &app, &workdir, &shared, &mut canvas, &mut host, &mut fb, &rx, &mut toast, &mut dirty, &mut last_input);
                                 apps = load_apps(&app_dir, &order_path);
-                                rebuild_home(&mut home, &apps, &mut assets, &texture_creator, &cfg);
+                                rebuild_home(&mut home, &apps, &mut assets, &cfg);
                             }
                         }
                     }
@@ -2165,7 +2165,7 @@ fn main() -> Result<(), String> {
         // ---- a newer Harbour Shell? ---------------------------------------------------------------
         {
             use harbour_shell::launcher::update;
-            let unix = chrono::Utc::now().timestamp();
+            let unix = harbour_shell::rt::unix_now();
             if Instant::now() >= next_update_look {
                 next_update_look = Instant::now() + Duration::from_secs(600);
                 let on = cfg.lock().map(|c| c.get_int("harbour_update_check", 1) != 0).unwrap_or(true);
@@ -2205,7 +2205,7 @@ fn main() -> Result<(), String> {
                 let fresh = load_apps(&app_dir, &order_path);
                 if fresh.len() != apps.len() || fresh.iter().zip(&apps).any(|(a, b)| a.id != b.id || a.mtime != b.mtime) {
                     apps = fresh;
-                    rebuild_home(&mut home, &apps, &mut assets, &texture_creator, &cfg);
+                    rebuild_home(&mut home, &apps, &mut assets, &cfg);
                     dirty = true;
                 }
             }
@@ -2230,7 +2230,7 @@ fn main() -> Result<(), String> {
         }
         if agent_open && !locked {
             if let Some(ag) = agent.as_mut() {
-                let ctx = Ctx { fs: &fs, tm: &tm, sys: sys.as_ref(), now: chrono::Local::now() };
+                let ctx = Ctx { fs: &fs, tm: &tm, sys: sys.as_ref(), now: harbour_shell::rt::now() };
                 if ag.tick(&ctx) {
                     dirty = true;
                 }
@@ -2330,27 +2330,33 @@ fn main() -> Result<(), String> {
                 let size = (w.rect.width() as i32, w.rect.height() as i32);
                 match &mut w.slot {
                     Some(Screen::App(a)) => {
-                        let ctx = harbour_shell::launcher::app::Ctx { fs: &fs, tm: &tm, sys: sys.as_ref(), now: chrono::Local::now() };
+                        let ctx = harbour_shell::launcher::app::Ctx { fs: &fs, tm: &tm, sys: sys.as_ref(), now: harbour_shell::rt::now() };
                         if harbour_shell::grid::with_surface(size, || a.tick(&ctx)) {
                             dirty = true;
                         }
                     }
-                    Some(Screen::Settings(s)) => s.tick(),
+                    Some(Screen::Settings(s)) => {
+                        if s.tick() {
+                            dirty = true;
+                        }
+                    }
                     _ => {}
                 }
             }
         }
         match &mut screen {
             Screen::App(a) => {
-                let ctx = harbour_shell::launcher::app::Ctx { fs: &fs, tm: &tm, sys: sys.as_ref(), now: chrono::Local::now() };
+                let ctx = harbour_shell::launcher::app::Ctx { fs: &fs, tm: &tm, sys: sys.as_ref(), now: harbour_shell::rt::now() };
                 if a.tick(&ctx) {
                     dirty = true;
                 }
             }
             Screen::Settings(s) => {
-                s.tick();
+                // A result applied by tick() ends the busy state in the same call, so is_busy() alone
+                // would leave the last "Scanning" frame on screen until the next key.
+                let changed = s.tick();
                 // A page slide must be redrawn every frame, not just on input.
-                if s.is_busy() || s.animating() {
+                if changed || s.is_busy() || s.animating() {
                     dirty = true;
                 }
             }
@@ -2366,7 +2372,7 @@ fn main() -> Result<(), String> {
                 }
             }
             Screen::Clock => {
-                if world.poll_redraw(chrono::Local::now()) {
+                if world.poll_redraw(harbour_shell::rt::now()) {
                     dirty = true;
                 }
             }
@@ -2389,13 +2395,13 @@ fn main() -> Result<(), String> {
             dirty = true;
         }
         if locked {
-            let sec = chrono::Timelike::second(&chrono::Local::now());
+            let sec = chrono::Timelike::second(&harbour_shell::rt::now());
             if sec != last_sec {
                 last_sec = sec;
                 dirty = true;
             }
         }
-        let now_text = chrono::Local::now().format("%H:%M").to_string();
+        let now_text = harbour_shell::rt::now().format("%H:%M").to_string();
         if now_text != last_time {
             last_time = now_text.clone();
             dirty = true;
@@ -2443,7 +2449,7 @@ fn main() -> Result<(), String> {
                 // backlight off.
                 canvas.set_draw_color(Color::RGB(0, 0, 0));
                 canvas.clear();
-                canvas.present();
+                host.present(&canvas);
                 if let Some(f) = fb.as_mut() {
                     f.invalidate();
                     let _ = push_frame(&canvas, f);
@@ -2580,7 +2586,7 @@ fn main() -> Result<(), String> {
             // On a desk: the desk with Home's icons, the windows behind, then the focused window through
             // a viewport (the code below draws it as if it were the whole screen).
             let showing = desk_zoom.and_then(|z| z.3);
-            let base_vp: Option<sdl2::rect::Rect> = match desk.as_mut() {
+            let base_vp: Option<harbour_shell::gfx::Rect> = match desk.as_mut() {
                 Some(d) => {
                     canvas.set_viewport(None);
                     let bar_style = cfg.lock().map(|c| c.get_int("harbour_statusbar", 0)).unwrap_or(0).clamp(0, 2) as u8;
@@ -2596,8 +2602,8 @@ fn main() -> Result<(), String> {
                         let (w, h) = (SCREEN_W as i32, SCREEN_H as i32);
                         let k = (d.size.0 / w).min(d.size.1 / h).max(1);
                         lock_zoom = k;
-                        let _ = canvas.set_scale((scale as i32 * k) as f32, (scale as i32 * k) as f32);
-                        let r = sdl2::rect::Rect::new((d.size.0 / k - w) / 2, (d.size.1 / k - h) / 2, w as u32, h as u32);
+                        canvas.set_scale(k as u32);
+                        let r = harbour_shell::gfx::Rect::new((d.size.0 / k - w) / 2, (d.size.1 / k - h) / 2, w as u32, h as u32);
                         canvas.set_viewport(r);
                         harbour_shell::grid::set_surface(w, h);
                         Some(r)
@@ -2614,7 +2620,7 @@ fn main() -> Result<(), String> {
                             let size = (w.rect.width() as i32, w.rect.height() as i32);
                             if let Some(sc) = w.slot.as_mut() {
                                 harbour_shell::grid::with_surface(size, || {
-                                    let ctx = Ctx { fs: &fs, tm: &tm, sys: sys.as_ref(), now: chrono::Local::now() };
+                                    let ctx = Ctx { fs: &fs, tm: &tm, sys: sys.as_ref(), now: harbour_shell::rt::now() };
                                     draw_back_window(&mut canvas, &mut assets, &ctx, sc, &mut home, &mut calc, &mut world, &snake, &mut editor, bar_style, close_hover);
                                 });
                             }
@@ -2634,7 +2640,7 @@ fn main() -> Result<(), String> {
                             }
                             None => {
                                 harbour_shell::grid::set_surface(d.size.0, d.size.1);
-                                Some(sdl2::rect::Rect::new(0, 0, d.size.0 as u32, d.size.1 as u32))
+                                Some(harbour_shell::gfx::Rect::new(0, 0, d.size.0 as u32, d.size.1 as u32))
                             }
                         }
                     }
@@ -2673,7 +2679,7 @@ fn main() -> Result<(), String> {
                 st.bar_style = cfg.lock().map(|c| c.get_int("harbour_statusbar", 0)).unwrap_or(0).clamp(0, 2) as u8;
                 chrome::draw_menu_bar(&mut canvas, &mut assets, &fs, &tm, "", &st);
                 let opts = cfg.lock().map(|c| lock::Opts::from_config(&c, st.battery, st.charging)).unwrap_or(lock::Opts { style: lock::Style::Wall, date: true, battery: None });
-                lock::draw(&mut canvas, &mut assets, &fs, &tm, &mut lock_world, chrono::Local::now(), unlock, &opts);
+                lock::draw(&mut canvas, &mut assets, &fs, &tm, &mut lock_world, harbour_shell::rt::now(), unlock, &opts);
             } else {
                 let mut st = status.lock().map(|s| s.clone()).unwrap_or_default();
                 st.time = now_text;
@@ -2710,13 +2716,13 @@ fn main() -> Result<(), String> {
                     Screen::Home => home.draw(&mut canvas, &mut assets, &fs, &tm),
                     Screen::Settings(s) => s.draw(&mut canvas, &fs, &tm),
                     Screen::Calculator => calc.draw(&mut canvas, &fs, &tm, 0, chrome::BAR_H, chrome::screen_w(), chrome::screen_h() - chrome::BAR_H as u32),
-                    Screen::Clock => world.draw(&mut canvas, &mut assets, &fs, &tm, chrono::Local::now()),
+                    Screen::Clock => world.draw(&mut canvas, &mut assets, &fs, &tm, harbour_shell::rt::now()),
                     Screen::Snake => {
                         let title = format!("Snake - {}", snake.footer_text());
                         draw_app(&mut canvas, &fs, &tm, &title, "", |c, x, y, w, h| snake.draw(c, &fs, &tm, x, y, w, h))
                     }
                     Screen::App(a) => {
-                        let ctx = harbour_shell::launcher::app::Ctx { fs: &fs, tm: &tm, sys: sys.as_ref(), now: chrono::Local::now() };
+                        let ctx = harbour_shell::launcher::app::Ctx { fs: &fs, tm: &tm, sys: sys.as_ref(), now: harbour_shell::rt::now() };
                         a.draw(&mut canvas, &mut assets, &ctx);
                     }
                     Screen::Terminal(t) => t.draw(&mut canvas, &fs, &tm),
@@ -2724,7 +2730,7 @@ fn main() -> Result<(), String> {
                         let title = if editor.is_dirty() { "Text Editor *" } else { "Text Editor" };
                         let _ = title;
                         // Framed like the Terminal: the text area is the frame's content rectangle.
-                        harbour_shell::ui::fill_rect(&mut canvas, sdl2::rect::Rect::new(0, chrome::BAR_H, chrome::screen_w(), chrome::screen_h() - chrome::BAR_H as u32), tm.get_color("home_bg"));
+                        harbour_shell::ui::fill_rect(&mut canvas, harbour_shell::gfx::Rect::new(0, chrome::BAR_H, chrome::screen_w(), chrome::screen_h() - chrome::BAR_H as u32), tm.get_color("home_bg"));
                         harbour_shell::grid::draw_app_frame(&mut canvas, harbour_shell::grid::app_frame().y(), tm.get_color("foreground"), None);
                         let r = harbour_shell::grid::app_content();
                         editor.set_view(r.width(), r.height());
@@ -2734,11 +2740,11 @@ fn main() -> Result<(), String> {
                 if agent_prog > 0.0 && agent.is_some() {
                     let e = 1.0 - (1.0 - agent_prog).powi(2);
                     let off = ((1.0 - e) * harbour_shell::launcher::agent::app::PANEL_W as f32).round() as i32;
-                    let ctx = harbour_shell::launcher::app::Ctx { fs: &fs, tm: &tm, sys: sys.as_ref(), now: chrono::Local::now() };
+                    let ctx = harbour_shell::launcher::app::Ctx { fs: &fs, tm: &tm, sys: sys.as_ref(), now: harbour_shell::rt::now() };
                     // The panel is drawn for 320 x 170 at the right of the screen (or window).
                     let (bx, by) = base_vp.map(|r| (r.x() + r.width() as i32 - SCREEN_W as i32, r.y())).unwrap_or((0, 0));
                     if off > 0 || base_vp.is_some() {
-                        canvas.set_viewport(sdl2::rect::Rect::new(bx + off, by, (SCREEN_W as i32 - off) as u32, SCREEN_H));
+                        canvas.set_viewport(harbour_shell::gfx::Rect::new(bx + off, by, (SCREEN_W as i32 - off) as u32, SCREEN_H));
                     }
                     if let Some(ag) = agent.as_mut() {
                         harbour_shell::grid::with_surface((SCREEN_W as i32, SCREEN_H as i32), || ag.draw(&mut canvas, &mut assets, &ctx));
@@ -2768,9 +2774,9 @@ fn main() -> Result<(), String> {
                     // Over the Agent panel the line stays inside it; elsewhere it spans the screen.
                     let area = if agent_open && agent_prog > 0.0 {
                         let x = chrome::screen_w() as i32 - harbour_shell::launcher::agent::app::PANEL_W;
-                        sdl2::rect::Rect::new(x, 0, harbour_shell::launcher::agent::app::PANEL_W as u32, chrome::screen_h())
+                        harbour_shell::gfx::Rect::new(x, 0, harbour_shell::launcher::agent::app::PANEL_W as u32, chrome::screen_h())
                     } else {
-                        sdl2::rect::Rect::new(0, 0, chrome::screen_w(), chrome::screen_h())
+                        harbour_shell::gfx::Rect::new(0, 0, chrome::screen_w(), chrome::screen_h())
                     };
                     ime.draw(&mut canvas, &fs, &tm, area);
                 }
@@ -2808,14 +2814,14 @@ fn main() -> Result<(), String> {
                 harbour_shell::grid::with_surface(desk_size, || {
                     // The band under a screen that ends above the keyboard.
                     if osk_cut > 0 {
-                        harbour_shell::ui::fill_rect(&mut canvas, sdl2::rect::Rect::new(0, desk_size.1 - osk_cut, desk_size.0 as u32, osk_cut as u32), tm.get_color("home_bg"));
+                        harbour_shell::ui::fill_rect(&mut canvas, harbour_shell::gfx::Rect::new(0, desk_size.1 - osk_cut, desk_size.0 as u32, osk_cut as u32), tm.get_color("home_bg"));
                     }
                     k.draw(&mut canvas, &fs, &tm);
                     // What the input method is composing shows just above the keyboard (a screen that
                     // ends above the keyboard shows it itself).
                     if ime.is_composing() && osk_cut == 0 {
                         let top = harbour_shell::launcher::osk::Osk::rect().y();
-                        ime.draw(&mut canvas, &fs, &tm, sdl2::rect::Rect::new(0, 0, desk_size.0 as u32, top as u32));
+                        ime.draw(&mut canvas, &fs, &tm, harbour_shell::gfx::Rect::new(0, 0, desk_size.0 as u32, top as u32));
                     }
                 });
             }
@@ -2824,10 +2830,10 @@ fn main() -> Result<(), String> {
                 // and the status. Then the menus, the zoom and the pointer, all on the desk.
                 canvas.set_viewport(None);
                 if lock_zoom > 1 {
-                    let _ = canvas.set_scale(scale as f32, scale as f32);
+                    canvas.set_scale(1);
                 }
                 let (mut st, context) = desk_status.take().unwrap_or_default();
-                st.time = chrono::Local::now().format("%H:%M").to_string();
+                st.time = harbour_shell::rt::now().format("%H:%M").to_string();
                 let win_size = (harbour_shell::grid::sw(), harbour_shell::grid::sh());
                 if let Some(w) = fid.and_then(|f| d.get(f)).filter(|w| w.flexible && !locked && Some(w.id) != showing) {
                     draw_resize_mark(&mut canvas, &tm, w.rect);
@@ -2862,7 +2868,7 @@ fn main() -> Result<(), String> {
                     chrome::draw_cursor(&mut canvas, &tm, cursor.0, cursor.1);
                 }
             }
-            canvas.present();
+            host.present(&canvas);
             if let Some(r) = rec.as_mut() {
                 r.capture(&canvas);
             }
@@ -2957,11 +2963,10 @@ fn normalized(name: &str) -> String {
 
 /// Build the home items: Settings, Terminal, installed apps (visible ones), then
 /// Harbour's own tools. Icons for external apps are converted on first use.
-fn rebuild_home<'r>(
+fn rebuild_home(
     home: &mut Home,
     apps: &[AppEntry],
-    assets: &mut AssetStore<'r>,
-    creator: &'r sdl2::render::TextureCreator<sdl2::video::WindowContext>,
+    assets: &mut AssetStore,
     cfg: &Arc<Mutex<Config>>,
 ) {
     let _ = &*assets;
@@ -2982,7 +2987,7 @@ fn rebuild_home<'r>(
             let tile = format!("tile/{}", app.id);
             if assets.get(&tile).is_none() {
                 let rgba = icons::app_tile_rgba(app.icon.as_deref().map(std::path::Path::new));
-                if let Err(e) = icons::insert_tile_rgba(assets, creator, &app.id, &rgba) {
+                if let Err(e) = icons::insert_tile_rgba(assets, &app.id, &rgba) {
                     eprintln!("[icons] {}: {e}", app.id);
                 }
             }
@@ -3085,7 +3090,8 @@ fn run_external(
     app: &AppEntry,
     workdir: &Path,
     shared: &Arc<Shared>,
-    canvas: &mut Canvas<Window>,
+    canvas: &mut Canvas,
+    host: &mut Host,
     fb: &mut Option<Fb>,
     rx: &Receiver<Input>,
     toast: &mut Option<Toast>,
@@ -3112,7 +3118,7 @@ fn run_external(
             return;
         }
         chrome::draw_launching(canvas, fs, tm, &app.name, frame);
-        canvas.present();
+        host.present(canvas);
         if let Some(f) = fb.as_mut() {
             let _ = push_frame(canvas, f);
         }
@@ -3171,11 +3177,11 @@ fn save_note(editor: &mut TextEditor, path: &Path, toast: &mut Option<Toast>) {
     }
 }
 
-fn draw_app(c: &mut Canvas<Window>, fs: &FontSystem, tm: &ThemeManager, title: &str, hint: &str, body: impl FnOnce(&mut Canvas<Window>, i32, i32, u32, u32)) {
+fn draw_app(c: &mut Canvas, fs: &FontSystem, tm: &ThemeManager, title: &str, hint: &str, body: impl FnOnce(&mut Canvas, i32, i32, u32, u32)) {
     draw_app_footer(c, fs, tm, title, "", hint, body)
 }
 
-fn draw_app_footer(c: &mut Canvas<Window>, fs: &FontSystem, tm: &ThemeManager, title: &str, status: &str, hint: &str, body: impl FnOnce(&mut Canvas<Window>, i32, i32, u32, u32)) {
+fn draw_app_footer(c: &mut Canvas, fs: &FontSystem, tm: &ThemeManager, title: &str, status: &str, hint: &str, body: impl FnOnce(&mut Canvas, i32, i32, u32, u32)) {
     // No window frame: the app fills the area under the menu strip (its name is in the menu strip).
     let _ = title;
     harbour_shell::ui::fill_rect(c, chrome::app_rect(), tm.get_color("home_bg"));
@@ -3196,7 +3202,7 @@ fn status_menu(item: chrome::StatusItem, st: &StatusView, x: i32, ime_on: bool) 
     let info = |t: String| MenuItem::new("st_info", t);
     let items = match item {
         StatusItem::Clock => vec![
-            info(chrono::Local::now().format("%a %e %b %Y").to_string()),
+            info(harbour_shell::rt::now().format("%a %e %b %Y").to_string()),
             MenuItem::new("st_app_clock", harbour_shell::launcher::i18n::app_name("clock")),
             MenuItem::new("st_app_calendar", harbour_shell::launcher::i18n::app_name("calendar")),
             MenuItem::new("st_app_timer", harbour_shell::launcher::i18n::app_name("timer")),
@@ -3262,7 +3268,7 @@ fn desk_to_home(desk: &mut Option<Desk<Screen>>, fid: &mut Option<WinId>, screen
 /// window. None when the system cannot make one (the drawn pointer is used then).
 fn make_os_cursor(tm: &ThemeManager, scale: u32) -> Option<sdl2::mouse::Cursor> {
     let (w, h) = (12 * scale, 16 * scale);
-    let mut surf = Surface::new(w, h, PixelFormatEnum::ARGB8888).ok()?;
+    let mut surf = SdlSurface::new(w, h, PixelFormatEnum::ARGB8888).ok()?;
     let pitch = surf.pitch() as usize;
     let (ink, edge) = (tm.get_color("foreground"), tm.get_color("widget_face_active"));
     surf.with_lock_mut(|px| {
@@ -3326,7 +3332,7 @@ fn screen_flexible(screen: &Screen) -> bool {
 
 /// A window's frame on the desk: a 1 px line around its inside and a 1 px shadow; the focused
 /// window's line is the ink colour, the others' the softer line colour.
-fn draw_window_frame(c: &mut Canvas<Window>, tm: &ThemeManager, r: Rect, focused: bool) {
+fn draw_window_frame(c: &mut Canvas, tm: &ThemeManager, r: Rect, focused: bool) {
     use harbour_shell::launcher::desk::outer;
     let o = outer(r);
     let line = if focused { tm.get_color("foreground") } else { tm.get_color("line") };
@@ -3339,7 +3345,7 @@ fn draw_window_frame(c: &mut Canvas<Window>, tm: &ThemeManager, r: Rect, focused
 /// A window's title bar on a desk (its top 16 px row): a close box at the left and the name in the
 /// middle; the focused window's bar has a 1 px dither band on both sides of the name. The close box
 /// shows a cross while the pointer is on it.
-fn draw_title_bar(c: &mut Canvas<Window>, fs: &FontSystem, tm: &ThemeManager, title: &str, focused: bool, close_hover: bool) {
+fn draw_title_bar(c: &mut Canvas, fs: &FontSystem, tm: &ThemeManager, title: &str, focused: bool, close_hover: bool) {
     use harbour_shell::launcher::desk::CLOSE_BOX;
     let w = chrome::screen_w() as i32;
     let ink = tm.get_color("foreground");
@@ -3352,7 +3358,7 @@ fn draw_title_bar(c: &mut Canvas<Window>, fs: &FontSystem, tm: &ThemeManager, ti
     if focused {
         // A 1 px dither band from the close box to the name and on to the right edge.
         let (x, y, s) = CLOSE_BOX;
-        let band = |c: &mut Canvas<Window>, x0: i32, x1: i32| {
+        let band = |c: &mut Canvas, x0: i32, x1: i32| {
             if x1 > x0 {
                 harbour_shell::dither::fill(c, Rect::new(x0, 3, (x1 - x0) as u32, 10), ink, harbour_shell::dither::Pattern::Half);
             }
@@ -3378,7 +3384,7 @@ fn draw_title_bar(c: &mut Canvas<Window>, fs: &FontSystem, tm: &ThemeManager, ti
 
 /// The resize mark of a flexible window: a small solid triangle in its bottom-right corner (the
 /// grip it is resized from), drawn in desk coordinates.
-fn draw_resize_mark(c: &mut Canvas<Window>, tm: &ThemeManager, r: Rect) {
+fn draw_resize_mark(c: &mut Canvas, tm: &ThemeManager, r: Rect) {
     let ink = tm.get_color("foreground");
     let (x1, y1) = (r.right() - 2, r.bottom() - 2);
     for k in 0..6 {
@@ -3389,7 +3395,7 @@ fn draw_resize_mark(c: &mut Canvas<Window>, tm: &ThemeManager, r: Rect) {
 /// A window behind the focused one, drawn through its viewport: its title strip and its screen.
 #[allow(clippy::too_many_arguments)]
 fn draw_back_window(
-    c: &mut Canvas<Window>,
+    c: &mut Canvas,
     assets: &mut harbour_shell::assets::AssetStore,
     ctx: &Ctx,
     screen: &mut Screen,
@@ -3432,9 +3438,57 @@ fn draw_back_window(
     }
 }
 
-fn push_frame(canvas: &Canvas<Window>, fb: &mut Fb) -> Result<(), String> {
+/// The SDL side of the picture: one streaming texture the frame is copied into and shown in the
+/// window at its scale (nearest neighbour). Headless runs and device panels do not show it at all.
+struct Host<'a> {
+    win: sdl2::render::Canvas<sdl2::video::Window>,
+    tex: Option<sdl2::render::Texture<'a>>,
+    /// RGB565 value -> 0xAARRGGBB, with the same channel widening as everywhere else.
+    lut: Vec<u32>,
+}
+
+impl<'a> Host<'a> {
+    fn new(
+        win: sdl2::render::Canvas<sdl2::video::Window>,
+        tc: &'a sdl2::render::TextureCreator<sdl2::video::WindowContext>,
+        w: u32,
+        h: u32,
+        show: bool,
+    ) -> Result<Host<'a>, String> {
+        let tex = if show { Some(tc.create_texture_streaming(PixelFormatEnum::ARGB8888, w, h).map_err(|e| e.to_string())?) } else { None };
+        let lut = (0..=u16::MAX)
+            .map(|v| {
+                let c = Color::from_rgb565(v);
+                0xFF00_0000 | (c.r as u32) << 16 | (c.g as u32) << 8 | c.b as u32
+            })
+            .collect();
+        Ok(Host { win, tex, lut })
+    }
+
+    /// Show the canvas's picture in the window.
+    fn present(&mut self, canvas: &Canvas) {
+        let Some(tex) = self.tex.as_mut() else { return };
+        let s = canvas.surface();
+        let (w, stride) = (s.width() as usize, s.stride());
+        let lut = &self.lut;
+        let _ = tex.with_lock(None, |buf: &mut [u8], pitch: usize| {
+            for (y, row) in s.pixels().chunks(stride).enumerate() {
+                let out = &mut buf[y * pitch..y * pitch + w * 4];
+                for (px, v) in out.chunks_exact_mut(4).zip(&row[..w]) {
+                    px.copy_from_slice(&lut[*v as usize].to_le_bytes());
+                }
+            }
+        });
+        self.win.clear();
+        let _ = self.win.copy(tex, None, None);
+        self.win.present();
+    }
+}
+
+fn push_frame(canvas: &Canvas, fb: &mut Fb) -> Result<(), String> {
     let t0 = Instant::now();
-    let px = canvas.read_pixels(None, PixelFormatEnum::RGB565)?;
+    // The frame is already RGB565: it goes to the panel as it is.
+    let px = canvas.surface().bytes_le();
     let t1 = Instant::now();
     let sent = fb.present(&px).map_err(|e| e.to_string())?;
     if fb_stats_enabled() {
@@ -3475,18 +3529,18 @@ fn fb_stats_add(read: Duration, present: Duration, sent: usize, backend: &str) {
     });
 }
 
-fn save_shot(canvas: &Canvas<Window>, path: &str) -> Result<(), String> {
-    let (w, h) = canvas.output_size()?;
+fn save_shot(canvas: &Canvas, path: &str) -> Result<(), String> {
+    let (w, h) = (canvas.surface().width(), canvas.surface().height());
     // A grey or 1-bit panel (HARBOUR_PANEL): the shot shows what that panel would.
     let kind = harbour_shell::platform::display::PanelKind::from_env(harbour_shell::platform::display::PanelKind::Color);
     if kind != harbour_shell::platform::display::PanelKind::Color {
-        let mut px = canvas.read_pixels(None, PixelFormatEnum::RGB565)?;
+        let mut px = canvas.surface().bytes_le().into_owned();
         harbour_shell::platform::display::tone(&mut px, w as usize, h as usize, kind);
-        let surf = Surface::from_data(&mut px, w, h, w * 2, PixelFormatEnum::RGB565)?;
+        let surf = SdlSurface::from_data(&mut px, w, h, w * 2, PixelFormatEnum::RGB565)?;
         return surf.save_bmp(path);
     }
-    let mut px = canvas.read_pixels(None, PixelFormatEnum::ARGB8888)?;
-    let surf = Surface::from_data(&mut px, w, h, w * 4, PixelFormatEnum::ARGB8888)?;
+    let mut px = canvas.read_pixels(None, PixelFormat::Argb8888)?;
+    let surf = SdlSurface::from_data(&mut px, w, h, w * 4, PixelFormatEnum::ARGB8888)?;
     surf.save_bmp(path)
 }
 
@@ -3803,10 +3857,8 @@ impl Recorder {
     }
 
     /// Remember the frame just presented.
-    fn capture(&mut self, canvas: &Canvas<Window>) {
-        if let Ok(px) = canvas.read_pixels(None, PixelFormatEnum::RGB565) {
-            self.last = px;
-        }
+    fn capture(&mut self, canvas: &Canvas) {
+        self.last = canvas.surface().bytes_le().into_owned();
         self.tick();
     }
 

@@ -13,9 +13,8 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 
-use sdl2::rect::Rect;
-use sdl2::render::Canvas;
-use sdl2::video::Window;
+use crate::gfx::Rect;
+use crate::gfx::Canvas;
 
 use crate::launcher::alert::AlertIcon;
 use crate::theme::ThemeManager;
@@ -69,16 +68,7 @@ impl Mask {
 }
 
 fn load_file(p: &std::path::Path) -> Option<Mask> {
-    use sdl2::image::LoadSurface;
-    let s = sdl2::surface::Surface::from_file(p).ok()?;
-    let s = s.convert_format(sdl2::pixels::PixelFormatEnum::RGBA32).ok()?;
-    let (w, h, pitch) = (s.width() as usize, s.height() as usize, s.pitch() as usize);
-    let mut rgba = Vec::with_capacity(w * h * 4);
-    s.with_lock(|buf| {
-        for y in 0..h {
-            rgba.extend_from_slice(&buf[y * pitch..y * pitch + w * 4]);
-        }
-    });
+    let (rgba, w, h) = crate::imgload::load_rgba(p).ok()?;
     let m = Mask::from_rgba(&rgba, w as i32, h as i32);
     (!m.is_blank()).then_some(m)
 }
@@ -101,7 +91,7 @@ pub fn available(icon: AlertIcon) -> bool {
 }
 
 /// Draws `m` with its top-left at (x, y) in the theme's icon colours.
-pub fn draw_mask(c: &mut Canvas<Window>, tm: &ThemeManager, m: &Mask, x: i32, y: i32) {
+pub fn draw_mask(c: &mut Canvas, tm: &ThemeManager, m: &Mask, x: i32, y: i32) {
     let tones = [tm.get_color("foreground"), tm.get_color("muted"), tm.get_color("icon_white")];
     for (k, tone) in tones.into_iter().enumerate() {
         c.set_draw_color(tone);
@@ -124,7 +114,7 @@ pub fn draw_mask(c: &mut Canvas<Window>, tm: &ThemeManager, m: &Mask, x: i32, y:
 }
 
 /// Draws the system icon at (x, y) if it exists; returns whether something was drawn.
-pub fn draw(c: &mut Canvas<Window>, tm: &ThemeManager, icon: AlertIcon, x: i32, y: i32) -> bool {
+pub fn draw(c: &mut Canvas, tm: &ThemeManager, icon: AlertIcon, x: i32, y: i32) -> bool {
     match get(icon) {
         Some(m) => {
             draw_mask(c, tm, &m, x, y);

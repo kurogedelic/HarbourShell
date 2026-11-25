@@ -12,10 +12,9 @@ use std::sync::mpsc::{channel, Receiver};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use sdl2::keyboard::{Keycode, Mod};
-use sdl2::rect::Rect;
-use sdl2::render::Canvas;
-use sdl2::video::Window;
+use crate::keys::{Keycode, Mod};
+use crate::gfx::Rect;
+use crate::gfx::Canvas;
 
 use crate::chrome;
 use crate::dither::{self, Pattern};
@@ -190,7 +189,7 @@ fn row(label: &str, val: Val) -> Row {
 }
 
 enum Done {
-    Status(WifiStatus, Option<String>),
+    Status(WifiStatus, Option<String>, Option<bool>),
     Aps(R<Vec<Ap>>),
     Connect(R<()>, String),
     Bt(R<Vec<BtDevice>>),
@@ -203,6 +202,7 @@ enum Done {
 struct Pending {
     rx: Receiver<Done>,
     label: &'static str,
+    start: Instant,
 }
 
 #[derive(Clone, Debug)]
@@ -251,6 +251,8 @@ pub struct Settings {
     // Cached values (refreshed on page entry / after changes).
     wifi: WifiStatus,
     wifi_loaded: bool,
+    /// Airplane mode (Wi-Fi and Bluetooth both off), read with the Network page.
+    airplane: bool,
     slide: Option<Slide>,
     /// Open pop-up: (row, highlighted item).
     popup: Option<(usize, usize)>,
@@ -298,6 +300,7 @@ impl Settings {
             cfg_dirty: None,
             wifi: WifiStatus::default(),
             wifi_loaded: false,
+            airplane: false,
             slide: None,
             popup: None,
             hits: Vec::new(),
@@ -469,7 +472,7 @@ impl Settings {
         crate::rt::spawn(move || {
             let _ = tx.send(f(sys));
         });
-        self.pending = Some(Pending { rx, label });
+        self.pending = Some(Pending { rx, label, start: Instant::now() });
     }
 
     /// Fire-and-forget hardware write (volume etc.) that must not block the UI.
@@ -479,31 +482,36 @@ impl Settings {
     }
 
     /// Poll workers and flush debounced config writes. Call once per frame.
-    pub fn tick(&mut self) {
+    /// Returns true when something visible changed (a worker result was applied or a note
+    /// expired), so the host must redraw even though `is_busy()` is already false again.
+    pub fn tick(&mut self) -> bool {
+        let mut changed = false;
         if let Some((_, t)) = &self.note {
             if t.elapsed() > Duration::from_secs(4) {
                 self.note = None;
+                changed = true;
             }
         }
         if self.cfg_dirty.map(|t| t.elapsed() > Duration::from_millis(600)).unwrap_or(false) {
             self.flush_cfg();
         }
-        let Some(p) = &self.pending else { return };
-        let Ok(done) = p.rx.try_recv() else { return };
+        let Some(p) = &self.pending else { return changed };
+        let Ok(done) = p.rx.try_recv() else { return changed };
         self.pending = None;
         match done {
-            Done::Status(w, eth) => {
+            Done::Status(w, eth, air) => {
+                if let Some(a) = air {
+                    self.airplane = a;
+                }
                 self.wifi = w;
                 self.wifi_loaded = true;
                 self.eth_ip = eth;
             }
             Done::Aps(Ok(aps)) => {
+                // An empty list says so on the page itself (with Scan Again).
                 self.aps = aps;
                 self.cursor = 0;
                 self.scroll = 0;
-                if self.aps.is_empty() {
-                    self.note("No Wi-Fi networks found");
-                }
             }
             Done::Aps(Err(e)) => self.note(format!("Scan failed: {e}")),
             Done::Connect(Ok(()), ssid) => {
@@ -525,9 +533,6 @@ impl Settings {
                 self.bt = devs;
                 self.cursor = 0;
                 self.scroll = 0;
-                if self.bt.is_empty() {
-                    self.note("No devices found");
-                }
             }
             Done::Bt(Err(e)) => self.note(format!("Scan failed: {}", first_line(&e))),
             Done::BtOp(r, what) => match r {
@@ -547,6 +552,7 @@ impl Settings {
             }
             Done::Official(Err(e)) => self.note(first_line(&e)),
         }
+        true
     }
 
     pub fn is_busy(&self) -> bool {
@@ -612,7 +618,7 @@ impl Settings {
         self.settle_cursor(1);
         match &self.page {
             Page::Network => {
-                self.spawn("Checking network", |sys| Done::Status(sys.wifi_status(), sys.eth_ip()));
+                self.spawn("Checking network", |sys| Done::Status(sys.wifi_status(), sys.eth_ip(), Some(sys.airplane())));
             }
             Page::WifiList => {
                 self.aps.clear();
@@ -623,7 +629,7 @@ impl Settings {
                 self.spawn("Scanning", |sys| Done::Bt(sys.bt_scan()));
             }
             Page::About | Page::AgentConnect => {
-                self.spawn("Checking network", |sys| Done::Status(sys.wifi_status(), sys.eth_ip()));
+                self.spawn("Checking network", |sys| Done::Status(sys.wifi_status(), sys.eth_ip(), None));
             }
             Page::Agent => self.refresh_agent(),
             Page::WifiPassword(_) => {
@@ -759,9 +765,12 @@ impl Settings {
                 ]
             }
             Page::Network => vec![
-                row("Wi-Fi", Val::Toggle(self.wifi.radio)),
+                row("Wi-Fi", Val::Toggle(self.wifi.radio && !self.airplane)),
+                row("Airplane mode", Val::Toggle(self.airplane)),
                 row("Network", Val::Text(self.wifi.ssid.clone().unwrap_or_else(|| "Not connected".into()))),
                 row("IP address", Val::Text(self.wifi.ip.clone().unwrap_or_else(|| "-".into()))),
+                row("DNS", Val::Text(if self.wifi.dns.is_empty() { "-".into() } else { self.wifi.dns.iter().take(2).cloned().collect::<Vec<_>>().join(", ") })),
+                row("Router", Val::Text(self.wifi.gateway.clone().unwrap_or_else(|| "-".into()))),
                 row("Signal", Val::Text(self.wifi.signal.map(|s| format!("{s}%")).unwrap_or_else(|| "-".into()))),
                 row("Ethernet", Val::Text(self.eth_ip.clone().unwrap_or_else(|| "Not connected".into()))),
                 row("Scan Wi-Fi", Val::Arrow),
@@ -916,6 +925,16 @@ impl Settings {
     }
 
     pub fn handle_key(&mut self, key: Keycode, mods: Mod) -> Event {
+        self.handle_key_repeat(key, mods, false)
+    }
+
+    /// `repeat` is true for a key the OS auto-repeats (held down). Holding Return a little long on the
+    /// sidebar row opened the page, and the repeat then flipped the toggle under the cursor, so a repeat
+    /// never activates; arrows keep scrolling and Left/Right keep stepping sliders.
+    pub fn handle_key_repeat(&mut self, key: Keycode, mods: Mod, repeat: bool) -> Event {
+        if repeat && matches!(key, Keycode::Return | Keycode::KpEnter | Keycode::Space) {
+            return Event::None;
+        }
         // While a worker runs, only Esc (stop waiting / go back) is accepted.
         if self.pending.is_some() && key != Keycode::Escape {
             return Event::None;
@@ -1140,7 +1159,7 @@ impl Settings {
             }
             (Page::Audio, 1 | 2) | (Page::Theme, 1) | (Page::Lock, 3 | 4) | (Page::Agent, 0) | (Page::System, 12) => return self.activate(),
             (Page::Agent, 1) => return self.cycle_agent_provider(dir),
-            (Page::Network, 0) | (Page::Bluetooth, 0) | (Page::ExtPort, _) => return self.activate(),
+            (Page::Network, 0 | 1) | (Page::Bluetooth, 0) | (Page::ExtPort, _) => return self.activate(),
             (page, row) => {
                 if let Some(spec) = choice_spec(&page, row) {
                     let i = self.choice_index(&spec) as i32;
@@ -1231,12 +1250,28 @@ impl Settings {
                 self.cfg_set("harbour_ui_sound", (!on) as i64);
             }
             (Page::Network, 0) => {
-                let on = !self.wifi.radio;
-                let _ = self.sys.wifi_set_radio(on);
+                let on = !(self.wifi.radio && !self.airplane);
                 self.wifi.radio = on;
-                self.enter_page();
+                self.airplane = false;
+                // On a worker: turning the radio on also (re)connects, which can take a while.
+                self.spawn("Checking network", move |sys| {
+                    let _ = sys.wifi_set_radio(on);
+                    Done::Status(sys.wifi_status(), sys.eth_ip(), Some(sys.airplane()))
+                });
             }
-            (Page::Network, 5) => self.push(Page::WifiList),
+            (Page::Network, 1) => {
+                let on = !self.airplane;
+                self.airplane = on;
+                if on {
+                    self.wifi.radio = false;
+                }
+                self.spawn("Checking network", move |sys| {
+                    let _ = sys.set_airplane(on);
+                    Done::Status(sys.wifi_status(), sys.eth_ip(), Some(sys.airplane()))
+                });
+            }
+            (Page::Network, 8) => self.push(Page::WifiList),
+            (Page::WifiList, _) if self.aps.is_empty() => self.enter_page(),
             (Page::WifiList, i) => {
                 if let Some(ap) = self.aps.get(i).cloned() {
                     if ap.in_use {
@@ -1265,6 +1300,7 @@ impl Settings {
                     self.note("Turn Bluetooth on first");
                 }
             }
+            (Page::BtList, _) if self.bt.is_empty() => self.enter_page(),
             (Page::BtList, i) => {
                 if let Some(d) = self.bt.get(i).cloned() {
                     let addr = d.addr.clone();
@@ -1389,6 +1425,7 @@ impl Settings {
             show_password: self.show_password,
             sb_drag: self.sb_drag.is_some(),
             popup: self.popup.and_then(|(row, hi)| self.choice_items(row).map(|(items, cur)| (row, items.iter().map(|i| i18n::tr_s(i)).collect(), cur, hi))),
+            busy: self.pending.as_ref().map(|p| (format!("{}...", i18n::tr_s(p.label)), (p.start.elapsed().as_millis() / 40) as u32)),
         }
     }
 
@@ -1405,7 +1442,7 @@ impl Settings {
         self.drag.is_some() || self.flash.map(|t| t.elapsed() < Duration::from_millis(140)).unwrap_or(false)
     }
 
-    pub fn draw(&mut self, c: &mut Canvas<Window>, fs: &FontSystem, tm: &ThemeManager) {
+    pub fn draw(&mut self, c: &mut Canvas, fs: &FontSystem, tm: &ThemeManager) {
         // Like the framed screens (docs/DESIGN.md): a 1 px frame from y 17 down to y 168, square
         // corners; the sidebar and the page fill it.
         ui::fill_rect(c, chrome::app_rect(), tm.get_color("home_bg"));
@@ -1431,6 +1468,8 @@ impl Settings {
             }
         }
         let cur = self.view();
+        // The gauge on an empty page already says what is going on.
+        let status = if cur.rows.is_empty() && cur.busy.is_some() && !cur.in_root { String::new() } else { status };
         let pressed = self.pressed();
 
         if self.slide.as_ref().map(|s| s.start.elapsed() >= Duration::from_millis(SLIDE_MS)).unwrap_or(false) {
@@ -1667,7 +1706,7 @@ impl Settings {
 
 }
 
-type Col = sdl2::pixels::Color;
+type Col = crate::gfx::Color;
 
 /// One page as drawn: a snapshot so the slide transition can keep drawing the page it left.
 #[derive(Clone)]
@@ -1685,6 +1724,8 @@ struct View {
     sb_drag: bool,
     /// (row, items, current item, highlighted item) of the open pop-up.
     popup: Option<(usize, Vec<String>, usize, usize)>,
+    /// A worker is running (its label and an animation tick): an empty page shows a gauge.
+    busy: Option<(String, u32)>,
 }
 
 impl View {
@@ -1765,7 +1806,7 @@ fn pane_rect(content: &Rect) -> Rect {
 }
 
 /// 11x11 check box with a check mark when on; inverted while pressed.
-fn draw_checkbox(c: &mut Canvas<Window>, x: i32, y: i32, on: bool, pressed: bool, ink: Col, paper: Col, sunken: Col) {
+fn draw_checkbox(c: &mut Canvas, x: i32, y: i32, on: bool, pressed: bool, ink: Col, paper: Col, sunken: Col) {
     let r = Rect::new(x, y, 11, 11);
     ui::fill_rect(c, r, if pressed { ink } else { sunken });
     ui::draw_rect(c, r, ink);
@@ -1781,7 +1822,7 @@ fn draw_checkbox(c: &mut Canvas<Window>, x: i32, y: i32, on: bool, pressed: bool
 }
 
 /// Slider with a recessed groove, tick marks and a block thumb (Monitors panel).
-fn draw_panel_slider(c: &mut Canvas<Window>, tm: &ThemeManager, r: Rect, v: u32, selected: bool, pressed: bool) {
+fn draw_panel_slider(c: &mut Canvas, tm: &ThemeManager, r: Rect, v: u32, selected: bool, pressed: bool) {
     let ink = tm.get_color("foreground");
     let paper = tm.get_color("widget_face_active");
     let line = tm.get_color("line");
@@ -1811,7 +1852,7 @@ fn draw_panel_slider(c: &mut Canvas<Window>, tm: &ThemeManager, r: Rect, v: u32,
 /// One control-panel row: label (inverted when selected) and a real control.
 /// Hit rectangles of the controls are appended to `reg`.
 #[allow(clippy::too_many_arguments)]
-fn draw_panel_row(c: &mut Canvas<Window>, fs: &FontSystem, tm: &ThemeManager, r: &Row, idx: usize, area: Rect, selected: bool, choice: bool, pressed: bool, reg: &mut Vec<(Rect, Hit)>) {
+fn draw_panel_row(c: &mut Canvas, fs: &FontSystem, tm: &ThemeManager, r: &Row, idx: usize, area: Rect, selected: bool, choice: bool, pressed: bool, reg: &mut Vec<(Rect, Hit)>) {
     let ink = tm.get_color("foreground");
     let paper = tm.get_color("widget_face_active");
     let faint = crate::launcher::widgets::secondary_ink(tm);
@@ -1822,7 +1863,7 @@ fn draw_panel_row(c: &mut Canvas<Window>, fs: &FontSystem, tm: &ThemeManager, r:
     reg.push((area, Hit::Row(idx)));
     // The rule runs the full width of the row (up to the scroll bar column).
     ui::line(c, area.x(), area.y() + area.height() as i32 - 1, area.x() + area.width() as i32 - 1, area.y() + area.height() as i32 - 1, tm.get_color("line"));
-    let label_plate = |c: &mut Canvas<Window>, x: i32, text: &str| widgets::draw_label_plate(c, fs, tm, area, x, text, selected, ink);
+    let label_plate = |c: &mut Canvas, x: i32, text: &str| widgets::draw_label_plate(c, fs, tm, area, x, text, selected, ink);
     let r = &Row { label: i18n::tr_s(&r.label), val: r.val.clone() };
     match &r.val {
         Val::Toggle(on) | Val::Check(on) => {
@@ -1875,7 +1916,7 @@ fn draw_panel_row(c: &mut Canvas<Window>, fs: &FontSystem, tm: &ThemeManager, r:
 
 /// Plain list row (Apps, Wi-Fi / Bluetooth lists): inverted bar, zebra stripes.
 #[allow(clippy::too_many_arguments)]
-fn draw_list_row(c: &mut Canvas<Window>, fs: &FontSystem, tm: &ThemeManager, r: &Row, idx: usize, rect: Rect, selected: bool, reg: &mut Vec<(Rect, Hit)>) {
+fn draw_list_row(c: &mut Canvas, fs: &FontSystem, tm: &ThemeManager, r: &Row, idx: usize, rect: Rect, selected: bool, reg: &mut Vec<(Rect, Hit)>) {
     let ink = tm.get_color("foreground");
     let paper = tm.get_color("widget_face_active");
     let (fg, bg) = if selected { (tm.get_color("select_fg"), tm.get_color("select_bg")) } else { (ink, if idx % 2 == 1 { tm.get_color("surface_alt") } else { paper }) };
@@ -1908,7 +1949,7 @@ fn draw_list_row(c: &mut Canvas<Window>, fs: &FontSystem, tm: &ThemeManager, r: 
 }
 
 /// Cancel / default-action buttons at the bottom right of a dialog page.
-fn dialog_buttons(c: &mut Canvas<Window>, fs: &FontSystem, tm: &ThemeManager, base: &Rect, cancel: &'static str, ok: &'static str, reg: Option<&mut Vec<(Rect, Hit)>>) {
+fn dialog_buttons(c: &mut Canvas, fs: &FontSystem, tm: &ThemeManager, base: &Rect, cancel: &'static str, ok: &'static str, reg: Option<&mut Vec<(Rect, Hit)>>) {
     let (cancel, ok) = (i18n::tr(cancel), i18n::tr(ok));
     let w_ok = (fs.measure_display_text(ok) + 24).max(64);
     let w_cancel = (fs.measure_display_text(cancel) + 24).max(64);
@@ -1927,7 +1968,38 @@ fn dialog_buttons(c: &mut Canvas<Window>, fs: &FontSystem, tm: &ThemeManager, ba
 /// `region_is_pane`: the section list is drawn by the caller and `region` is only
 /// the right-hand panel.
 #[allow(clippy::too_many_arguments)]
-fn draw_view(c: &mut Canvas<Window>, fs: &FontSystem, tm: &ThemeManager, region: Rect, region_is_pane: bool, v: &View, ox: i32, pressed: bool, hits: Option<&mut Vec<(Rect, Hit)>>) {
+/// A page with no rows: while its worker runs (a scan), a gauge where the list will be; after an
+/// empty scan, what was looked for and a button to look again; otherwise a plain "Nothing here".
+fn draw_empty(c: &mut Canvas, fs: &FontSystem, tm: &ThemeManager, pane: &Rect, page: &Page, busy: Option<&(String, u32)>, hits: Option<&mut Vec<(Rect, Hit)>>) {
+    let w = (pane.width() as i32 - 40).clamp(60, 200);
+    let x = pane.x() + (pane.width() as i32 - SCROLL_W - 2 - w) / 2;
+    let mid = pane.y() + pane.height() as i32 / 2;
+    if let Some((label, tick)) = busy {
+        widgets::draw_barber(c, fs, tm, Rect::new(x, mid - 14, w as u32, 28), label, *tick);
+        return;
+    }
+    let (what, again) = match page {
+        Page::WifiList => ("No Wi-Fi networks found", true),
+        Page::BtList => ("No devices found", true),
+        _ => ("Nothing here", false),
+    };
+    if !again {
+        fs.draw_text(c, pane.x() + 12, pane.y() + 4, i18n::tr(what), widgets::secondary_ink(tm));
+        return;
+    }
+    let t = i18n::tr(what);
+    let tw = fs.measure_text(t);
+    fs.draw_text(c, x + (w - tw) / 2, mid - 20, t, widgets::secondary_ink(tm));
+    let label = i18n::tr("Scan Again");
+    let bw = (fs.measure_text(label) + 20).max(80);
+    let b = Rect::new(x + (w - bw) / 2, mid - 2, bw as u32, 18);
+    widgets::draw_button(c, fs, tm, b, label, BtnState::default());
+    if let Some(h) = hits {
+        h.push((b, Hit::Ok));
+    }
+}
+
+fn draw_view(c: &mut Canvas, fs: &FontSystem, tm: &ThemeManager, region: Rect, region_is_pane: bool, v: &View, ox: i32, pressed: bool, hits: Option<&mut Vec<(Rect, Hit)>>) {
     let base = Rect::new(region.x() + ox, region.y(), region.width(), region.height());
     let ink = tm.get_color("foreground");
     let paper = tm.get_color("widget_face_active");
@@ -1996,7 +2068,7 @@ fn draw_view(c: &mut Canvas<Window>, fs: &FontSystem, tm: &ThemeManager, region:
     let mut local = Vec::new();
 
     if v.rows.is_empty() {
-        fs.draw_text(c, pane.x() + 12, top + 2, i18n::tr("Nothing here"), crate::launcher::widgets::secondary_ink(tm));
+        draw_empty(c, fs, tm, &pane, &shown, v.busy.as_ref(), on_screen.then_some(&mut *reg));
     }
     for (n, r) in v.rows.iter().skip(v.scroll).take(visible).enumerate() {
         let idx = v.scroll + n;
@@ -2046,7 +2118,7 @@ fn draw_view(c: &mut Canvas<Window>, fs: &FontSystem, tm: &ThemeManager, region:
 }
 
 /// Fill `r` in `color` where it lies inside the app frame (never on its line).
-fn fill_in_frame(c: &mut Canvas<Window>, r: Rect, color: Col) {
+fn fill_in_frame(c: &mut Canvas, r: Rect, color: Col) {
     c.set_draw_color(color);
     for y in r.y()..r.bottom() {
         if let Some((x0, x1)) = crate::grid::app_frame_span(y) {
@@ -2106,7 +2178,7 @@ fn icon_offset(i: usize) -> (i32, i32) {
     ((12 - (x1 - x0 + 1)) / 2 - x0, (12 - (y1 - y0 + 1)) / 2 - y0)
 }
 
-fn draw_icon(c: &mut Canvas<Window>, x: i32, y: i32, i: usize, col: Col) {
+fn draw_icon(c: &mut Canvas, x: i32, y: i32, i: usize, col: Col) {
     c.set_draw_color(col);
     let (ox, oy) = icon_offset(i);
     for (ry, line) in ICONS[i].iter().enumerate() {
@@ -2120,7 +2192,7 @@ fn draw_icon(c: &mut Canvas<Window>, x: i32, y: i32, i: usize, col: Col) {
 
 /// Left-hand list of panels. Inverted while it has the focus; outlined while a
 /// panel on the right is being edited. Hit rectangles go to `reg` when given.
-fn draw_sidebar(c: &mut Canvas<Window>, fs: &FontSystem, tm: &ThemeManager, area: &Rect, current: usize, focused: bool, reg: Option<&mut Vec<(Rect, Hit)>>) {
+fn draw_sidebar(c: &mut Canvas, fs: &FontSystem, tm: &ThemeManager, area: &Rect, current: usize, focused: bool, reg: Option<&mut Vec<(Rect, Hit)>>) {
     draw_sidebar_w(c, fs, tm, area, current, focused, reg, SB_W);
 }
 
@@ -2132,7 +2204,7 @@ fn sidebar_full_w(fs: &FontSystem) -> i32 {
 
 /// While the cursor is in the sidebar, it opens out over the page so no section name is cut
 /// ("エージェント" instead of "エージ..."), with a dithered shadow on its right edge.
-fn draw_sidebar_expanded(c: &mut Canvas<Window>, fs: &FontSystem, tm: &ThemeManager, area: &Rect, current: usize, reg: Option<&mut Vec<(Rect, Hit)>>) {
+fn draw_sidebar_expanded(c: &mut Canvas, fs: &FontSystem, tm: &ThemeManager, area: &Rect, current: usize, reg: Option<&mut Vec<(Rect, Hit)>>) {
     let w = sidebar_full_w(fs);
     if w <= SB_W {
         return;
@@ -2143,7 +2215,7 @@ fn draw_sidebar_expanded(c: &mut Canvas<Window>, fs: &FontSystem, tm: &ThemeMana
 }
 
 #[allow(clippy::too_many_arguments)]
-fn draw_sidebar_w(c: &mut Canvas<Window>, fs: &FontSystem, tm: &ThemeManager, area: &Rect, current: usize, focused: bool, mut reg: Option<&mut Vec<(Rect, Hit)>>, sb_w: i32) {
+fn draw_sidebar_w(c: &mut Canvas, fs: &FontSystem, tm: &ThemeManager, area: &Rect, current: usize, focused: bool, mut reg: Option<&mut Vec<(Rect, Hit)>>, sb_w: i32) {
     let ink = tm.get_color("foreground");
     let paper = tm.get_color("widget_face_active");
     fill_in_frame(c, Rect::new(area.x(), area.y(), (sb_w - 1) as u32, area.height()), tm.get_color("surface_alt"));
@@ -2175,7 +2247,7 @@ fn draw_sidebar_w(c: &mut Canvas<Window>, fs: &FontSystem, tm: &ThemeManager, ar
 
 /// The Agent > Connect page: the device addresses on the left, a QR code of the setup guide on the
 /// right (1-bit black on white with its quiet zone, whatever the theme).
-fn draw_connect(c: &mut Canvas<Window>, fs: &FontSystem, tm: &ThemeManager, pane: &Rect, rows: &[Row]) {
+fn draw_connect(c: &mut Canvas, fs: &FontSystem, tm: &ThemeManager, pane: &Rect, rows: &[Row]) {
     static QR: std::sync::OnceLock<Option<qr::Qr>> = std::sync::OnceLock::new();
     let code = QR.get_or_init(|| qr::encode(AGENT_DOC_URL.as_bytes()).ok());
     let (ink, faint) = (tm.get_color("foreground"), widgets::secondary_ink(tm));
@@ -2185,7 +2257,7 @@ fn draw_connect(c: &mut Canvas<Window>, fs: &FontSystem, tm: &ThemeManager, pane
         qr::draw(c, q, qx, pane.y() + (pane.height() as i32 - side) / 2, 3);
     }
     let w = (qx - pane.x() - 12).max(40);
-    let text = |c: &mut Canvas<Window>, y: i32, t: &str, col| {
+    let text = |c: &mut Canvas, y: i32, t: &str, col| {
         let row = Rect::new(pane.x(), y, w as u32 + 12, 16);
         widgets::draw_row_text(c, fs, tm, row, pane.x() + 8, &chrome::fit_text(fs, t, w), false, col);
     };
@@ -2451,7 +2523,7 @@ mod tests {
             let t = Theme::load_from_yaml(&format!("{}/{path}", env!("CARGO_MANIFEST_DIR"))).unwrap_or_else(|e| panic!("{name}: {e}"));
             let tm = ThemeManager::new(t);
             let (ink, desk, paper) = (tm.get_color("foreground"), tm.get_color("background"), tm.get_color("widget_face_active"));
-            let lum = |c: sdl2::pixels::Color| 0.299 * c.r as f32 + 0.587 * c.g as f32 + 0.114 * c.b as f32;
+            let lum = |c: crate::gfx::Color| 0.299 * c.r as f32 + 0.587 * c.g as f32 + 0.114 * c.b as f32;
             assert!((lum(ink) - lum(paper)).abs() > 100.0, "{name}: text must contrast with the windows");
             assert!((lum(ink) - lum(desk)).abs() > 60.0, "{name}: icons must contrast with the desktop");
         }
@@ -2511,8 +2583,8 @@ mod tests {
         let (mut s, mock, _) = settings();
         goto(&mut s, Page::Network); // Network
         wait(&mut s);
-        assert_eq!(s.rows()[1].val, Val::Text("Harbour Cafe".into()));
-        s.cursor = 5;
+        assert_eq!(s.rows()[2].val, Val::Text("Harbour Cafe".into()));
+        s.cursor = 8;
         press(&mut s, Keycode::Return); // scan
         wait(&mut s);
         let rows = s.rows();
@@ -2526,11 +2598,28 @@ mod tests {
     }
 
     #[test]
+    fn an_empty_wifi_list_scans_again_from_return() {
+        let (mut s, _mock, _) = settings();
+        goto(&mut s, Page::Network);
+        wait(&mut s);
+        s.cursor = 8;
+        press(&mut s, Keycode::Return);
+        assert!(s.is_busy() && s.view().busy.is_some(), "the empty page shows the scan's gauge");
+        wait(&mut s);
+        s.aps.clear(); // as if the scan had found nothing
+        press(&mut s, Keycode::Return);
+        assert!(s.is_busy(), "Return on the empty list (Scan Again) scans again");
+        wait(&mut s);
+        assert_eq!(s.rows().len(), 3);
+        assert!(s.view().busy.is_none());
+    }
+
+    #[test]
     fn secured_network_asks_for_a_password() {
         let (mut s, mock, _) = settings();
         goto(&mut s, Page::Network);
         wait(&mut s);
-        s.cursor = 5;
+        s.cursor = 8;
         press(&mut s, Keycode::Return);
         wait(&mut s);
         s.cursor = 2; // Lighthouse 2G (secured, unsaved)
@@ -2550,6 +2639,115 @@ mod tests {
         wait(&mut s);
         assert_eq!(s.title(), "Settings: Network");
         assert_eq!(mock.wifi_status().ssid.as_deref(), Some("Lighthouse 2G"));
+    }
+
+    #[test]
+    fn repeated_return_never_activates_and_a_normal_one_still_does() {
+        let (mut s, mock, _) = settings();
+        // Sidebar: the Network row (4); Return opens the page, a held key's repeats arrive after it.
+        s.cursor = 4;
+        s.handle_key_repeat(Keycode::Return, Mod::NOMOD, false);
+        assert_eq!(s.title(), "Settings: Network");
+        wait(&mut s);
+        for _ in 0..5 {
+            s.handle_key_repeat(Keycode::Return, Mod::NOMOD, true);
+            s.handle_key_repeat(Keycode::Space, Mod::NOMOD, true);
+            s.handle_key_repeat(Keycode::KpEnter, Mod::NOMOD, true);
+            wait(&mut s);
+        }
+        assert!(mock.wifi_status().radio, "repeats do not switch the radio");
+        assert_eq!(s.cursor, 0);
+        // Arrows still repeat.
+        s.handle_key_repeat(Keycode::Down, Mod::NOMOD, true);
+        assert_eq!(s.cursor, 1);
+        s.handle_key_repeat(Keycode::Up, Mod::NOMOD, true);
+        // A normal press toggles.
+        s.handle_key_repeat(Keycode::Return, Mod::NOMOD, false);
+        wait(&mut s);
+        assert!(!mock.wifi_status().radio);
+        assert_eq!(s.rows()[0].val, Val::Toggle(false));
+    }
+
+    #[test]
+    fn network_page_airplane_dns_and_router() {
+        let (mut s, mock, _) = settings();
+        goto(&mut s, Page::Network);
+        wait(&mut s);
+        let labels: Vec<_> = s.rows().iter().map(|r| r.label.clone()).collect();
+        assert_eq!(labels, ["Wi-Fi", "Airplane mode", "Network", "IP address", "DNS", "Router", "Signal", "Ethernet", "Scan Wi-Fi"]);
+        assert_eq!(s.rows()[4].val, Val::Text("192.168.3.1".into()));
+        assert_eq!(s.rows()[5].val, Val::Text("192.168.3.1".into()));
+        assert_eq!(s.rows()[1].val, Val::Toggle(false));
+        s.cursor = 1;
+        press(&mut s, Keycode::Return);
+        wait(&mut s);
+        assert!(mock.airplane() && !mock.wifi_status().radio && !mock.bt_powered());
+        assert_eq!(s.rows()[1].val, Val::Toggle(true));
+        assert_eq!(s.rows()[0].val, Val::Toggle(false), "Wi-Fi reads off in airplane mode");
+        assert_eq!(s.rows()[4].val, Val::Text("-".into()));
+        press(&mut s, Keycode::Return);
+        wait(&mut s);
+        assert!(!mock.airplane() && mock.wifi_status().radio && mock.bt_powered(), "restored");
+        assert_eq!(s.rows()[5].val, Val::Text("192.168.3.1".into()));
+    }
+
+    #[test]
+    fn tick_reports_exactly_when_a_worker_result_is_applied() {
+        let (mut s, _, _) = settings();
+        goto(&mut s, Page::Network);
+        assert!(s.is_busy());
+        let mut applied = 0;
+        for _ in 0..400 {
+            let was_busy = s.is_busy();
+            let changed = s.tick();
+            assert_eq!(changed, was_busy && !s.is_busy(), "true only on the tick that applies the result");
+            applied += changed as u32;
+            if !s.is_busy() {
+                break;
+            }
+            sleep(Duration::from_millis(5));
+        }
+        assert_eq!(applied, 1);
+        assert!(!s.tick(), "an idle tick changes nothing");
+        // Wi-Fi scan: the result tick is the one that ends the busy state.
+        s.cursor = s.rows().len() - 1;
+        press(&mut s, Keycode::Return);
+        assert!(s.is_busy());
+        let mut applied = 0;
+        for _ in 0..400 {
+            applied += s.tick() as u32;
+            if !s.is_busy() {
+                break;
+            }
+            sleep(Duration::from_millis(5));
+        }
+        assert_eq!(applied, 1);
+        assert!(!s.tick());
+    }
+
+    #[test]
+    fn airplane_and_wifi_toggles_refresh_status_on_a_worker() {
+        let (mut s, mock, _) = settings();
+        goto(&mut s, Page::Network);
+        wait(&mut s);
+        s.cursor = 1;
+        press(&mut s, Keycode::Return);
+        assert!(s.is_busy(), "the toggle runs on a worker");
+        wait(&mut s);
+        s.cursor = 1;
+        press(&mut s, Keycode::Return);
+        wait(&mut s);
+        assert!(mock.wifi_status().radio);
+        assert_eq!(s.rows()[3].val, Val::Text("192.168.3.94".into()), "IP row shows the new connection");
+    }
+
+    #[test]
+    fn airplane_off_restores_bluetooth_as_it_was() {
+        let m = MockBackend::new();
+        m.bt_set_power(false).unwrap();
+        m.set_airplane(true).unwrap();
+        m.set_airplane(false).unwrap();
+        assert!(m.wifi_status().radio && !m.bt_powered());
     }
 
     #[test]

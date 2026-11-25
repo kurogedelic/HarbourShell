@@ -2,11 +2,10 @@
 
 use std::time::{Duration, Instant};
 
-use sdl2::keyboard::Keycode;
-use sdl2::pixels::Color;
-use sdl2::rect::Rect;
-use sdl2::render::Canvas;
-use sdl2::video::Window;
+use crate::keys::Keycode;
+use crate::gfx::Color;
+use crate::gfx::Rect;
+use crate::gfx::Canvas;
 
 use crate::font::FontSystem;
 use crate::theme::ThemeManager;
@@ -73,7 +72,8 @@ impl SnakeState {
     }
 
     pub fn update(&mut self) {
-        if self.game_over || self.last_step.elapsed() < Duration::from_millis(STEP_MS) {
+        // A frozen run (golden images) keeps the snake where it starts.
+        if self.game_over || crate::rt::frozen() || self.last_step.elapsed() < Duration::from_millis(STEP_MS) {
             return;
         }
         self.last_step = Instant::now();
@@ -148,7 +148,7 @@ impl SnakeState {
 
     pub fn draw(
         &self,
-        c: &mut Canvas<Window>,
+        c: &mut Canvas,
         font: &FontSystem,
         theme: &ThemeManager,
         x: i32,
@@ -201,7 +201,7 @@ impl SnakeState {
 }
 
 fn draw_cell(
-    c: &mut Canvas<Window>,
+    c: &mut Canvas,
     pos: Pos,
     bx: i32,
     by: i32,

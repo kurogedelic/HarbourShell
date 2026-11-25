@@ -19,11 +19,10 @@ use std::sync::mpsc::{channel, Receiver, Sender};
 use std::time::{Duration, Instant};
 
 use chrono::{Local, TimeZone};
-use sdl2::keyboard::{Keycode, Mod};
-use sdl2::pixels::Color;
-use sdl2::rect::Rect;
-use sdl2::render::Canvas;
-use sdl2::video::Window;
+use crate::keys::{Keycode, Mod};
+use crate::gfx::Color;
+use crate::gfx::Rect;
+use crate::gfx::Canvas;
 
 use crate::assets::AssetStore;
 use crate::chrome;
@@ -227,7 +226,7 @@ pub fn make() -> Box<dyn LauncherApp> {
     let store = if mock { Store { dir: None } } else { Store::home() };
     let root = std::env::var_os("HOME").map(PathBuf::from).filter(|p| p.is_dir());
     let mut app = Infoscope::new(store, root, mock);
-    let now = Local::now().timestamp();
+    let now = crate::rt::now().timestamp();
     if app.cache.items.is_empty() || app.cache.fetched.is_none_or(|t| now - t > STALE) {
         app.start_refresh(None);
     }
@@ -785,7 +784,7 @@ fn text_y(r: Rect) -> i32 {
 /// A list row: the selected one on the selection plate (1 px in from the top, so it never touches
 /// the tab strip's rule; the plate keeps clear of the scroll bar column), the rest with a rule.
 /// Returns the row's text colour.
-fn draw_row(c: &mut Canvas<Window>, tm: &ThemeManager, p: &Paint, i: usize, selected: bool) -> Color {
+fn draw_row(c: &mut Canvas, tm: &ThemeManager, p: &Paint, i: usize, selected: bool) -> Color {
     let r = p.row(i);
     let w = (crate::grid::scroll_x() + p.ox - 2 - (r.x() + 2)) as u32;
     if selected {
@@ -805,7 +804,7 @@ fn bar_rect(first_row: usize, rows: usize) -> Rect {
 
 /// The shared scroll bar at the right edge of the list, on Infoscope's face; only when the list
 /// scrolls.
-fn draw_bar(c: &mut Canvas<Window>, tm: &ThemeManager, p: &Paint, scroll: usize, len: usize, rows: usize, first_row: usize, dragging: bool) {
+fn draw_bar(c: &mut Canvas, tm: &ThemeManager, p: &Paint, scroll: usize, len: usize, rows: usize, first_row: usize, dragging: bool) {
     if len <= rows {
         return;
     }
@@ -814,12 +813,12 @@ fn draw_bar(c: &mut Canvas<Window>, tm: &ThemeManager, p: &Paint, scroll: usize,
     sb.draw_on(c, tm, dragging.then_some(SbPart::Thumb), p.face);
 }
 
-fn centered(c: &mut Canvas<Window>, fs: &FontSystem, p: &Paint, y: i32, text: &str, col: Color) {
+fn centered(c: &mut Canvas, fs: &FontSystem, p: &Paint, y: i32, text: &str, col: Color) {
     fs.draw_text(c, 160 + p.ox - fs.measure_text(text) / 2, y, text, col);
 }
 
 impl Infoscope {
-    fn draw_tabs(&self, c: &mut Canvas<Window>, ctx: &Ctx) {
+    fn draw_tabs(&self, c: &mut Canvas, ctx: &Ctx) {
         let (fs, tm) = (ctx.fs, ctx.tm);
         let labels = channel_labels();
         let mut tabs = tabs(fs, tm, &labels, self.channel);
@@ -850,7 +849,7 @@ impl Infoscope {
         }
     }
 
-    fn draw_items(&self, c: &mut Canvas<Window>, p: &Paint, ctx: &Ctx) {
+    fn draw_items(&self, c: &mut Canvas, p: &Paint, ctx: &Ctx) {
         let (left, right) = (LEFT + p.ox, list_right() + p.ox);
         let fs = ctx.fs;
         if self.cache.items.is_empty() {
@@ -873,7 +872,7 @@ impl Infoscope {
         draw_bar(c, ctx.tm, p, self.items.scroll, self.cache.items.len(), list_rows(), 0, self.sb_drag);
     }
 
-    fn draw_article(&self, c: &mut Canvas<Window>, p: &Paint, ctx: &Ctx) {
+    fn draw_article(&self, c: &mut Canvas, p: &Paint, ctx: &Ctx) {
         let (left, right) = (LEFT + p.ox, list_right() + p.ox);
         let fs = ctx.fs;
         let Some(lines) = &self.lines else { return };
@@ -895,7 +894,7 @@ impl Infoscope {
         draw_bar(c, ctx.tm, p, self.art_scroll, lines.len(), list_rows(), 0, self.sb_drag);
     }
 
-    fn draw_feeds(&self, c: &mut Canvas<Window>, p: &Paint, ctx: &Ctx) {
+    fn draw_feeds(&self, c: &mut Canvas, p: &Paint, ctx: &Ctx) {
         let (left, right) = (LEFT + p.ox, list_right() + p.ox);
         let fs = ctx.fs;
         let n = self.subs.feeds.len() + 1;
@@ -925,7 +924,7 @@ impl Infoscope {
     }
 
     /// A one-line text field with a frame 1 px inside its row.
-    fn draw_field(c: &mut Canvas<Window>, p: &Paint, ctx: &Ctx, row: usize, x: i32, e: &LineEdit) {
+    fn draw_field(c: &mut Canvas, p: &Paint, ctx: &Ctx, row: usize, x: i32, e: &LineEdit) {
         let (x, right) = (x + p.ox, RIGHT + p.ox);
         let r = p.row(row);
         // The shared text field, in the face's own colours, one whole row high.
@@ -933,13 +932,13 @@ impl Infoscope {
         widgets::draw_field(c, ctx.fs, ctx.tm, frame, &widgets::Field { text: &e.text, caret: Some(e.caret), fill: Some(p.face), ink: Some(p.ink), ..Default::default() });
     }
 
-    fn draw_add(&self, c: &mut Canvas<Window>, p: &Paint, ctx: &Ctx) {
+    fn draw_add(&self, c: &mut Canvas, p: &Paint, ctx: &Ctx) {
         let fs = ctx.fs;
         fs.draw_text(c, LEFT + p.ox, text_y(p.row(0)), tr("Feed address (RSS or Atom):"), p.ink);
         Self::draw_field(c, p, ctx, 1, 4, &self.add);
     }
 
-    fn draw_search(&self, c: &mut Canvas<Window>, p: &Paint, ctx: &Ctx) {
+    fn draw_search(&self, c: &mut Canvas, p: &Paint, ctx: &Ctx) {
         let (left, right) = (LEFT + p.ox, list_right() + p.ox);
         let fs = ctx.fs;
         let label = tr("Find");
@@ -982,7 +981,7 @@ impl Infoscope {
         draw_bar(c, ctx.tm, p, self.found.scroll, self.hits.len(), list_rows() - 1, 1, self.sb_drag);
     }
 
-    fn draw_not_yet(c: &mut Canvas<Window>, p: &Paint, ctx: &Ctx, lines: &[&'static str]) {
+    fn draw_not_yet(c: &mut Canvas, p: &Paint, ctx: &Ctx, lines: &[&'static str]) {
         let fs = ctx.fs;
         let head = tr("Not yet");
         let hw = fs.measure_display_text(head);
@@ -1218,7 +1217,7 @@ impl LauncherApp for Infoscope {
         changed
     }
 
-    fn draw(&mut self, c: &mut Canvas<Window>, _assets: &mut AssetStore, ctx: &Ctx) {
+    fn draw(&mut self, c: &mut Canvas, _assets: &mut AssetStore, ctx: &Ctx) {
         let p = paint(ctx);
         ui::fill_rect(c, chrome::app_rect(), p.face);
         self.layout_article(ctx.fs);
@@ -1245,7 +1244,7 @@ impl LauncherApp for Infoscope {
 
 impl Infoscope {
     /// One page under the tab strip, drawn with `p.ox` as its shift.
-    fn draw_page(&self, c: &mut Canvas<Window>, p: &Paint, ctx: &Ctx, page: PageKey) {
+    fn draw_page(&self, c: &mut Canvas, p: &Paint, ctx: &Ctx, page: PageKey) {
         if let Some(note) = page.note {
             centered(c, ctx.fs, p, text_y(p.row(3)), tr(note), p.muted);
             return;

@@ -1,7 +1,6 @@
-use sdl2::pixels::Color;
-use sdl2::rect::Rect;
-use sdl2::render::Canvas;
-use sdl2::video::Window;
+use crate::gfx::Color;
+use crate::gfx::Rect;
+use crate::gfx::Canvas;
 
 // UIコンポーネント描画関数。
 //
@@ -11,13 +10,13 @@ use sdl2::video::Window;
 // - ここではジオメトリ描画（矩形・線・円）のみを提供する。
 //   GUI 部品そのものは PNG アセット（assets.rs）で表現する。
 
-pub fn draw_rect(c: &mut Canvas<Window>, r: Rect, col: Color) {
+pub fn draw_rect(c: &mut Canvas, r: Rect, col: Color) {
     c.set_draw_color(col);
     let _ = c.draw_rect(r);
 }
 
 // 2pxの太い枠を描画
-pub fn draw_rect_thick(c: &mut Canvas<Window>, r: Rect, col: Color) {
+pub fn draw_rect_thick(c: &mut Canvas, r: Rect, col: Color) {
     c.set_draw_color(col);
 
     // 外側の枠（1px）
@@ -33,12 +32,12 @@ pub fn draw_rect_thick(c: &mut Canvas<Window>, r: Rect, col: Color) {
     let _ = c.draw_rect(inner_rect);
 }
 
-pub fn fill_rect(c: &mut Canvas<Window>, r: Rect, col: Color) {
+pub fn fill_rect(c: &mut Canvas, r: Rect, col: Color) {
     c.set_draw_color(col);
     let _ = c.fill_rect(r);
 }
 
-pub fn line(c: &mut Canvas<Window>, x1: i32, y1: i32, x2: i32, y2: i32, col: Color) {
+pub fn line(c: &mut Canvas, x1: i32, y1: i32, x2: i32, y2: i32, col: Color) {
     c.set_draw_color(col);
     let _ = c.draw_line((x1, y1), (x2, y2));
 }
@@ -46,7 +45,7 @@ pub fn line(c: &mut Canvas<Window>, x1: i32, y1: i32, x2: i32, y2: i32, col: Col
 /// 1-bit 風のポインタカーソルを描画する。
 /// Small arrow pointer for 320×170 displays.
 /// Hotspot is the upper-left pixel, matching SDL pointer coordinates.
-pub fn draw_compact_pointer_cursor(c: &mut Canvas<Window>, x: i32, y: i32) {
+pub fn draw_compact_pointer_cursor(c: &mut Canvas, x: i32, y: i32) {
     // Cardputer Zero uses a solid black pixel arrow; the first pixel is the
     // click hotspot. No white fill, duplicate outline or offset shadow.
     // Keep every row within 12 columns and draw at native 320x170 pixels.
@@ -72,7 +71,7 @@ pub fn draw_compact_pointer_cursor(c: &mut Canvas<Window>, x: i32, y: i32) {
 }
 
 pub fn draw_pointer_cursor(
-    c: &mut Canvas<Window>,
+    c: &mut Canvas,
     x: i32,
     y: i32,
     outline: Color,
@@ -110,7 +109,7 @@ pub fn draw_pointer_cursor(
 }
 
 fn draw_pointer_pixels(
-    c: &mut Canvas<Window>,
+    c: &mut Canvas,
     x: i32,
     y: i32,
     rows: &[&str],
@@ -128,7 +127,7 @@ fn draw_pointer_pixels(
 }
 
 // 円描画（ミッドポイント円アルゴリズム）
-pub fn draw_circle(c: &mut Canvas<Window>, center: (i32, i32), radius: i32, col: Color) {
+pub fn draw_circle(c: &mut Canvas, center: (i32, i32), radius: i32, col: Color) {
     let (cx, cy) = center;
     let mut x = 0i32;
     let mut y = radius;
@@ -157,7 +156,7 @@ pub fn draw_circle(c: &mut Canvas<Window>, center: (i32, i32), radius: i32, col:
 
 // パネル/ウィンドウ描画
 pub fn draw_panel(
-    c: &mut Canvas<Window>,
+    c: &mut Canvas,
     x: i32,
     y: i32,
     w: u32,

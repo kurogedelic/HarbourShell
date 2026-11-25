@@ -20,16 +20,33 @@ use super::{parse, telemetry, Ap, Backend, Battery, BtDevice, ExtPort, SysInfo, 
 pub struct LinuxBackend {
     /// Filesystem root; `/` on a device, a temp tree in tests.
     root: PathBuf,
+    /// Harbour's data folder (`HARBOUR_DATA`, else `~/.local/share/harbour`): the airplane-mode memory lives here.
+    data: PathBuf,
 }
 
 impl LinuxBackend {
+    /// After the radio comes on, ask NetworkManager to join a known network now instead of
+    /// waiting for its own retry. Errors ("no suitable connection", already connected) are ignored.
+    fn wifi_autoconnect(&self) {
+        let devs = run("nmcli", &["-t", "-f", "DEVICE,TYPE", "dev"], SHORT).unwrap_or_default();
+        let dev = devs.lines().map(parse::split_terse).find(|f| f.len() >= 2 && f[1] == "wifi").map(|f| f[0].clone());
+        if let Some(d) = dev {
+            let _ = run("nmcli", &["dev", "connect", &d], Duration::from_secs(30));
+        }
+    }
+
     pub fn new() -> Self {
-        Self { root: PathBuf::from("/") }
+        let data = std::env::var_os("HARBOUR_DATA")
+            .map(PathBuf::from)
+            .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share/harbour")))
+            .unwrap_or_else(|| PathBuf::from("/tmp"));
+        Self { root: PathBuf::from("/"), data }
     }
 
     #[cfg(test)]
     pub fn with_root(root: PathBuf) -> Self {
-        Self { root }
+        let data = root.join("data");
+        Self { root, data }
     }
 
     fn p(&self, rel: &str) -> PathBuf {
@@ -182,6 +199,8 @@ impl Backend for LinuxBackend {
                     .ok()
                     .and_then(|s| s.lines().next().map(|l| l.split('/').next().unwrap_or("").to_string()))
                     .filter(|s| !s.is_empty());
+                st.dns = run("nmcli", &["-g", "IP4.DNS", "dev", "show", &f[0]], SHORT).map(|s| parse::dns_list(&s)).unwrap_or_default();
+                st.gateway = run("nmcli", &["-g", "IP4.GATEWAY", "dev", "show", &f[0]], SHORT).ok().and_then(|s| parse::gateway(&s));
                 st.signal = run("nmcli", &["-t", "-f", "IN-USE,SIGNAL", "dev", "wifi", "list"], SHORT)
                     .ok()
                     .and_then(|s| {
@@ -194,7 +213,38 @@ impl Backend for LinuxBackend {
     }
 
     fn wifi_set_radio(&self, on: bool) -> R<()> {
-        run("nmcli", &["radio", "wifi", if on { "on" } else { "off" }], SHORT).map(|_| ())
+        let r = run("nmcli", &["radio", "wifi", if on { "on" } else { "off" }], SHORT).map(|_| ());
+        if on && r.is_ok() {
+            self.wifi_autoconnect();
+        }
+        r
+    }
+
+    fn airplane(&self) -> bool {
+        let wifi = run("nmcli", &["radio", "wifi"], SHORT).map(|s| s.trim() == "enabled").unwrap_or(false);
+        !wifi && !self.bt_powered()
+    }
+
+    fn set_airplane(&self, on: bool) -> R<()> {
+        let file = self.data.join("airplane-prev");
+        if on {
+            // Remember what was on (only when something is: a second "on" must not overwrite it).
+            let wifi = run("nmcli", &["radio", "wifi"], SHORT).map(|s| s.trim() == "enabled").unwrap_or(false);
+            let bt = self.bt_powered();
+            if wifi || bt {
+                let _ = std::fs::create_dir_all(&self.data);
+                let _ = std::fs::write(&file, format!("wifi={}\nbt={}\n", wifi as u8, bt as u8));
+            }
+            let r = run("nmcli", &["radio", "all", "off"], SHORT).map(|_| ());
+            let b = self.bt_set_power(false);
+            r.and(b)
+        } else {
+            let (wifi, bt) = std::fs::read_to_string(&file).map(|s| parse::airplane_prev(&s)).unwrap_or((true, true));
+            let _ = std::fs::remove_file(&file);
+            let r = if wifi { self.wifi_set_radio(true) } else { Ok(()) };
+            let b = if bt { self.bt_set_power(true) } else { Ok(()) };
+            r.and(b)
+        }
     }
 
     fn wifi_scan(&self) -> R<Vec<Ap>> {
@@ -206,6 +256,17 @@ impl Backend for LinuxBackend {
             // `auto` rescans only when the last scan is older than ~30 s. A forced rescan right after
             // another one makes the driver wait about 15 s, which looked like a hung "Scanning".
             &["-t", "-f", "IN-USE,SSID,SIGNAL,SECURITY", "dev", "wifi", "list", "--rescan", "auto"],
+            Duration::from_secs(30),
+        )?;
+        let aps = parse::wifi_list(&out, &saved);
+        if !aps.is_empty() {
+            return Ok(aps);
+        }
+        // An empty answer (seen right after start-up, before the first scan had finished): ask
+        // for a fresh scan and wait for it once.
+        let out = run(
+            "nmcli",
+            &["-t", "-f", "IN-USE,SSID,SIGNAL,SECURITY", "dev", "wifi", "list", "--rescan", "yes"],
             Duration::from_secs(30),
         )?;
         Ok(parse::wifi_list(&out, &saved))

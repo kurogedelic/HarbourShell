@@ -1,4 +1,4 @@
-use sdl2::pixels::Color;
+use crate::gfx::Color;
 use serde::Deserialize;
 use std::fs;
 

@@ -1,6 +1,7 @@
 //! Platform layer: keyboard input and LCD output for the Cardputer Zero.
 
 pub mod keys;
+pub mod sdl_keys;
 
 use std::sync::atomic::{AtomicBool, AtomicI32};
 

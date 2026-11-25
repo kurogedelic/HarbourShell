@@ -8,10 +8,9 @@
 //! clock is the big digital face now, and its 5x7 glyphs live on as the ASCII clock's font.
 
 use chrono::{DateTime, Datelike, Local, Timelike};
-use sdl2::pixels::Color;
-use sdl2::rect::Rect;
-use sdl2::render::Canvas;
-use sdl2::video::Window;
+use crate::gfx::Color;
+use crate::gfx::Rect;
+use crate::gfx::Canvas;
 
 use crate::assets::AssetStore;
 use crate::font::FontSystem;
@@ -88,7 +87,7 @@ pub fn hand_end(cx: i32, cy: i32, len: f32, angle: f32) -> (i32, i32) {
 }
 
 /// A line `thick` pixels wide (drawn as parallel lines).
-fn thick_line(c: &mut Canvas<Window>, a: (i32, i32), b: (i32, i32), thick: i32, color: Color) {
+fn thick_line(c: &mut Canvas, a: (i32, i32), b: (i32, i32), thick: i32, color: Color) {
     c.set_draw_color(color);
     let horizontal = (b.0 - a.0).abs() > (b.1 - a.1).abs();
     for o in -(thick / 2)..=((thick - 1) / 2) {
@@ -97,7 +96,7 @@ fn thick_line(c: &mut Canvas<Window>, a: (i32, i32), b: (i32, i32), thick: i32, 
     }
 }
 
-pub fn draw_face(c: &mut Canvas<Window>, cx: i32, cy: i32, r: i32, hms: (u32, u32, u32), ink: Color, muted: Color, paper: Color) {
+pub fn draw_face(c: &mut Canvas, cx: i32, cy: i32, r: i32, hms: (u32, u32, u32), ink: Color, muted: Color, paper: Color) {
     // Dial: double ring, hour ticks (long at 12/3/6/9) and minute dots.
     // Filled disc (not a square) so the desktop shows around the dial.
     c.set_draw_color(paper);
@@ -149,7 +148,7 @@ pub fn draw_face(c: &mut Canvas<Window>, cx: i32, cy: i32, r: i32, hms: (u32, u3
 }
 
 /// Padlock, 9x10.
-fn draw_padlock(c: &mut Canvas<Window>, x: i32, y: i32, color: Color) {
+fn draw_padlock(c: &mut Canvas, x: i32, y: i32, color: Color) {
     const ART: [&str; 10] = [
         "  XXXXX  ",
         " XX   XX ",
@@ -234,7 +233,7 @@ fn inks(tm: &ThemeManager) -> Inks {
 const CHIP_H: i32 = 14;
 
 /// An ink chip with `text` at (x, y); the display face when `display`. Returns its width.
-fn chip(c: &mut Canvas<Window>, fs: &FontSystem, ink: &Inks, x: i32, y: i32, text: &str, display: bool) -> i32 {
+fn chip(c: &mut Canvas, fs: &FontSystem, ink: &Inks, x: i32, y: i32, text: &str, display: bool) -> i32 {
     let w = if display { fs.measure_display_text(text) } else { fs.measure_text(text) } + 8;
     ui::fill_rect(c, Rect::new(x, y, w as u32, CHIP_H as u32), ink.land);
     if display {
@@ -251,7 +250,7 @@ fn battery_w(fs: &FontSystem, pct: Option<u8>) -> i32 {
 }
 
 /// The battery chip: the menu strip's battery icon and the percentage, on an ink plate.
-fn battery_chip(c: &mut Canvas<Window>, assets: &mut AssetStore, fs: &FontSystem, ink: &Inks, x: i32, y: i32, pct: Option<u8>, charging: bool) {
+fn battery_chip(c: &mut Canvas, assets: &mut AssetStore, fs: &FontSystem, ink: &Inks, x: i32, y: i32, pct: Option<u8>, charging: bool) {
     let w = battery_w(fs, pct);
     ui::fill_rect(c, Rect::new(x, y, w as u32, CHIP_H as u32), ink.land);
     crate::chrome::draw_battery(c, assets, x + 4, y + 1, pct, charging, ink.face, ink.faint);
@@ -272,11 +271,11 @@ fn date_line(now: DateTime<Local>) -> String {
 
 /// The unlock chip, right-aligned at `right`: a padlock and the hint on an ink plate. As the user
 /// scrolls, the plate turns over to the face tone from the left (the chip is its own gauge).
-fn unlock_chip(c: &mut Canvas<Window>, fs: &FontSystem, ink: &Inks, right: i32, y: i32, unlock: f32) {
+fn unlock_chip(c: &mut Canvas, fs: &FontSystem, ink: &Inks, right: i32, y: i32, unlock: f32) {
     let hint = i18n::tr("Scroll up to unlock");
     let w = 4 + 9 + 5 + fs.measure_text(hint) + 5;
     let r = Rect::new(right - w, y, w as u32, CHIP_H as u32);
-    let content = |c: &mut Canvas<Window>, fg: Color| {
+    let content = |c: &mut Canvas, fg: Color| {
         draw_padlock(c, r.x() + 4, y + 2, fg);
         fs.draw_text(c, r.x() + 18, widgets::text_origin(y, CHIP_H), hint, fg);
     };
@@ -304,7 +303,7 @@ const RIGHT: i32 = 316;
 /// Draw the lock screen below the menu strip. `world` keeps the lock map's night side (centred on
 /// the device's own time zone). `unlock` is the scroll-to-unlock progress, 0.0..=1.0.
 #[allow(clippy::too_many_arguments)]
-pub fn draw(c: &mut Canvas<Window>, assets: &mut AssetStore, fs: &FontSystem, tm: &ThemeManager, world: &mut WorldClock, now: DateTime<Local>, unlock: f32, opts: &Opts) {
+pub fn draw(c: &mut Canvas, assets: &mut AssetStore, fs: &FontSystem, tm: &ThemeManager, world: &mut WorldClock, now: DateTime<Local>, unlock: f32, opts: &Opts) {
     let ink = inks(tm);
     match opts.style {
         Style::Wall => draw_wall(c, assets, fs, tm, &ink, now, unlock, opts),
@@ -317,13 +316,13 @@ pub fn draw(c: &mut Canvas<Window>, assets: &mut AssetStore, fs: &FontSystem, tm
 /// An analog clock hanging on the desktop "wall" from a nail, its bezel dithered, its shadow too;
 /// the date and the battery on chips to its right.
 #[allow(clippy::too_many_arguments)]
-fn draw_wall(c: &mut Canvas<Window>, assets: &mut AssetStore, fs: &FontSystem, tm: &ThemeManager, ink: &Inks, now: DateTime<Local>, unlock: f32, opts: &Opts) {
+fn draw_wall(c: &mut Canvas, assets: &mut AssetStore, fs: &FontSystem, tm: &ThemeManager, ink: &Inks, now: DateTime<Local>, unlock: f32, opts: &Opts) {
     // With neither the date nor the battery beside it, the clock hangs in the middle of the wall.
     let cx = if opts.date || opts.battery.is_some() { 86 } else { 160 };
     // The nail sits at y 20 and the shadow ends at y 153, 1 px above the unlock chip (which the
     // centred clock reaches over).
     let (cy, r) = (92, 58);
-    let disc = |c: &mut Canvas<Window>, ox: i32, oy: i32, rr: i32, f: &mut dyn FnMut(&mut Canvas<Window>, Rect)| {
+    let disc = |c: &mut Canvas, ox: i32, oy: i32, rr: i32, f: &mut dyn FnMut(&mut Canvas, Rect)| {
         for dy in -rr..=rr {
             let half = ((rr * rr - dy * dy) as f32).sqrt().round() as i32;
             f(c, Rect::new(cx - half + ox, cy + dy + oy, (2 * half + 1) as u32, 1));
@@ -365,7 +364,7 @@ fn draw_wall(c: &mut Canvas<Window>, assets: &mut AssetStore, fs: &FontSystem, t
 /// The World Clock map (night side, the device's own time zone in white), a rule, then the
 /// local time in 7-segment digits on an outlined plate, the date, the battery and the unlock chip.
 #[allow(clippy::too_many_arguments)]
-fn draw_world(c: &mut Canvas<Window>, assets: &mut AssetStore, fs: &FontSystem, tm: &ThemeManager, ink: &Inks, world: &mut WorldClock, now: DateTime<Local>, unlock: f32, opts: &Opts) {
+fn draw_world(c: &mut Canvas, assets: &mut AssetStore, fs: &FontSystem, tm: &ThemeManager, ink: &Inks, world: &mut WorldClock, now: DateTime<Local>, unlock: f32, opts: &Opts) {
     let mh = world.draw_map(c, assets, tm, now, false);
     ui::fill_rect(c, Rect::new(0, 16 + mh, crate::chrome::SCREEN_W, 1), ink.land);
     // The clock plate runs from the first strip row down to y 168, the time in its middle.
@@ -406,13 +405,13 @@ const ASCII_ROW0: i32 = ASCII_TOP + (grid::APP_FRAME_BOTTOM + 1 - ASCII_TOP - 12
 
 /// The whole screen in text: a `+--+` box, `HH:MM` in `#` and `.` (rows 1-7), the date and the battery on
 /// one line, and the unlock gauge `[####......]` with its hint.
-fn draw_ascii(c: &mut Canvas<Window>, fs: &FontSystem, tm: &ThemeManager, ink: &Inks, now: DateTime<Local>, unlock: f32, opts: &Opts) {
+fn draw_ascii(c: &mut Canvas, fs: &FontSystem, tm: &ThemeManager, ink: &Inks, now: DateTime<Local>, unlock: f32, opts: &Opts) {
     let _ = tm;
     ui::fill_rect(c, Rect::new(0, ASCII_TOP, 320, (grid::APP_FRAME_BOTTOM + 1 - ASCII_TOP) as u32), ink.land);
     let at = |col: usize, row: usize| (1 + col as i32 * CELL.0, ASCII_ROW0 + row as i32 * CELL.1);
     // One character per cell (the body face's Latin advance is not a fixed 6 px), so the columns
     // line up; Japanese text (two cells a glyph) goes through as one run.
-    let put = |c: &mut Canvas<Window>, col: usize, row: usize, t: &str, col_: Color| {
+    let put = |c: &mut Canvas, col: usize, row: usize, t: &str, col_: Color| {
         if !t.is_ascii() {
             let (x, y) = at(col, row);
             fs.draw_text(c, x, y, t, col_);
@@ -464,7 +463,7 @@ fn draw_ascii(c: &mut Canvas<Window>, fs: &FontSystem, tm: &ThemeManager, ink: &
 
 /// A big 7-segment HH:MM on a face-tone panel (unlit segments faintly visible, like an LCD), the
 /// date and the battery on chips below it.
-fn draw_seg(c: &mut Canvas<Window>, assets: &mut AssetStore, fs: &FontSystem, ink: &Inks, now: DateTime<Local>, unlock: f32, opts: &Opts) {
+fn draw_seg(c: &mut Canvas, assets: &mut AssetStore, fs: &FontSystem, ink: &Inks, now: DateTime<Local>, unlock: f32, opts: &Opts) {
     // The panel ends 2 px above the chip row.
     let panel = Rect::new(4, 18, 312, (ROW_A - 2 - 18) as u32);
     ui::fill_rect(c, panel, ink.face);

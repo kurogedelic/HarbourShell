@@ -16,10 +16,9 @@ use std::sync::mpsc::{channel, Receiver, TryRecvError};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
-use sdl2::keyboard::{Keycode, Mod};
-use sdl2::rect::Rect;
-use sdl2::render::Canvas;
-use sdl2::video::Window;
+use crate::keys::{Keycode, Mod};
+use crate::gfx::Rect;
+use crate::gfx::Canvas;
 
 use super::config::{self, AgentConfig};
 use super::history::{self, Chat, SEND_WINDOW};
@@ -935,7 +934,7 @@ const SINE: [i8; 32] = [0, 1, 2, 3, 4, 4, 5, 5, 5, 5, 4, 4, 3, 2, 1, 0, 0, -1, -
 
 /// A small animated strip in a `w` x `h` box: a scrolling wave (thinking / sending), a segmented level
 /// meter (recording) or a bouncing equalizer (playing). 1 px rectangles only, no allocation.
-fn draw_activity(c: &mut Canvas<Window>, kind: Activity, x: i32, y: i32, w: i32, h: i32, frame: usize, level: f32, ink: sdl2::pixels::Color, dim: sdl2::pixels::Color) {
+fn draw_activity(c: &mut Canvas, kind: Activity, x: i32, y: i32, w: i32, h: i32, frame: usize, level: f32, ink: crate::gfx::Color, dim: crate::gfx::Color) {
     let mid = y + h / 2;
     match kind {
         Activity::Wave => {
@@ -973,7 +972,7 @@ fn draw_activity(c: &mut Canvas<Window>, kind: Activity, x: i32, y: i32, w: i32,
 }
 
 /// Four 4 px corner brackets just inside `r`.
-fn brackets(c: &mut Canvas<Window>, r: Rect, col: sdl2::pixels::Color) {
+fn brackets(c: &mut Canvas, r: Rect, col: crate::gfx::Color) {
     let (x0, y0) = (r.x(), r.y());
     let (x1, y1) = (r.x() + r.width() as i32 - 1, r.y() + r.height() as i32 - 1);
     for (x, y, dx, dy) in [(x0, y0, 1, 1), (x1, y0, -1, 1), (x0, y1, 1, -1), (x1, y1, -1, -1)] {
@@ -983,7 +982,7 @@ fn brackets(c: &mut Canvas<Window>, r: Rect, col: sdl2::pixels::Color) {
 }
 
 /// A 1 px dashed rule (2 on, 2 off).
-fn dashed(c: &mut Canvas<Window>, x: i32, y: i32, w: i32, col: sdl2::pixels::Color) {
+fn dashed(c: &mut Canvas, x: i32, y: i32, w: i32, col: crate::gfx::Color) {
     let mut i = 0;
     while i < w {
         ui::fill_rect(c, Rect::new(x + i, y, 2.min((w - i) as u32), 1), col);
@@ -993,7 +992,7 @@ fn dashed(c: &mut Canvas<Window>, x: i32, y: i32, w: i32, col: sdl2::pixels::Col
 
 impl AgentApp {
     /// The empty chat: the block-letter logo (with CRT scan lines through it), a dashed rule and the hints.
-    fn draw_empty(&self, c: &mut Canvas<Window>, fs: &crate::font::FontSystem, tm: &crate::theme::ThemeManager, area: Rect) {
+    fn draw_empty(&self, c: &mut Canvas, fs: &crate::font::FontSystem, tm: &crate::theme::ThemeManager, area: Rect) {
         let (ink, paper) = (tm.get_color("foreground"), tm.get_color("widget_face_active"));
         let (faint, line) = (widgets::secondary_ink(tm), tm.get_color("line"));
         let scale = 3;
@@ -1216,7 +1215,7 @@ impl LauncherApp for AgentApp {
         dirty
     }
 
-    fn draw(&mut self, c: &mut Canvas<Window>, _assets: &mut AssetStore, ctx: &Ctx) {
+    fn draw(&mut self, c: &mut Canvas, _assets: &mut AssetStore, ctx: &Ctx) {
         let (tm, fs) = (ctx.tm, ctx.fs);
         self.ensure_lines(&|s| fs.measure_text(s));
         let ink = tm.get_color("foreground");

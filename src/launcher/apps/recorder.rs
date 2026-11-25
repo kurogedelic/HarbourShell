@@ -28,10 +28,9 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Local};
-use sdl2::keyboard::{Keycode, Mod};
-use sdl2::rect::Rect;
-use sdl2::render::Canvas;
-use sdl2::video::Window;
+use crate::keys::{Keycode, Mod};
+use crate::gfx::Rect;
+use crate::gfx::Canvas;
 
 use crate::assets::AssetStore;
 use crate::chrome;
@@ -412,6 +411,9 @@ pub fn fmt_remaining(free: u64, rate: u32, ch: u16) -> String {
 }
 
 fn free_bytes(dir: &Path) -> Option<u64> {
+    if crate::rt::frozen() {
+        return Some(8 << 30); // the real disk changes between runs
+    }
     let mut p = dir;
     while !p.exists() {
         p = p.parent()?;
@@ -1533,7 +1535,7 @@ impl LauncherApp for Recorder {
         std::mem::take(&mut self.dirty) | changed
     }
 
-    fn draw(&mut self, c: &mut Canvas<Window>, _assets: &mut AssetStore, ctx: &Ctx) {
+    fn draw(&mut self, c: &mut Canvas, _assets: &mut AssetStore, ctx: &Ctx) {
         let tm = ctx.tm;
         ui::fill_rect(c, chrome::app_rect(), tm.get_color("home_bg"));
         self.tabs_widget(ctx.fs, tm).draw_strip(c, ctx.fs, tm);
@@ -1564,7 +1566,7 @@ fn left_text(rem: &str) -> String {
     if i18n::get() == i18n::Lang::Ja { format!("{} {}", i18n::tr("remaining"), i18n::tr_s(rem)) } else { format!("{rem} left") }
 }
 
-fn draw_card(c: &mut Canvas<Window>, ctx: &Ctx, title: &str, lines: &[String], footer: &str) {
+fn draw_card(c: &mut Canvas, ctx: &Ctx, title: &str, lines: &[String], footer: &str) {
     let tm = ctx.tm;
     let title = &i18n::tr_s(title);
     let footer = i18n::tr_s(footer);
@@ -1589,7 +1591,7 @@ impl Recorder {
         Tabs::folder_fit(fs, labels, if self.tab == Tab::Record { 0 } else { 1 }, tm)
     }
 
-    fn draw_status(&self, c: &mut Canvas<Window>, ctx: &Ctx) {
+    fn draw_status(&self, c: &mut Canvas, ctx: &Ctx) {
         let (label, on) = match self.state {
             State::Recording => (i18n::tr("REC"), true),
             State::Paused => (i18n::tr("PAUSED"), false),
@@ -1606,7 +1608,7 @@ impl Recorder {
         }
     }
 
-    fn draw_record(&self, c: &mut Canvas<Window>, ctx: &Ctx) {
+    fn draw_record(&self, c: &mut Canvas, ctx: &Ctx) {
         let (tm, fs) = (ctx.tm, ctx.fs);
         let ink = tm.get_color("foreground");
         let faint = widgets::secondary_ink(tm);
@@ -1730,7 +1732,7 @@ impl Recorder {
         }
     }
 
-    fn draw_files(&self, c: &mut Canvas<Window>, ctx: &Ctx) {
+    fn draw_files(&self, c: &mut Canvas, ctx: &Ctx) {
         let (tm, fs) = (ctx.tm, ctx.fs);
         let ink = tm.get_color("foreground");
         let faint = widgets::secondary_ink(tm);

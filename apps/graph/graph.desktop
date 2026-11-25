@@ -1,0 +1,7 @@
+[Desktop Entry]
+Name=Graph
+Name[ja]=グラフ
+Exec=harbour:graph
+Icon=icon.png
+Terminal=false
+Type=Application

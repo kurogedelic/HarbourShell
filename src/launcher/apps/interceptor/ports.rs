@@ -1164,7 +1164,7 @@ impl Interceptor {
         Rect::new(LIST_X + (list_w() - 180) / 2, BODY_Y + 4 * ROW + 4, 180, 24)
     }
 
-    fn draw_install_button(&self, c: &mut Canvas<Window>, ctx: &Ctx, page: usize) {
+    fn draw_install_button(&self, c: &mut Canvas, ctx: &Ctx, page: usize) {
         if let Some((pkg, _)) = self.ports.missing_package(page) {
             let label = i18n::tr_s(&format!("Install {pkg}..."));
             widgets::draw_button(c, ctx.fs, ctx.tm, Self::install_button_rect(), &label, widgets::BtnState { default: true, ..Default::default() });
@@ -1172,7 +1172,7 @@ impl Interceptor {
     }
 
     /// A page with nothing to show yet: a header and plain lines under it.
-    fn explain(&self, c: &mut Canvas<Window>, ctx: &Ctx, p: &Pal, title: &str, lines: &[String]) {
+    fn explain(&self, c: &mut Canvas, ctx: &Ctx, p: &Pal, title: &str, lines: &[String]) {
         header_band(c, ctx, p, 0, title, "");
         for (i, l) in lines.iter().enumerate().take((body_rows() - 1) as usize) {
             let row = row_rect(1 + i as i32);
@@ -1181,7 +1181,7 @@ impl Interceptor {
         }
     }
 
-    pub(super) fn draw_wifi(&mut self, c: &mut Canvas<Window>, ctx: &Ctx, p: &Pal) {
+    pub(super) fn draw_wifi(&mut self, c: &mut Canvas, ctx: &Ctx, p: &Pal) {
         if !self.ports.wifi_known {
             return self.explain(c, ctx, p, "Scanning...", &[]);
         }
@@ -1226,7 +1226,7 @@ impl Interceptor {
         v
     }
 
-    pub(super) fn draw_usb(&mut self, c: &mut Canvas<Window>, ctx: &Ctx, p: &Pal) {
+    pub(super) fn draw_usb(&mut self, c: &mut Canvas, ctx: &Ctx, p: &Pal) {
         let rows = self.usb_rows();
         let devices = rows.iter().filter(|(d, s)| *s >= 0 && !d.name.starts_with("usb")).count();
         header_band(c, ctx, p, 0, "USB host", &format!("{devices} devices"));
@@ -1252,7 +1252,7 @@ impl Interceptor {
         scrollbar(c, ctx, rows.len(), vis, self.scroll[PAGE_USB]);
     }
 
-    pub(super) fn draw_grove(&mut self, c: &mut Canvas<Window>, ctx: &Ctx, p: &Pal) {
+    pub(super) fn draw_grove(&mut self, c: &mut Canvas, ctx: &Ctx, p: &Pal) {
         let on = self.ports.grove_5v;
         let fun = self.ports.grove_i2c;
         let power = match on {
@@ -1314,7 +1314,7 @@ impl Interceptor {
         vsep_rows(c, p, LIST_X + 100, 3, rows.len());
     }
 
-    pub(super) fn draw_serial(&mut self, c: &mut Canvas<Window>, ctx: &Ctx, p: &Pal) {
+    pub(super) fn draw_serial(&mut self, c: &mut Canvas, ctx: &Ctx, p: &Pal) {
         let s = &self.ports.serial;
         if s.ports.is_empty() {
             let lines = vec![
@@ -1366,7 +1366,7 @@ impl Interceptor {
         scrollbar(c, ctx, total, vis, total.saturating_sub(vis).saturating_sub(self.scroll[PAGE_SER]));
     }
 
-    pub(super) fn draw_i2c(&mut self, c: &mut Canvas<Window>, ctx: &Ctx, p: &Pal) {
+    pub(super) fn draw_i2c(&mut self, c: &mut Canvas, ctx: &Ctx, p: &Pal) {
         let i2c = &self.ports.i2c;
         if i2c.buses.is_empty() && !self.mock {
             let lines = vec!["No /dev/i2c-* bus found.".to_string(), "Missing: dtparam=i2c_arm=on".into(), "in /boot/firmware/config.txt, then reboot.".into(), "Needs read / write access (group i2c).".into()];
@@ -1411,7 +1411,7 @@ impl Interceptor {
         scrollbar(c, ctx, total, vis, self.scroll[PAGE_I2C]);
     }
 
-    pub(super) fn draw_gpio(&mut self, c: &mut Canvas<Window>, ctx: &Ctx, p: &Pal) {
+    pub(super) fn draw_gpio(&mut self, c: &mut Canvas, ctx: &Ctx, p: &Pal) {
         if self.ports.gpio.is_empty() {
             let lines = match &self.ports.gpio_err {
                 Some(e) => vec![e.clone()],
@@ -1444,7 +1444,7 @@ impl Interceptor {
         scrollbar(c, ctx, chip.lines.len(), vis, self.scroll[PAGE_GPIO]);
     }
 
-    pub(super) fn draw_w1(&mut self, c: &mut Canvas<Window>, ctx: &Ctx, p: &Pal) {
+    pub(super) fn draw_w1(&mut self, c: &mut Canvas, ctx: &Ctx, p: &Pal) {
         let devs = match &self.ports.w1 {
             Err(lines) => {
                 let lines = lines.clone();

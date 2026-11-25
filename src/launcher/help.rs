@@ -8,10 +8,9 @@
 //! Drawn over the app area like a window: a title band, 16 px rows (key | what it does), the shared
 //! scroll bar. Esc, Return or Help again closes it; Up/Down, PageUp/PageDown and the wheel scroll.
 
-use sdl2::keyboard::Keycode;
-use sdl2::rect::Rect;
-use sdl2::render::Canvas;
-use sdl2::video::Window;
+use crate::keys::Keycode;
+use crate::gfx::Rect;
+use crate::gfx::Canvas;
 
 use crate::chrome;
 use crate::font::FontSystem;
@@ -147,7 +146,7 @@ impl HelpView {
         }
     }
 
-    pub fn draw(&self, c: &mut Canvas<Window>, fs: &FontSystem, tm: &ThemeManager) {
+    pub fn draw(&self, c: &mut Canvas, fs: &FontSystem, tm: &ThemeManager) {
         let ink = tm.get_color("foreground");
         let faint = widgets::secondary_ink(tm);
         let band = tm.get_color("line");
@@ -207,7 +206,7 @@ impl crate::launcher::app::LauncherApp for HelpApp {
         format!("{}: {}", i18n::tr("Help"), i18n::tr_s(&self.view.title))
     }
 
-    fn key(&mut self, key: Keycode, _mods: sdl2::keyboard::Mod, _repeat: bool, _ctx: &crate::launcher::app::Ctx) -> crate::launcher::app::AppAction {
+    fn key(&mut self, key: Keycode, _mods: crate::keys::Mod, _repeat: bool, _ctx: &crate::launcher::app::Ctx) -> crate::launcher::app::AppAction {
         if self.view.key(crate::platform::keys::arrow_alias(key)) {
             crate::launcher::app::AppAction::Quit
         } else {
@@ -237,7 +236,7 @@ impl crate::launcher::app::LauncherApp for HelpApp {
         crate::launcher::app::Sizing::Flexible
     }
 
-    fn draw(&mut self, c: &mut Canvas<Window>, _assets: &mut crate::assets::AssetStore, ctx: &crate::launcher::app::Ctx) {
+    fn draw(&mut self, c: &mut Canvas, _assets: &mut crate::assets::AssetStore, ctx: &crate::launcher::app::Ctx) {
         self.view.draw(c, ctx.fs, ctx.tm);
     }
 }

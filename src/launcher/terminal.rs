@@ -14,10 +14,9 @@ use std::process::{Child, Command, Stdio};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
-use sdl2::keyboard::{Keycode, Mod};
-use sdl2::rect::Rect;
-use sdl2::render::Canvas;
-use sdl2::video::Window;
+use crate::keys::{Keycode, Mod};
+use crate::gfx::Rect;
+use crate::gfx::Canvas;
 
 use crate::chrome::BAR_H;
 use crate::font::FontSystem;
@@ -606,7 +605,7 @@ impl Terminal {
     }
 
     /// Draw on the current surface; resizes the grid first when the surface changed size.
-    pub fn draw(&mut self, c: &mut Canvas<Window>, fs: &FontSystem, tm: &ThemeManager) {
+    pub fn draw(&mut self, c: &mut Canvas, fs: &FontSystem, tm: &ThemeManager) {
         self.fit();
         let ink = tm.get_color("foreground");
         let paper = tm.get_color("widget_face_active");

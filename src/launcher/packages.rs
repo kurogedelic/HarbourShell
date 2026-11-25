@@ -229,20 +229,16 @@ pub fn icon_for_name(name: &str) -> Option<Package> {
 }
 
 /// Load each package's icon (`app/<id>/icon`) and its `res/` PNGs (`app/<id>/res/...`) into the store.
-pub fn load_assets<'r>(
-    assets: &mut crate::assets::AssetStore<'r>,
-    creator: &'r sdl2::render::TextureCreator<sdl2::video::WindowContext>,
-    pkgs: &[Package],
-) {
+pub fn load_assets(assets: &mut crate::assets::AssetStore, pkgs: &[Package]) {
     for p in pkgs {
         if let Some(icon) = &p.icon {
-            if let Err(e) = assets.load_icon_file(creator, &icon_key(&p.id), icon) {
+            if let Err(e) = assets.load_icon_file(&icon_key(&p.id), icon) {
                 eprintln!("[apps] {}: icon {}: {e}", p.id, icon.display());
             }
         }
         let res = p.dir.join("res");
         if res.is_dir() {
-            assets.load_tree(creator, &res, &res_key(&p.id));
+            assets.load_tree(&res, &res_key(&p.id));
         }
     }
 }

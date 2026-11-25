@@ -3,9 +3,8 @@
 //! Harbour OS デスクトップはこのトレイトを通じて任意のアプリを起動・描画する。
 //! すべてのアプリはキーボード操作を基本にしつつ、必要に応じてポインタ入力も受ける。
 
-use sdl2::keyboard::{Keycode, Mod};
-use sdl2::render::Canvas;
-use sdl2::video::Window;
+use crate::keys::{Keycode, Mod};
+use crate::gfx::Canvas;
 
 use crate::font::FontSystem;
 use crate::input::PointerInput;
@@ -30,7 +29,7 @@ pub trait App {
     /// 描画。与えられた矩形内に描くこと。
     fn draw(
         &mut self,
-        c: &mut Canvas<Window>,
+        c: &mut Canvas,
         font: &FontSystem,
         theme: &ThemeManager,
         x: i32,

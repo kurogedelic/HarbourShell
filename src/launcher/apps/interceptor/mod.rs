@@ -26,11 +26,10 @@ use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use sdl2::keyboard::{Keycode, Mod};
-use sdl2::pixels::Color;
-use sdl2::rect::Rect;
-use sdl2::render::Canvas;
-use sdl2::video::Window;
+use crate::keys::{Keycode, Mod};
+use crate::gfx::Color;
+use crate::gfx::Rect;
+use crate::gfx::Canvas;
 
 use crate::assets::AssetStore;
 use crate::chrome;
@@ -2259,7 +2258,7 @@ fn rows_rect(i: i32, n: i32) -> Rect {
 /// Zebra: odd items get the alt tone.
 /// A list row's background: a zebra tone on odd rows and a 1 px rule along the bottom, so every
 /// item is separated from the next.
-fn zebra(c: &mut Canvas<Window>, p: &Pal, r: Rect, n: usize) {
+fn zebra(c: &mut Canvas, p: &Pal, r: Rect, n: usize) {
     if n % 2 == 1 {
         ui::fill_rect(c, r, p.alt);
     }
@@ -2267,7 +2266,7 @@ fn zebra(c: &mut Canvas<Window>, p: &Pal, r: Rect, n: usize) {
 }
 
 /// Zebra, then the cursor plate on top when `sel`. Returns (primary, secondary) text colours.
-fn row_style(c: &mut Canvas<Window>, ctx: &Ctx, p: &Pal, r: Rect, idx: usize, sel: bool) -> (Color, Color) {
+fn row_style(c: &mut Canvas, ctx: &Ctx, p: &Pal, r: Rect, idx: usize, sel: bool) -> (Color, Color) {
     zebra(c, p, r, idx);
     if sel {
         widgets::draw_row_plate(c, ctx.tm, r);
@@ -2290,17 +2289,17 @@ pub fn mask_addr(addr: &str, on: bool) -> String {
     addr.split(':').enumerate().map(|(i, o)| if i + 1 == n { o.to_string() } else { "**".to_string() }).collect::<Vec<_>>().join(":")
 }
 
-fn text_row(c: &mut Canvas<Window>, ctx: &Ctx, x: i32, y: i32, w: i32, s: &str, col: Color) {
+fn text_row(c: &mut Canvas, ctx: &Ctx, x: i32, y: i32, w: i32, s: &str, col: Color) {
     text_data(c, ctx, x, y, w, &i18n::tr_s(s), col);
 }
 
 /// Like [`text_row`] for data (device names, addresses, decoded frames): never translated.
-fn text_data(c: &mut Canvas<Window>, ctx: &Ctx, x: i32, y: i32, w: i32, s: &str, col: Color) {
+fn text_data(c: &mut Canvas, ctx: &Ctx, x: i32, y: i32, w: i32, s: &str, col: Color) {
     let t = chrome::fit_text(ctx.fs, s, w);
     ctx.fs.draw_text(c, x, y + 1, &t, col);
 }
 
-fn right_text(c: &mut Canvas<Window>, ctx: &Ctx, right: i32, y: i32, s: &str, col: Color) {
+fn right_text(c: &mut Canvas, ctx: &Ctx, right: i32, y: i32, s: &str, col: Color) {
     let s = i18n::tr_s(s);
     let w = ctx.fs.measure_text(&s);
     ctx.fs.draw_text(c, right - w, y + 1, &s, col);
@@ -2308,11 +2307,11 @@ fn right_text(c: &mut Canvas<Window>, ctx: &Ctx, right: i32, y: i32, s: &str, co
 
 /// The header band every page uses: one 16 px row (body row `row`), left text, optional right
 /// text, closed by an ink rule on its last pixel row.
-fn header_band(c: &mut Canvas<Window>, ctx: &Ctx, p: &Pal, row: i32, left: &str, right: &str) {
+fn header_band(c: &mut Canvas, ctx: &Ctx, p: &Pal, row: i32, left: &str, right: &str) {
     band_at(c, ctx, p, row_rect(row), left, right);
 }
 
-fn band_at(c: &mut Canvas<Window>, ctx: &Ctx, p: &Pal, r: Rect, left: &str, right: &str) {
+fn band_at(c: &mut Canvas, ctx: &Ctx, p: &Pal, r: Rect, left: &str, right: &str) {
     ui::fill_rect(c, r, p.band);
     ui::line(c, r.x(), r.bottom() - 1, r.right() - 1, r.bottom() - 1, p.ink);
     let rw = if right.is_empty() { 0 } else { ctx.fs.measure_text(&i18n::tr_s(right)) + 8 };
@@ -2324,20 +2323,20 @@ fn band_at(c: &mut Canvas<Window>, ctx: &Ctx, p: &Pal, r: Rect, left: &str, righ
 
 /// The outline of a list area: left, right and bottom edges (the top edge is the rule above it,
 /// so the 16 px rows underneath keep their grid).
-fn frame_sides(c: &mut Canvas<Window>, p: &Pal, r: Rect) {
+fn frame_sides(c: &mut Canvas, p: &Pal, r: Rect) {
     ui::line(c, r.x(), r.y(), r.x(), r.bottom() - 1, p.band);
     ui::line(c, r.right() - 1, r.y(), r.right() - 1, r.bottom() - 1, p.band);
     ui::line(c, r.x(), r.bottom() - 1, r.right() - 1, r.bottom() - 1, p.band);
 }
 
 /// A column separator at `x`, from body row `first_row` down to the frame's bottom line.
-fn vsep(c: &mut Canvas<Window>, p: &Pal, x: i32, first_row: i32) {
+fn vsep(c: &mut Canvas, p: &Pal, x: i32, first_row: i32) {
     ui::line(c, x, BODY_Y + first_row * ROW, x, body_end() - 1, p.band);
 }
 
 /// A column separator over `rows` filled rows from body row `first_row` only, so it does not run on
 /// through the empty part of a short list.
-fn vsep_rows(c: &mut Canvas<Window>, p: &Pal, x: i32, first_row: i32, rows: usize) {
+fn vsep_rows(c: &mut Canvas, p: &Pal, x: i32, first_row: i32, rows: usize) {
     if rows == 0 {
         return;
     }
@@ -2345,19 +2344,19 @@ fn vsep_rows(c: &mut Canvas<Window>, p: &Pal, x: i32, first_row: i32, rows: usiz
     ui::line(c, x, BODY_Y + first_row * ROW, x, end, p.band);
 }
 
-fn scrollbar(c: &mut Canvas<Window>, ctx: &Ctx, total: usize, visible: usize, offset: usize) {
+fn scrollbar(c: &mut Canvas, ctx: &Ctx, total: usize, visible: usize, offset: usize) {
     let sb = ScrollBar::new(body_scrollbar_rect(), total, visible, offset);
     sb.draw(c, ctx.tm, None);
 }
 
 /// RSSI as a 40 x 8 meter, vertically centred in the row at `y`.
-fn rssi_meter(c: &mut Canvas<Window>, ctx: &Ctx, x: i32, y: i32, rssi: Option<i16>) {
+fn rssi_meter(c: &mut Canvas, ctx: &Ctx, x: i32, y: i32, rssi: Option<i16>) {
     let frac = rssi.map(|r| ((r as i32 + 100).clamp(0, 70)) as f32 / 70.0).unwrap_or(0.0);
     draw_meter(c, ctx.tm, Rect::new(x, y + 4, 40, 8), frac);
 }
 
 impl Interceptor {
-    fn draw_tabs(&self, c: &mut Canvas<Window>, ctx: &Ctx, p: &Pal) {
+    fn draw_tabs(&self, c: &mut Canvas, ctx: &Ctx, p: &Pal) {
         tabs_strip(self.page, self.tab_first).draw_strip(c, ctx.fs, ctx.tm);
         if self.paused {
             // Two thin bars in the free 4 px at the right end of the strip.
@@ -2366,7 +2365,7 @@ impl Interceptor {
         }
     }
 
-    fn draw_eth(&mut self, c: &mut Canvas<Window>, ctx: &Ctx, p: &Pal) {
+    fn draw_eth(&mut self, c: &mut Canvas, ctx: &Ctx, p: &Pal) {
         let g = eth_graph_rect();
         // The newest samples the graph has room for; Peak and the scale are of what is shown.
         let slots = eth_slots(g);
@@ -2420,7 +2419,7 @@ impl Interceptor {
         ui::draw_rect(c, g, p.ink);
     }
 
-    fn draw_bt(&mut self, c: &mut Canvas<Window>, ctx: &Ctx, p: &Pal) {
+    fn draw_bt(&mut self, c: &mut Canvas, ctx: &Ctx, p: &Pal) {
         let ctrl = &self.bt_ctrl;
         let left = if let Some(m) = &self.bt_state {
             m.clone()
@@ -2452,7 +2451,7 @@ impl Interceptor {
         scrollbar(c, ctx, self.bt_devs.len(), vis, self.scroll[PAGE_BT]);
     }
 
-    fn draw_ble(&mut self, c: &mut Canvas<Window>, ctx: &Ctx, p: &Pal) {
+    fn draw_ble(&mut self, c: &mut Canvas, ctx: &Ctx, p: &Pal) {
         let sorted = self.ble.sorted();
         let head = match &self.ble_state {
             Some(m) => m.clone(),
@@ -2490,7 +2489,7 @@ impl Interceptor {
         scrollbar(c, ctx, total, vis, self.scroll[PAGE_BLE]);
     }
 
-    fn draw_osc(&mut self, c: &mut Canvas<Window>, ctx: &Ctx, p: &Pal) {
+    fn draw_osc(&mut self, c: &mut Canvas, ctx: &Ctx, p: &Pal) {
         let now = self.now_ms();
         let o = &self.osc;
         let ip = o.ips.first().cloned().unwrap_or_else(|| "0.0.0.0".into());
@@ -2565,7 +2564,7 @@ impl Interceptor {
         }
     }
 
-    fn draw_ir(&mut self, c: &mut Canvas<Window>, ctx: &Ctx, p: &Pal) {
+    fn draw_ir(&mut self, c: &mut Canvas, ctx: &Ctx, p: &Pal) {
         match &self.ir_hw {
             IrHw::None(lines) => {
                 header_band(c, ctx, p, 0, "No IR receiver found", "");
@@ -2612,7 +2611,7 @@ impl Interceptor {
         }
     }
 
-    fn draw_dev(&mut self, c: &mut Canvas<Window>, ctx: &Ctx, p: &Pal) {
+    fn draw_dev(&mut self, c: &mut Canvas, ctx: &Ctx, p: &Pal) {
         let mask = self.mask;
         let Some(dv) = self.dev.as_mut() else { return };
         dv.fit();
@@ -2627,7 +2626,7 @@ impl Interceptor {
         frame_sides(c, p, body_frame(list_w()));
     }
 
-    fn draw_midi(&mut self, c: &mut Canvas<Window>, ctx: &Ctx, p: &Pal) {
+    fn draw_midi(&mut self, c: &mut Canvas, ctx: &Ctx, p: &Pal) {
         // Rows 0..3 (48 px): 4 px margin, piano C1..B6 (20), 4 px gap, 16 channel pads (16), 4 px margin.
         const FIRST: u8 = 24;
         const LAST: u8 = 95;
@@ -3030,7 +3029,7 @@ impl LauncherApp for Interceptor {
             self.osc.feed_packet(ms, "192.168.3.7:9001", &mock_osc_packet(self.osc.mock_n));
             dirty = true;
         }
-        if self.mock && !self.paused && now.duration_since(self.last_mock) >= Duration::from_millis(700) {
+        if self.mock && !crate::rt::frozen() && !self.paused && now.duration_since(self.last_mock) >= Duration::from_millis(700) {
             self.last_mock = now;
             self.mock_step += 1;
             let ms = self.t0.elapsed().as_millis() as u64;
@@ -3045,7 +3044,7 @@ impl LauncherApp for Interceptor {
             dirty = true;
         }
         let mut usb_changed = false;
-        if now.duration_since(self.last_sample) >= Duration::from_secs(1) && !self.paused {
+        if now.duration_since(self.last_sample) >= Duration::from_secs(1) && !self.paused && !(self.mock && crate::rt::frozen()) {
             self.last_sample = now;
             if self.mock {
                 let at = self.t0.elapsed() + Duration::from_secs(31);
@@ -3074,7 +3073,7 @@ impl LauncherApp for Interceptor {
         dirty
     }
 
-    fn draw(&mut self, c: &mut Canvas<Window>, _assets: &mut AssetStore, ctx: &Ctx) {
+    fn draw(&mut self, c: &mut Canvas, _assets: &mut AssetStore, ctx: &Ctx) {
         let tm = ctx.tm;
         let p = Pal {
             ink: tm.get_color("foreground"),
@@ -3554,34 +3553,20 @@ mod tests {
     /// 320 x 170), and that no pixel below is left unpainted.
     #[test]
     fn every_page_follows_the_row_grid() {
-        std::env::set_var("SDL_VIDEODRIVER", "dummy");
-        let Ok(sdl) = sdl2::init() else {
-            eprintln!("skipped: SDL cannot start here");
-            return;
-        };
-        let Ok(video) = sdl.video() else {
-            eprintln!("skipped: no SDL video");
-            return;
-        };
         for (w, h) in [(320, 170), (640, 300)] {
-            let Ok(window) = video.window("grid", w as u32, h as u32).build() else {
-                eprintln!("skipped: no window");
-                return;
-            };
-            let mut canvas = window.into_canvas().software().build().unwrap();
+            let mut canvas = Canvas::new(crate::gfx::Surface::new(w as u32, h as u32));
             grid::with_surface((w, h), || grid_check(&mut canvas, w as usize, h as usize));
         }
     }
 
-    fn grid_check(canvas: &mut Canvas<Window>, w: usize, h: usize) {
+    fn grid_check(canvas: &mut Canvas, w: usize, h: usize) {
         use crate::font::{load_mplus_f12r, FontSystem};
         use crate::pdfont::PlaydateFont;
         use crate::system::mock::MockBackend;
         use crate::theme::{Theme, ThemeManager};
-        use sdl2::pixels::PixelFormatEnum;
+        use crate::gfx::PixelFormat;
 
-        let tc = canvas.texture_creator();
-        let mut assets = AssetStore::new(&tc).unwrap();
+        let mut assets = AssetStore::new().unwrap();
         let mut fs = FontSystem::new();
         fs.load_font(load_mplus_f12r());
         if let Ok(mut f) = std::fs::read("assets/fonts/Cavs.fnt").map_err(|e| e.to_string()).and_then(|b| PlaydateFont::parse(&b)) {
@@ -3603,14 +3588,15 @@ mod tests {
                 canvas.set_draw_color(Color::RGB(255, 0, 255));
                 canvas.clear();
                 app.draw(canvas, &mut assets, &ctx);
-                let px = canvas.read_pixels(None, PixelFormatEnum::RGB24).unwrap();
+                let px = canvas.read_pixels(None, PixelFormat::Rgb24).unwrap();
                 let at = |x: usize, y: usize| (px[(y * w + x) * 3], px[(y * w + x) * 3 + 1], px[(y * w + x) * 3 + 2]);
                 let who = format!("{theme} / {name} / {w}x{h}");
                 // Bands in the column x = 5.
                 // The tab strip (y 16..36) is folder tabs of one size, rule on its last pixel row.
-                let ink = tm.get_color("foreground");
+                // The canvas holds RGB565: expect the colours after the same round trip.
+                let ink = Color::from_rgb565(tm.get_color("foreground").to_rgb565());
                 let ink3 = (ink.r, ink.g, ink.b);
-                let sb = tm.get_color("select_bg");
+                let sb = Color::from_rgb565(tm.get_color("select_bg").to_rgb565());
                 let strip = tabs_strip(app.page, app.tab_first);
                 let act = (0..w as i32).find(|&x| strip.hit(x, 30, &tm) == Some(widgets::FolderHit::Tab(page))).expect("active tab shown") as usize;
                 let idle = (0..w as i32).find(|&x| matches!(strip.hit(x, 30, &tm), Some(widgets::FolderHit::Tab(i)) if i != page)).unwrap() as usize;

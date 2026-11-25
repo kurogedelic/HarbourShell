@@ -17,11 +17,10 @@ pub mod net;
 use std::collections::BTreeMap;
 use std::sync::mpsc::{channel, Receiver, Sender};
 
-use sdl2::keyboard::{Keycode, Mod};
-use sdl2::pixels::Color;
-use sdl2::rect::Rect;
-use sdl2::render::Canvas;
-use sdl2::video::Window;
+use crate::keys::{Keycode, Mod};
+use crate::gfx::Color;
+use crate::gfx::Rect;
+use crate::gfx::Canvas;
 
 use crate::assets::AssetStore;
 use crate::grid;
@@ -265,7 +264,7 @@ pub fn make() -> Box<dyn LauncherApp> {
     let mock = !rt::WEB && matches!(std::env::var("HARBOUR_MOCK").as_deref(), Ok("1" | "true" | "yes" | "on"));
     let store = if mock { Store { dir: None } } else { Store::home() };
     let mut app = HarbourTalk::new(store, mock);
-    app.reload_rooms(chrono::Local::now().timestamp());
+    app.reload_rooms(crate::rt::now().timestamp());
     Box::new(app)
 }
 
@@ -471,7 +470,7 @@ impl HarbourTalk {
                 Reply::Posted(Ok(p)) => {
                     self.sending = false;
                     self.status = None;
-                    self.settings.last_post = p.time.max(chrono::Local::now().timestamp());
+                    self.settings.last_post = p.time.max(crate::rt::now().timestamp());
                     self.save_settings();
                     self.count_post(&p);
                     let list = self.room_posts.entry(p.room.clone()).or_default();
@@ -491,7 +490,7 @@ impl HarbourTalk {
                     self.sending = false;
                     // The server's own count ("Wait 12 s to post again") drives the countdown.
                     if let Some(n) = net::wait_seconds(&e) {
-                        self.settings.last_post = chrono::Local::now().timestamp() - net::MIN_GAP + n;
+                        self.settings.last_post = crate::rt::now().timestamp() - net::MIN_GAP + n;
                         self.save_settings();
                     }
                     self.status = Some(e);
@@ -961,7 +960,7 @@ impl LauncherApp for HarbourTalk {
         dirty
     }
 
-    fn draw(&mut self, c: &mut Canvas<Window>, _assets: &mut AssetStore, ctx: &Ctx) {
+    fn draw(&mut self, c: &mut Canvas, _assets: &mut AssetStore, ctx: &Ctx) {
         let tm = ctx.tm;
         let p = Paint {
             ink: tm.get_color("foreground"),
@@ -997,7 +996,7 @@ fn text_y(row_y: i32) -> i32 {
 
 impl HarbourTalk {
     /// The head row: `left` in bold, `right` faint at the right edge.
-    fn draw_head(&self, c: &mut Canvas<Window>, ctx: &Ctx, p: &Paint, left: &str, right: &str) {
+    fn draw_head(&self, c: &mut Canvas, ctx: &Ctx, p: &Paint, left: &str, right: &str) {
         let fs = ctx.fs;
         let y = text_y(head_y());
         let rw = fs.measure_text(right);
@@ -1007,7 +1006,7 @@ impl HarbourTalk {
         fs.draw_text(c, right_x, y, right, p.faint);
     }
 
-    fn draw_toolbar(&self, c: &mut Canvas<Window>, ctx: &Ctx, p: &Paint) {
+    fn draw_toolbar(&self, c: &mut Canvas, ctx: &Ctx, p: &Paint) {
         ui::line(c, 0, bar_rule_y(), grid::sw() - 1, bar_rule_y(), p.ink);
         let bar = self.toolbar();
         for (r, (a, on, default)) in tool_rects(bar.len()).into_iter().zip(bar) {
@@ -1031,7 +1030,7 @@ impl HarbourTalk {
 
     /// Two-row entries (title in bold with a faint note at the right, then a line of text) with
     /// the selected one on a plate, dotted rules between and a scroll bar when they do not fit.
-    fn draw_entries(&self, c: &mut Canvas<Window>, ctx: &Ctx, p: &Paint, rows: &[(String, String, String)], sel: usize, top: usize) {
+    fn draw_entries(&self, c: &mut Canvas, ctx: &Ctx, p: &Paint, rows: &[(String, String, String)], sel: usize, top: usize) {
         let fs = ctx.fs;
         let right = text_right();
         let measure = |t: &str| fs.measure_text(t);
@@ -1061,7 +1060,7 @@ impl HarbourTalk {
         }
     }
 
-    fn draw_rooms(&self, c: &mut Canvas<Window>, ctx: &Ctx, p: &Paint, now: i64) {
+    fn draw_rooms(&self, c: &mut Canvas, ctx: &Ctx, p: &Paint, now: i64) {
         let left = match self.status_text() {
             Some(s) => s,
             None if self.is_demo() => tr("Demo board").to_string(),
@@ -1090,7 +1089,7 @@ impl HarbourTalk {
         self.draw_entries(c, ctx, p, &rows, self.room_sel, self.room_top);
     }
 
-    fn draw_timeline(&self, c: &mut Canvas<Window>, ctx: &Ctx, p: &Paint, now: i64) {
+    fn draw_timeline(&self, c: &mut Canvas, ctx: &Ctx, p: &Paint, now: i64) {
         let left = match self.status_text() {
             Some(s) => s,
             None => format!("# {}", self.room_name(&self.room)),
@@ -1107,7 +1106,7 @@ impl HarbourTalk {
         self.draw_entries(c, ctx, p, &rows, self.sel, self.top);
     }
 
-    fn draw_read(&mut self, c: &mut Canvas<Window>, ctx: &Ctx, p: &Paint, now: i64) {
+    fn draw_read(&mut self, c: &mut Canvas, ctx: &Ctx, p: &Paint, now: i64) {
         let fs = ctx.fs;
         let Some(post) = self.posts.get(self.sel).cloned() else {
             self.view = View::Timeline;
@@ -1134,7 +1133,7 @@ impl HarbourTalk {
         }
     }
 
-    fn draw_write(&self, c: &mut Canvas<Window>, ctx: &Ctx, p: &Paint, now: i64) {
+    fn draw_write(&self, c: &mut Canvas, ctx: &Ctx, p: &Paint, now: i64) {
         let fs = ctx.fs;
         let count = format!("{}/{}", self.draft.len(), net::MAX_TEXT);
         let room = format!("# {}", self.room_name(&self.room));
@@ -1177,7 +1176,7 @@ impl HarbourTalk {
         fs.draw_text(c, LEFT, text_y(hint_y), &hint, p.faint);
     }
 
-    fn draw_field(&self, c: &mut Canvas<Window>, ctx: &Ctx, p: &Paint) {
+    fn draw_field(&self, c: &mut Canvas, ctx: &Ctx, p: &Paint) {
         let fs = ctx.fs;
         let (title, label, hint) = if self.view == View::Name {
             ("Handle name", "Your name on the board (up to 16):", "Shown with this device's id, like name#3fa2.")
