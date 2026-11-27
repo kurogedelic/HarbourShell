@@ -1,0 +1,7 @@
+[Desktop Entry]
+Name=Devices
+Name[ja]=デバイス
+Exec=harbour:hardware
+Icon=icon.png
+Terminal=false
+Type=Application

@@ -91,6 +91,7 @@ DEFAULT_DEST = {
     "Browser": "apps/browser/icon.png",
     "Calendar": "apps/calendar/icon.png",
     "Interceptor": "apps/interceptor/icon.png",
+    "Devices": "apps/hardware/icon.png",
     "Infoscope": "apps/infoscope/icon.png",
 }
 DEFAULT_DIR = "assets/images/icons"

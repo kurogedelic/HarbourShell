@@ -15,6 +15,7 @@ pub mod graph;
 pub mod harbourtalk;
 pub mod imageviewer;
 pub mod infoscope;
+pub mod hardware;
 pub mod interceptor;
 pub mod monitor;
 pub mod music;
@@ -46,6 +47,7 @@ pub const REGISTRY: &[AppDef] = &[
     AppDef { id: "calendar", name: "Calendar", make: calendar::make },
     AppDef { id: "graph", name: "Graph", make: graph::make },
     AppDef { id: "interceptor", name: "Interceptor", make: interceptor::make },
+    AppDef { id: "hardware", name: "Devices", make: hardware::make },
     AppDef { id: "infoscope", name: "Infoscope", make: infoscope::make },
     AppDef { id: "yacht", name: "Yacht", make: yacht::make },
     AppDef { id: "harbourtalk", name: "HarbourTalk", make: harbourtalk::make },

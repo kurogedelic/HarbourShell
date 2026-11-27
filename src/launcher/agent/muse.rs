@@ -51,6 +51,9 @@ pub enum MuseError {
     Offline,
     /// Muse did not answer in time (`detail`).
     NoAnswer(String),
+    /// The service could not reach Muse's cloud *and says the message was not sent* (stream
+    /// error, HTTP 400/502, dropped connection). Safe to retry; usually clears in seconds.
+    NotSent(String),
     /// The send may or may not have been delivered.
     Uncertain(String),
     Timeout,
@@ -59,17 +62,35 @@ pub enum MuseError {
 }
 
 impl MuseError {
-    /// Short plain text for the 320x170 screen.
+    /// Short plain text for the 320x170 screen, in the current UI language. Says what to do.
     pub fn user_message(&self) -> String {
+        self.user_message_in(crate::launcher::i18n::get() == crate::launcher::i18n::Lang::Ja)
+    }
+
+    pub fn user_message_in(&self, ja: bool) -> String {
+        let t = |en: String, jp: String| if ja { jp } else { en };
         match self {
-            MuseError::SdkMissing => "Muse SDK is not running (see docs/MUSE.md)".into(),
-            MuseError::NoPermission => "No access to the Muse socket: add this user to its group".into(),
-            MuseError::Offline => "Muse is offline: pairing, token or network (run musegadget doctor)".into(),
-            MuseError::NoAnswer(d) => format!("Muse gave no answer: {d}"),
-            MuseError::Uncertain(d) => format!("Maybe not delivered to Muse: {d}"),
-            MuseError::Timeout => "Muse timed out".into(),
+            MuseError::SdkMissing => t(
+                "Muse service is not running. Install/start musegadget (docs/MUSE.md)".into(),
+                "Museサービスが動いていません。musegadget を入れて起動してください(docs/MUSE.md)".into(),
+            ),
+            MuseError::NoPermission => t(
+                "No access to the Muse socket. Add this user to its group, then log in again".into(),
+                "Museのソケットを使う権限がありません。このユーザーをそのグループに追加し、再ログインしてください".into(),
+            ),
+            MuseError::Offline => t(
+                "Not connected to Muse. Pair it again or check Wi-Fi and token: sudo musegadget doctor".into(),
+                "Museにつながっていません。ペアリング・Wi-Fi・トークンを確認: sudo musegadget doctor".into(),
+            ),
+            MuseError::NotSent(_) => t(
+                "Muse could not be reached just now. Nothing was sent. Try again in a moment".into(),
+                "いまMuseに届きませんでした。何も送られていません。少し待ってもう一度".into(),
+            ),
+            MuseError::NoAnswer(d) => t(format!("Muse gave no answer: {d}"), format!("Museから返事がありません: {d}")),
+            MuseError::Uncertain(d) => t(format!("Maybe not delivered to Muse: {d}"), format!("Museに届いたか不明です: {d}")),
+            MuseError::Timeout => t("Muse took too long. Try again".into(), "Museの返事が遅すぎました。もう一度".into()),
             MuseError::Remote(e) => format!("Muse: {e}"),
-            MuseError::Protocol(e) => format!("Muse protocol error: {e}"),
+            MuseError::Protocol(e) => t(format!("Muse protocol error: {e}"), format!("Museとの通信エラー: {e}")),
         }
     }
 }
@@ -209,6 +230,8 @@ pub fn parse_reply(line: &str) -> Result<AskReply, MuseError> {
             MuseError::Uncertain(err.to_string())
         } else if err.contains("not connected") {
             MuseError::Offline
+        } else if err.contains("was not sent") {
+            MuseError::NotSent(err.to_string())
         } else {
             MuseError::Remote(err.to_string())
         });
@@ -225,18 +248,19 @@ pub struct MuseProvider<L: Link> {
     name: String,
     cfg: MuseSettings,
     link: L,
+    retry_delay: Duration,
 }
 
 impl MuseProvider<UnixLink> {
     pub fn new(name: &str, cfg: MuseSettings) -> Self {
         let link = UnixLink(cfg.socket.clone());
-        Self { name: name.to_string(), cfg, link }
+        Self { name: name.to_string(), cfg, link, retry_delay: Duration::from_secs(3) }
     }
 }
 
 impl<L: Link> MuseProvider<L> {
     pub fn with_link(name: &str, cfg: MuseSettings, link: L) -> Self {
-        Self { name: name.to_string(), cfg, link }
+        Self { name: name.to_string(), cfg, link, retry_delay: Duration::from_secs(3) }
     }
 
     fn request(&self, text: &str) -> String {
@@ -252,8 +276,15 @@ impl<L: Link> MuseProvider<L> {
             return Err(MuseError::Remote("empty message".into()));
         }
         // The SDK bounds the wait itself; add slack for its cleanup.
-        let line = self.link.roundtrip(&self.request(text), Duration::from_secs(self.cfg.wait_secs as u64 + 30))?;
-        parse_reply(&line)
+        let t = Duration::from_secs(self.cfg.wait_secs as u64 + 30);
+        let r = self.link.roundtrip(&self.request(text), t).map_err(MuseError::from).and_then(|l| parse_reply(&l));
+        // The service says "the message was not sent": nothing reached Muse, so one retry cannot
+        // double-send. These are brief cloud hiccups (stream reset, HTTP 400/502).
+        if matches!(r, Err(MuseError::NotSent(_))) {
+            std::thread::sleep(self.retry_delay);
+            return self.link.roundtrip(&self.request(text), t).map_err(MuseError::from).and_then(|l| parse_reply(&l));
+        }
+        r
     }
 }
 
@@ -280,6 +311,45 @@ impl<L: Link> Provider for MuseProvider<L> {
             }
             Err(e) => emit(ProviderEvent::Error(e.user_message())),
         }
+    }
+}
+
+// ---- connection test --------------------------------------------------------
+
+/// What "Test connection" found. Nothing is sent to Muse; only the local socket is probed.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Diagnosis {
+    /// Socket answered: the service is up and this user may use it.
+    ServiceOk,
+    Failed(MuseError),
+}
+
+/// Probe the local service with a request it rejects at once (no message reaches Muse). This
+/// separates "service missing" and "no permission" from a healthy service. Whether the gadget is
+/// paired, has a valid token or is online cannot be read without root: the first real message
+/// then reports `Offline`/`NotSent`, and the text points at `sudo musegadget doctor`.
+pub fn diagnose_with(link: &dyn Link) -> Diagnosis {
+    match link.roundtrip("{}", Duration::from_secs(5)) {
+        Ok(line) => match serde_json::from_str::<Value>(&line) {
+            Ok(v) if v.get("ok").is_some() => Diagnosis::ServiceOk,
+            _ => Diagnosis::Failed(MuseError::Protocol("unexpected answer".into())),
+        },
+        Err(e) => Diagnosis::Failed(e.into()),
+    }
+}
+
+pub fn diagnose(cfg: &MuseSettings) -> Diagnosis {
+    diagnose_with(&UnixLink(cfg.socket.clone()))
+}
+
+pub fn diagnosis_text(d: &Diagnosis, ja: bool) -> String {
+    match d {
+        Diagnosis::ServiceOk => if ja {
+            "Museサービスは動いていて使えます。つながらない時は: sudo musegadget doctor".into()
+        } else {
+            "Muse service is running and usable. If it still fails: sudo musegadget doctor".to_string()
+        },
+        Diagnosis::Failed(e) => e.user_message_in(ja),
     }
 }
 
@@ -517,6 +587,63 @@ mod tests {
         assert!(run(&p, "q").unwrap_err().contains("no answer within 60 seconds"));
     }
 
+    struct Seq(Mutex<Vec<io::Result<String>>>, Arc<Mutex<u32>>);
+    impl Link for Seq {
+        fn roundtrip(&self, _r: &str, _t: Duration) -> io::Result<String> {
+            *self.1.lock().unwrap() += 1;
+            self.0.lock().unwrap().remove(0)
+        }
+    }
+    const NOT_SENT: &str = r#"{"ok":false,"error":"could not follow Muse's replies (HTTP 400); the message was not sent"}"#;
+
+    #[test]
+    fn a_not_sent_error_is_classified_and_retried_once() {
+        assert!(matches!(parse_reply(NOT_SENT), Err(MuseError::NotSent(_))));
+        let n = Arc::new(Mutex::new(0));
+        let ok = r#"{"ok":true,"reply":"hi"}"#.to_string();
+        let mk = |v: Vec<io::Result<String>>| {
+            let mut p = MuseProvider::with_link("muse", settings(), Seq(Mutex::new(v), n.clone()));
+            p.retry_delay = Duration::ZERO;
+            p
+        };
+        // hiccup, then fine: one retry, the user sees the answer
+        assert_eq!(mk(vec![Ok(NOT_SENT.into()), Ok(ok.clone())]).ask("x").unwrap().text, "hi");
+        assert_eq!(*n.lock().unwrap(), 2);
+        // two hiccups: a clear "nothing was sent" error after exactly one retry
+        *n.lock().unwrap() = 0;
+        let e = mk(vec![Ok(NOT_SENT.into()), Ok(NOT_SENT.into())]).ask("x").unwrap_err();
+        assert!(matches!(e, MuseError::NotSent(_)));
+        assert_eq!(*n.lock().unwrap(), 2);
+        assert!(e.user_message_in(false).contains("Nothing was sent"));
+        assert!(e.user_message_in(true).contains("何も送られていません"));
+        // "maybe delivered" is never retried (it could double-send)
+        *n.lock().unwrap() = 0;
+        let u = r#"{"ok":false,"error":"late","sent":"unknown"}"#.to_string();
+        assert!(matches!(mk(vec![Ok(u)]).ask("x"), Err(MuseError::Uncertain(_))));
+        assert_eq!(*n.lock().unwrap(), 1);
+    }
+
+    #[test]
+    fn test_connection_tells_the_states_apart_in_both_languages() {
+        let f = |k: io::ErrorKind| diagnose_with(&Fake { sent: Default::default(), kind: Some(k), resp: String::new() });
+        assert_eq!(f(io::ErrorKind::NotFound), Diagnosis::Failed(MuseError::SdkMissing));
+        assert_eq!(f(io::ErrorKind::PermissionDenied), Diagnosis::Failed(MuseError::NoPermission));
+        let ok = diagnose_with(&Fake { sent: Default::default(), kind: None, resp: r#"{"ok": false, "error": "expected {\"message\": \"...\"}"}"#.into() });
+        assert_eq!(ok, Diagnosis::ServiceOk);
+        let junk = diagnose_with(&Fake { sent: Default::default(), kind: None, resp: "nope".into() });
+        assert!(matches!(junk, Diagnosis::Failed(MuseError::Protocol(_))));
+        for ja in [false, true] {
+            let mut all = vec![diagnosis_text(&ok, ja)];
+            for e in [MuseError::SdkMissing, MuseError::NoPermission, MuseError::Offline, MuseError::NotSent("x".into())] {
+                all.push(diagnosis_text(&Diagnosis::Failed(e), ja));
+            }
+            all.sort();
+            all.dedup();
+            assert_eq!(all.len(), 5, "every state has its own words");
+        }
+        assert!(diagnosis_text(&Diagnosis::Failed(MuseError::NoPermission), false).contains("group"));
+    }
+
     #[test]
     fn error_states_have_plain_messages() {
         let e = |resp: &str| fake(resp).0.ask("q").unwrap_err();
@@ -533,7 +660,7 @@ mod tests {
             assert_eq!(failing(k).ask("q"), Err(want.clone()));
             assert_eq!(run(&failing(k), "q").unwrap_err(), want.user_message());
         }
-        assert!(MuseError::SdkMissing.user_message().contains("docs/MUSE.md"));
+        assert!(MuseError::SdkMissing.user_message_in(false).contains("docs/MUSE.md"));
         assert!(fake("{}").0.ask("  ").is_err());
         // no user line at all
         let opts = ChatOpts::default();

@@ -161,6 +161,65 @@ pub fn airplane_prev(text: &str) -> (bool, bool) {
     (get("wifi="), get("bt="))
 }
 
+/// One echo reply of `ping`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PingReply {
+    pub seq: Option<u32>,
+    pub ttl: Option<u32>,
+    pub ms: f32,
+}
+
+/// `64 bytes from 192.168.3.1: icmp_seq=1 ttl=64 time=1.23 ms` (Linux and macOS; `time<1 ms` counts as 0.5).
+pub fn ping_reply(line: &str) -> Option<PingReply> {
+    if !line.contains(" bytes from ") {
+        return None;
+    }
+    let num = |key: &str| -> Option<&str> {
+        let rest = &line[line.find(key)? + key.len()..];
+        let end = rest.find(|c: char| !(c.is_ascii_digit() || c == '.')).unwrap_or(rest.len());
+        Some(&rest[..end]).filter(|t| !t.is_empty())
+    };
+    let ms = match num("time=") {
+        Some(t) => t.parse().ok()?,
+        None if line.contains("time<") => 0.5,
+        None => return None,
+    };
+    Some(PingReply { seq: num("icmp_seq=").and_then(|t| t.parse().ok()), ttl: num("ttl=").and_then(|t| t.parse().ok()), ms })
+}
+
+/// The totals `ping` prints at the end.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PingSummary {
+    pub sent: u32,
+    pub received: u32,
+    pub loss_pct: f32,
+    /// min / avg / max in ms, when at least one reply came.
+    pub rtt: Option<(f32, f32, f32)>,
+}
+
+/// `3 packets transmitted, 3 received, 0% packet loss` and `rtt min/avg/max/mdev = 1.1/2.2/3.3/0.4 ms`
+/// (macOS: `3 packets received`, `0.0% packet loss`, `round-trip min/avg/max/stddev = ...`).
+pub fn ping_summary(text: &str) -> Option<PingSummary> {
+    let mut out = PingSummary::default();
+    let mut seen = false;
+    for line in text.lines() {
+        if line.contains("packets transmitted") {
+            let nums: Vec<&str> = line.split(',').collect();
+            out.sent = nums.first()?.split_whitespace().next()?.parse().ok()?;
+            out.received = nums.get(1)?.split_whitespace().next()?.parse().ok()?;
+            out.loss_pct = nums.iter().find(|p| p.contains("packet loss"))?.trim().split('%').next()?.parse().ok()?;
+            seen = true;
+        } else if line.contains("min/avg/max") {
+            let vals = line.split('=').nth(1)?.trim().split_whitespace().next()?;
+            let v: Vec<f32> = vals.split('/').filter_map(|t| t.parse().ok()).collect();
+            if v.len() >= 3 {
+                out.rtt = Some((v[0], v[1], v[2]));
+            }
+        }
+    }
+    seen.then_some(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -231,5 +290,23 @@ mod tests {
         let cpu = "processor\t: 0\nmodel name\t: ARMv8 Processor rev 4 (v8l)\nprocessor\t: 1\nmodel name\t: ARMv8 Processor rev 4 (v8l)\n";
         assert_eq!(cpu_summary(cpu), "2 x ARMv8 Processor rev 4 (v8l)");
         assert_eq!(cpu_summary(""), "");
+    }
+
+    #[test]
+    fn ping_lines_and_totals() {
+        let r = ping_reply("64 bytes from 192.168.3.1: icmp_seq=3 ttl=64 time=1.23 ms").unwrap();
+        assert_eq!((r.seq, r.ttl, r.ms), (Some(3), Some(64), 1.23));
+        let r = ping_reply("64 bytes from 8.8.8.8: icmp_seq=1 ttl=117 time=12 ms").unwrap();
+        assert_eq!(r.ms, 12.0);
+        assert_eq!(ping_reply("64 bytes from 10.0.0.1: icmp_seq=1 ttl=64 time<1 ms").unwrap().ms, 0.5);
+        assert_eq!(ping_reply("Request timeout for icmp_seq 2"), None);
+        assert_eq!(ping_reply("PING 8.8.8.8 (8.8.8.8) 56(84) bytes of data."), None);
+        let linux = "--- 8.8.8.8 ping statistics ---\n4 packets transmitted, 3 received, 25% packet loss, time 3004ms\nrtt min/avg/max/mdev = 10.1/11.2/12.3/0.9 ms\n";
+        assert_eq!(ping_summary(linux), Some(PingSummary { sent: 4, received: 3, loss_pct: 25.0, rtt: Some((10.1, 11.2, 12.3)) }));
+        let mac = "3 packets transmitted, 3 packets received, 0.0% packet loss\nround-trip min/avg/max/stddev = 1.0/2.0/3.0/0.8 ms";
+        assert_eq!(ping_summary(mac).unwrap().received, 3);
+        let none = "2 packets transmitted, 0 received, 100% packet loss, time 1001ms";
+        assert_eq!(ping_summary(none), Some(PingSummary { sent: 2, received: 0, loss_pct: 100.0, rtt: None }));
+        assert_eq!(ping_summary("ping: unknown host x"), None);
     }
 }

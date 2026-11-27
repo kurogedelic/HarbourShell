@@ -243,7 +243,7 @@ const AUTO_RULES: &[(&str, Rule)] = &[
     (
         "Tools",
         Rule::Names(&[
-            "Calculator", "Calendar", "Timer", "Sheet", "Text Editor", "Files", "Monitor", "Interceptor", "Terminal",
+            "Calculator", "Calendar", "Timer", "Sheet", "Text Editor", "Files", "Monitor", "Interceptor", "Devices", "Hardware", "Terminal",
         ]),
     ),
 ];

@@ -266,13 +266,12 @@ pub fn draw_wifi(c: &mut Canvas, assets: &mut AssetStore, x: i32, y: i32, signal
 /// Battery: 0 / 1 / 2 / 3 (full) from the percentage, charging, or disabled (no gauge).
 pub fn draw_battery(c: &mut Canvas, assets: &mut AssetStore, x: i32, y: i32, percent: Option<u8>, charging: bool, ink: crate::gfx::Color, dim: crate::gfx::Color) {
     use statusbar::battery_frame as f;
-    let frame = if charging {
-        f::CHARGE
-    } else {
-        match percent {
-            None => f::DISABLED,
-            Some(p) => f::F0 + [10u8, 40, 70].iter().filter(|&&t| p > t).count() as i32,
-        }
+    let level = |p: u8| [10u8, 40, 70].iter().filter(|&&t| p > t).count() as i32;
+    let frame = match (charging, percent) {
+        (_, None) if !charging => f::DISABLED,
+        // Charging: the level frame with a bolt over it (CHARGE = level 0, then CHARGE1..3).
+        (true, p) => [f::CHARGE, f::CHARGE1, f::CHARGE2, f::CHARGE3][level(p.unwrap_or(0)) as usize],
+        (false, p) => f::F0 + level(p.unwrap_or(0)),
     };
     status_icon(c, assets, Icon::Battery, frame, x, y, ink, dim);
 }

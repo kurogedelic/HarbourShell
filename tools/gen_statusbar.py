@@ -40,7 +40,7 @@ ICONS = [
     ("wifi", "Wifi", ["disabled", "0", "1", "2", "3"]),
     ("speaker", "Speaker", ["mute", "0", "1", "2"]),
     ("antenna", "Antenna", ["0", "1", "2", "3"]),
-    ("battery", "Battery", ["0", "1", "2", "3", "charge", "disabled"]),
+    ("battery", "Battery", ["0", "1", "2", "3", "charge", "disabled", "charge1", "charge2", "charge3"]),  # charge* are derived (see derive_battery)
 ]
 
 root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -67,6 +67,32 @@ def derive_globe_disabled():
     return out
 
 
+BOLT = ["...#", "..##", ".##.", "###.", ".##.", "##..", "#..."]  # 4 x 7, centred on a battery frame at x = 4
+
+
+def derive_battery(im):
+    """Frames 6..8 = charge1..3 and frame 4 = charge0: the level frames 0..3 with a lightning bolt over the body.
+    The bolt is solid ink with a one-pixel clear halo (it cuts through the outline top and bottom), so it reads
+    at 12 px and the fill still shows on both sides. The draft's own `charge` frame (4) is replaced."""
+    out = Image.new("RGBA", (SIZE * 9, SIZE), (0, 0, 0, 0))
+    out.paste(im.crop((0, 0, SIZE * 6, SIZE)), (0, 0))
+    y0 = (SIZE - len(BOLT)) // 2
+    cells = {(4 + dx, y0 + dy) for dy, r in enumerate(BOLT) for dx, c in enumerate(r) if c == "#"}
+    for level in range(4):
+        dst = 4 if level == 0 else 5 + level
+        fr = im.crop((level * SIZE, 0, level * SIZE + SIZE, SIZE))
+        for (x, y) in cells:
+            for ox in (-1, 0, 1):
+                for oy in (-1, 0, 1):
+                    X, Y = x + ox, y + oy
+                    if (X, Y) not in cells and 0 <= X < SIZE and 0 <= Y < SIZE:
+                        fr.putpixel((X, Y), (0, 0, 0, 0))
+        for (x, y) in cells:
+            fr.putpixel((x, y), (0, 0, 0, 255))
+        out.paste(fr, (dst * SIZE, 0))
+    return out
+
+
 for row, (name, _, frames) in enumerate(ICONS):
     path = os.path.join(src_dir, name + ".png")
     if name == "globe-disabled":
@@ -76,6 +102,8 @@ for row, (name, _, frames) in enumerate(ICONS):
         continue
     else:
         im = Image.open(path).convert("RGBA")
+        if name == "battery" and im.size == (SIZE * 6, SIZE):
+            im = derive_battery(im)
     if im.size != (SIZE * len(frames), SIZE):
         problems.append(f"{name}.png is {im.size[0]}x{im.size[1]}, want {SIZE * len(frames)}x{SIZE} ({len(frames)} frame(s) of {SIZE} px)")
         continue

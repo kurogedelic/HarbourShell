@@ -26,6 +26,8 @@ pub struct MockBackend {
     /// Artificial latency for blocking calls so spinners can be exercised.
     pub delay: Duration,
     start: Instant,
+    /// Every value passed to `set_brightness`, in order (for tests).
+    brightness_calls: Mutex<Vec<u32>>,
 }
 
 impl MockBackend {
@@ -45,18 +47,28 @@ impl MockBackend {
             }),
             delay: Duration::from_millis(400),
             start: Instant::now(),
+            brightness_calls: Mutex::new(Vec::new()),
         }
+    }
+
+    /// The values `set_brightness` was called with.
+    pub fn brightness_log(&self) -> Vec<u32> {
+        self.brightness_calls.lock().unwrap().clone()
     }
 }
 
 impl Backend for MockBackend {
     fn battery(&self) -> Battery {
-        Battery { percent: Some(76), charging: false, voltage_mv: Some(3980), status: "Discharging".into() }
+        // HARBOUR_MOCK_CHARGING=1 pretends the USB cable is in (screenshots).
+        let charging = matches!(std::env::var("HARBOUR_MOCK_CHARGING").as_deref(), Ok("1" | "true" | "yes" | "on"));
+        let status = if charging { "Charging" } else { "Discharging" };
+        Battery { percent: Some(76), charging, voltage_mv: Some(3980), status: status.into() }
     }
     fn brightness(&self) -> Option<(u32, u32)> {
         Some((self.s.lock().unwrap().brightness, 100))
     }
     fn set_brightness(&self, v: u32) -> R<()> {
+        self.brightness_calls.lock().unwrap().push(v.min(100));
         self.s.lock().unwrap().brightness = v.min(100);
         Ok(())
     }
@@ -136,6 +148,13 @@ impl Backend for MockBackend {
     }
     fn eth_ip(&self) -> Option<String> {
         None
+    }
+    fn lan_info(&self) -> Option<super::lan::LanInfo> {
+        let s = self.s.lock().unwrap();
+        (s.wifi_on && s.ssid.is_some()).then(super::lan::mock_info)
+    }
+    fn neighbors(&self) -> Vec<super::lan::Neighbor> {
+        super::lan::mock_neighbors()
     }
     fn bt_powered(&self) -> bool {
         self.s.lock().unwrap().bt_on

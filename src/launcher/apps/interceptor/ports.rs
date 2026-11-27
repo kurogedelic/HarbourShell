@@ -988,8 +988,8 @@ impl Ports {
     /// A package this page needs and does not have: (package, why), for the install card.
     pub fn missing_package(&self, page: usize) -> Option<(&'static str, &'static str)> {
         match page {
-            PAGE_I2C if matches!(&self.i2c.state, I2cState::Err(e) if e.starts_with("i2cdetect not found")) => Some(("i2c-tools", "Interceptor scans the I2C bus with i2cdetect.")),
-            PAGE_GPIO | PAGE_GROVE if self.gpio_err.as_deref().map_or(false, |e| e.starts_with("gpioinfo not found")) => Some(("gpiod", "Interceptor lists the GPIO lines with gpioinfo.")),
+            PAGE_I2C if matches!(&self.i2c.state, I2cState::Err(e) if e.starts_with("i2cdetect not found")) => Some(("i2c-tools", "Devices scans the I2C bus with i2cdetect.")),
+            PAGE_GPIO | PAGE_GROVE if self.gpio_err.as_deref().map_or(false, |e| e.starts_with("gpioinfo not found")) => Some(("gpiod", "Devices lists the GPIO lines with gpioinfo.")),
             _ => None,
         }
     }

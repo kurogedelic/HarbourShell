@@ -328,6 +328,12 @@ fn main() -> Result<(), String> {
     let app_dir = PathBuf::from(std::env::var("HARBOUR_APP_DIR").unwrap_or_else(|_| registry::DEFAULT_APP_DIR.into()));
     let workdir = app_dir.parent().map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from("/"));
 
+    // A previous process may have died while the backlight was down (killed, crashed, restarted
+    // during sleep): put the saved level back before anything else.
+    let sleep_file = home_dir().join(".config/harbour/backlight_saved");
+    if let Some(level) = harbour_shell::system::sleep::recover(&*sys, &sleep_file) {
+        println!("[screen] backlight was left down: restored to {level}");
+    }
     // Apply the saved brightness / volume like the official launcher does at boot.
     {
         let (b, v) = {
@@ -483,7 +489,7 @@ fn main() -> Result<(), String> {
     // Harbour's own releases (launcher::update): what was known last time, and when to look again.
     let mut update_state = harbour_shell::launcher::update::State::load(&data_dir);
     harbour_shell::launcher::update::set_available(update_state.available());
-    let mut next_update_look = Instant::now() + Duration::from_secs(15);
+    let mut next_update_look = Instant::now() + Duration::from_secs(if harbour_shell::launcher::update::pretend().is_some() { 0 } else { 15 });
 
     let mut script = Script::from_env();
     // Japanese input method (Ctrl+Space toggles; see memos/japanese-ime-plan.md). One seam: its
@@ -722,7 +728,7 @@ fn main() -> Result<(), String> {
             last_input = Instant::now();
             dirty = true;
             if let Some((_, v)) = fade.take() {
-                let _ = sys.set_brightness(v); // touched during the fade: back to full
+                harbour_shell::system::sleep::restore(&*sys, &sleep_file, v); // touched during the fade: back to full
             }
             if let Some(prev) = screen_off_prev.take() {
                 if let Some(f) = fb.as_mut() {
@@ -730,7 +736,7 @@ fn main() -> Result<(), String> {
                     f.invalidate();
                 }
                 force_full = true;
-                let _ = sys.set_brightness(prev);
+                harbour_shell::system::sleep::restore(&*sys, &sleep_file, prev);
                 inputs.clear();
             }
         }
@@ -2435,7 +2441,13 @@ fn main() -> Result<(), String> {
             if let Some((v, _)) = sys.brightness() {
                 if v > 0 {
                     println!("[screen] off after {} s idle (locked: {locked})", dark);
-                    fade = Some((Instant::now(), v));
+                    if cfg.lock().map(|c| c.get_int("harbour_sleep_mode", 0)).unwrap_or(0) == 1 {
+                        // "Black screen": no fade, the backlight stays where it is.
+                        fade = Some((Instant::now().checked_sub(Duration::from_millis(FADE_MS as u64)).unwrap_or_else(Instant::now), v));
+                    } else {
+                        harbour_shell::system::sleep::save(&sleep_file, v); // survives a kill during the fade / sleep
+                        fade = Some((Instant::now(), v));
+                    }
                 }
             }
         }
@@ -2455,7 +2467,9 @@ fn main() -> Result<(), String> {
                     let _ = push_frame(&canvas, f);
                 }
                 harbour_shell::rt::sleep(Duration::from_millis(60));
-                let _ = sys.set_brightness(0);
+                if cfg.lock().map(|c| c.get_int("harbour_sleep_mode", 0)).unwrap_or(0) != 1 {
+                    harbour_shell::system::sleep::backlight_off(&*sys);
+                }
             } else {
                 // The fade is only the backlight ramping down (cheap); redrawing the LCD for
                 // every step is far too slow on the SPI panel.
@@ -2678,7 +2692,7 @@ fn main() -> Result<(), String> {
                 st.time = now_text.clone();
                 st.bar_style = cfg.lock().map(|c| c.get_int("harbour_statusbar", 0)).unwrap_or(0).clamp(0, 2) as u8;
                 chrome::draw_menu_bar(&mut canvas, &mut assets, &fs, &tm, "", &st);
-                let opts = cfg.lock().map(|c| lock::Opts::from_config(&c, st.battery, st.charging)).unwrap_or(lock::Opts { style: lock::Style::Wall, date: true, battery: None });
+                let opts = cfg.lock().map(|c| lock::Opts::from_config(&c, st.battery, st.charging, harbour_shell::launcher::update::available())).unwrap_or(lock::Opts { style: lock::Style::Wall, date: true, battery: None, update: None });
                 lock::draw(&mut canvas, &mut assets, &fs, &tm, &mut lock_world, harbour_shell::rt::now(), unlock, &opts);
             } else {
                 let mut st = status.lock().map(|s| s.clone()).unwrap_or_default();
@@ -2922,7 +2936,9 @@ fn main() -> Result<(), String> {
     }
     if let Screen::Settings(s) = &mut screen { s.flush(); }
     if let Some(prev) = screen_off_prev {
-        let _ = sys.set_brightness(prev);
+        harbour_shell::system::sleep::restore(&*sys, &sleep_file, prev);
+    } else if let Some((_, v)) = fade {
+        harbour_shell::system::sleep::restore(&*sys, &sleep_file, v);
     }
     shared.quit.store(true, std::sync::atomic::Ordering::Relaxed);
     Ok(())

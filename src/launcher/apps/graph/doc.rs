@@ -203,6 +203,53 @@ pub fn fmt_num(v: f64) -> String {
     if s.contains('.') { s.trim_end_matches('0').trim_end_matches('.').to_string() } else { s }
 }
 
+/// A CSV of numbers (first column across, second up; a header line and rows without a value are
+/// skipped) as the text of a `.graph` file: a function plot through the points. The line is a sum
+/// of hinges, `y0 + s0*(x-x0) + (s1-s0)*max(0, x-x1) + ...`, so uneven spacing works; at most
+/// `CSV_POINTS` points are kept (every n-th). Sensor logs from Hardware are opened with it.
+pub fn csv_to_graph(text: &str, title: &str) -> Result<String, String> {
+    const CSV_POINTS: usize = 150;
+    let mut pts: Vec<(f64, f64)> = Vec::new();
+    for l in text.lines().map(str::trim).filter(|l| !l.is_empty()) {
+        let mut f = l.split(',');
+        let (Some(a), Some(b)) = (f.next(), f.next()) else { continue };
+        if let (Ok(x), Ok(y)) = (a.trim().parse::<f64>(), b.trim().parse::<f64>()) {
+            if x.is_finite() && y.is_finite() && pts.last().map_or(true, |p| x > p.0) {
+                pts.push((x, y));
+            }
+        }
+    }
+    if pts.len() < 2 {
+        return Err("Not enough numbers in the file".into());
+    }
+    if pts.len() > CSV_POINTS {
+        let n = pts.len();
+        pts = (0..CSV_POINTS).map(|i| pts[i * (n - 1) / (CSV_POINTS - 1)]).collect();
+        pts.dedup_by(|b, a| b.0 <= a.0);
+    }
+    let slope = |i: usize| (pts[i + 1].1 - pts[i].1) / (pts[i + 1].0 - pts[i].0);
+    let mut f = format!("{} + {}*(x - {})", fmt_full(pts[0].1), fmt_full(slope(0)), fmt_full(pts[0].0));
+    for i in 1..pts.len() - 1 {
+        let d = slope(i) - slope(i - 1);
+        if d.abs() < 1e-12 {
+            continue;
+        }
+        f += &format!(" {} {}*max(0, x - {})", if d < 0.0 { "-" } else { "+" }, fmt_full(d.abs()), fmt_full(pts[i].0));
+    }
+    let (x0, x1) = (pts[0].0, pts[pts.len() - 1].0);
+    let (ylo, yhi) = pts.iter().fold((f64::MAX, f64::MIN), |(a, b), p| (a.min(p.1), b.max(p.1)));
+    let span = ((yhi - ylo) * 1.3).max((x1 - x0) / 2.0 * 1.1).max(1e-3);
+    let mut o = String::from("harbour-graph 1\n");
+    o += &format!("title: {}\n", title.replace('\n', " "));
+    o += "mode: function\n";
+    o += &format!("y = {f}\n");
+    o += "seed: 1\n";
+    o += &format!("view: {} {} {}\n", fmt_full((x0 + x1) / 2.0), fmt_full((ylo + yhi) / 2.0), fmt_full(span));
+    o += "grid: on\n";
+    o += "time: 0 1\n";
+    Ok(o)
+}
+
 /// The window onto the plane: its centre and how much of the plane the canvas's shorter side shows.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct View {
@@ -505,5 +552,29 @@ mod tests {
         assert!((progs[0].eval(&vars, d.seed) + 1.0).abs() < 1e-12, "cos(3 * pi/3) = -1");
         d.formulas[0] = "cos(".into();
         assert_eq!(d.compile().unwrap_err().0, 0);
+    }
+
+    #[test]
+    fn a_csv_becomes_a_function_plot_through_its_points() {
+        let text = "time_s,temp\n0.0,20\n5.0,22\n10.0,22\n15.0,\n20.0,18\n";
+        let g = csv_to_graph(text, "Demo").unwrap();
+        let (d, _) = Doc::from_text(&g).unwrap();
+        assert_eq!(d.mode, Mode::Function);
+        assert_eq!(d.title, "Demo");
+        let prog = expr::compile(&d.formulas[0], &|n| (n == "x").then_some(0)).unwrap();
+        let at = |x: f64| prog.eval(&[x], 1);
+        for (x, y) in [(0.0, 20.0), (5.0, 22.0), (10.0, 22.0), (20.0, 18.0), (15.0, 20.0)] {
+            assert!((at(x) - y).abs() < 1e-6, "y({x}) = {} wanted {y}", at(x));
+        }
+        assert!(csv_to_graph("time_s,v\n1,2\n", "x").is_err());
+        assert!(csv_to_graph("hello", "x").is_err());
+    }
+
+    #[test]
+    fn a_long_csv_is_thinned() {
+        let text: String = std::iter::once("t,v\n".to_string()).chain((0..1000).map(|i| format!("{i},{}\n", (i as f64 / 30.0).sin()))).collect();
+        let g = csv_to_graph(&text, "Long").unwrap();
+        assert!(g.matches("max(").count() <= 150);
+        assert!(Doc::from_text(&g).is_ok());
     }
 }

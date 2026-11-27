@@ -85,9 +85,10 @@ fn tab_long_locks_and_unlocks_esc_long_leaves() {
 
 #[test]
 fn where_tab_belongs_to_the_screen_tab_tab_is_two_tabs_and_alt_tab_opens_the_agent() {
-    for app in ["terminal", "texteditor", "monitor", "timer", "voicememo", "interceptor", "infoscope", "browser", "radio"] {
+    for app in ["terminal", "texteditor", "monitor", "timer", "voicememo", "interceptor", "hardware", "infoscope", "browser", "radio"] {
         let screen = match app {
             "texteditor" => "editor",
+            "hardware" => "devices",
             a => a,
         };
         let open = format!("goto:{app},Return,wait:900,expect:screen={screen}");

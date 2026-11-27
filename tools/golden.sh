@@ -10,7 +10,7 @@ shoot() {
   [[ -x $BIN ]] || { echo "not an executable: $BIN" >&2; return 2; }
   [[ -z $ONLY ]] && rm -rf $OUT
   mkdir -p $OUT
-  local APPS=(Browser Calculator Calendar Camera Clock Files HarbourTalk Images Infoscope Interceptor Monitor Music Paint Radio Settings Sheet Snake Terminal "Text Editor" Timer "Voice Memo" Yacht Graph)
+  local APPS=(Browser Calculator Calendar Camera Clock Files HarbourTalk Images Infoscope Interceptor Monitor Music Paint Radio Settings Sheet Snake Terminal "Text Editor" Timer "Voice Memo" Yacht Graph Devices)
   local L P i k n j s
   for L in 0 1; do
     P=$([ $L = 0 ] && echo en || echo ja)

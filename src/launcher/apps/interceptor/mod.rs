@@ -45,12 +45,62 @@ use crate::ui;
 
 // ===================================================================== layout
 
+mod lan;
+mod netpages;
 mod ports;
+mod sensor;
+use lan::*;
+use netpages::*;
 use ports::*;
+use sensor::*;
 
-const TABS: [&str; 14] = ["ETH", "Wi-Fi", "BT", "BLE", "IR", "Grove", "USB", "Serial", "I2C", "GPIO", "1-Wire", "OSC", "MIDI", "Device"];
-/// Pages (one per tab).
+const TABS: [&str; 18] = ["ETH", "Wi-Fi", "BT", "BLE", "IR", "Grove", "USB", "Serial", "I2C", "GPIO", "1-Wire", "OSC", "MIDI", "Device", "Ping", "Link", "Sensor", "LAN"];
+/// Pages (one per tab) of the shared core; each app shows the ones of its [`Side`].
 const NP: usize = TABS.len();
+
+/// Which of the shared pages an app shows: Interceptor is the wireless / network half (it only
+/// observes), Hardware the wired parts and the device tree.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Side {
+    Wireless,
+    Hardware,
+    /// Every page (tests of the shared core).
+    #[cfg(test)]
+    All,
+}
+
+const WIRELESS_PAGES: [usize; 9] = [PAGE_ETH, PAGE_WIFI, PAGE_LAN, PAGE_PING, PAGE_LINK, PAGE_BT, PAGE_BLE, PAGE_IR, PAGE_OSC];
+const WIRELESS_TABS: [&str; 9] = ["ETH", "Wi-Fi", "LAN", "Ping", "Link", "BT", "BLE", "IR", "OSC"];
+const HARDWARE_PAGES: [usize; 9] = [PAGE_DEV, PAGE_USB, PAGE_SER, PAGE_I2C, PAGE_GPIO, PAGE_W1, PAGE_GROVE, PAGE_SENSOR, PAGE_MIDI];
+const HARDWARE_TABS: [&str; 9] = ["Device", "USB", "Serial", "I2C", "GPIO", "1-Wire", "Grove", "Sensor", "MIDI"];
+#[cfg(test)]
+const ALL_PAGES: [usize; NP] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17];
+
+impl Side {
+    /// Global page ids in tab order.
+    fn pages(self) -> &'static [usize] {
+        match self {
+            Side::Wireless => &WIRELESS_PAGES,
+            Side::Hardware => &HARDWARE_PAGES,
+            #[cfg(test)]
+            Side::All => &ALL_PAGES,
+        }
+    }
+    fn labels(self) -> &'static [&'static str] {
+        match self {
+            Side::Wireless => &WIRELESS_TABS,
+            Side::Hardware => &HARDWARE_TABS,
+            #[cfg(test)]
+            Side::All => &TABS,
+        }
+    }
+    fn title(self) -> &'static str {
+        match self {
+            Side::Hardware => "Devices",
+            _ => "Interceptor",
+        }
+    }
+}
 /// The strip leaves 8 px at the right end for the pause mark.
 fn tabs_room() -> i32 {
     widgets::folder_room() - 8
@@ -105,6 +155,10 @@ const PAGE_W1: usize = 10;
 const PAGE_OSC: usize = 11;
 const PAGE_MIDI: usize = 12;
 const PAGE_DEV: usize = 13;
+const PAGE_PING: usize = 14;
+const PAGE_LINK: usize = 15;
+const PAGE_SENSOR: usize = 16;
+const PAGE_LAN: usize = 17;
 const OSC_PORTS: [u16; 8] = [7000, 8000, 9000, 9001, 10111, 57120, 57110, 12000];
 const OSC_LOG_CAP: usize = 500;
 
@@ -802,8 +856,9 @@ fn body_scrollbar_rect() -> Rect {
     Rect::new(grid::scroll_x(), BODY_Y + 1, grid::SCROLL_W as u32, (body_end() - BODY_Y - 1) as u32)
 }
 
-fn tabs_strip(active: usize, first: usize) -> widgets::FolderScroll<'static> {
-    widgets::FolderScroll::new(&TABS, active, first, tabs_room())
+/// `active` is the tab position (not the page id).
+fn tabs_strip(side: Side, active: usize, first: usize) -> widgets::FolderScroll<'static> {
+    widgets::FolderScroll::new(side.labels(), active, first, tabs_room())
 }
 
 fn dev_tree_rect() -> Rect {
@@ -1353,6 +1408,15 @@ enum Ev {
     OscBad,
     /// Wi-Fi, serial, I2C, GPIO and 1-Wire (see `ports.rs`).
     Port(PortEv),
+    /// Ping and Link log (see `netpages.rs`): run id and the round trip (None = lost).
+    Ping(u32, Option<f32>),
+    PingEnd(u32),
+    PingErr(u32, String),
+    Link { ssid: Option<String>, sample: LinkSample },
+    /// Sensor log: run id, seconds since the run started, the reading.
+    Sensor(u32, f32, Option<f32>),
+    /// LAN page (see `lan.rs`).
+    Lan(LanEv),
 }
 
 struct Worker {
@@ -1788,6 +1852,22 @@ fn short_src(s: &str) -> String {
 }
 
 pub struct Interceptor {
+    side: Side,
+    ping: PingView,
+    link: LinkLog,
+    /// Own workers (not tied to the page in front): a ping run goes on while another tab is open,
+    /// the Link sampler until the app closes.
+    ping_worker: Option<Worker>,
+    link_worker: Option<Worker>,
+    mock_link_n: u32,
+    /// The Wi-Fi page shows channel load instead of the list.
+    wifi_chan: bool,
+    sensor: SensorView,
+    sensor_worker: Option<Worker>,
+    lan: LanView,
+    /// The LAN sweep / name lookups, and the port check of one device.
+    lan_worker: Option<Worker>,
+    lan_port_worker: Option<Worker>,
     osc: OscView,
     clock_base: u64,
     last_osc_mock: Instant,
@@ -1835,17 +1915,39 @@ pub struct Interceptor {
 }
 
 pub fn make() -> Box<dyn LauncherApp> {
+    make_side(Side::Wireless)
+}
+
+/// The shared core for Interceptor (wireless) and Hardware (wired).
+pub fn make_side(side: Side) -> Box<dyn LauncherApp> {
     let mock = cfg!(not(target_os = "linux")) || matches!(std::env::var("HARBOUR_MOCK").as_deref(), Ok("1" | "true" | "yes" | "on"));
-    Box::new(Interceptor::new(mock))
+    Box::new(Interceptor::with_side(mock, side))
 }
 
 impl Interceptor {
+    #[cfg(test)]
     fn new(mock: bool) -> Self {
+        Self::with_side(mock, Side::All)
+    }
+
+    fn with_side(mock: bool, side: Side) -> Self {
         let (tx, rx) = channel();
         let now = Instant::now();
         let mut s = Self {
+            side,
+            ping: PingView::new(),
+            link: LinkLog::new(),
+            ping_worker: None,
+            link_worker: None,
+            mock_link_n: 0,
+            wifi_chan: false,
+            sensor: SensorView::new(),
+            sensor_worker: None,
+            lan: LanView::new(),
+            lan_worker: None,
+            lan_port_worker: None,
             mock,
-            page: 0,
+            page: side.pages()[0],
             paused: false,
             t0: now,
             scroll: [0; NP],
@@ -1969,14 +2071,28 @@ impl Interceptor {
         };
     }
 
+    /// The tab position of the page in front.
+    fn pos(&self) -> usize {
+        self.side.pages().iter().position(|&q| q == self.page).unwrap_or(0)
+    }
+
+    /// Move `d` tabs (wraps).
+    fn step_tab(&mut self, d: isize) {
+        let n = self.side.pages().len() as isize;
+        let to = (self.pos() as isize + d).rem_euclid(n) as usize;
+        self.set_page(self.side.pages()[to]);
+    }
+
+    /// `p` is a page id; one this side does not show is ignored.
     fn set_page(&mut self, p: usize) {
-        let p = p % NP;
+        let Some(pos) = self.side.pages().iter().position(|&q| q == p) else { return };
+        let p = self.side.pages()[pos];
         if p != self.page {
             // A port is only open while its page is in front.
             self.ports.leave(self.page);
         }
         self.page = p;
-        self.tab_first = widgets::FolderScroll::follow(&TABS, p, self.tab_first, tabs_room());
+        self.tab_first = widgets::FolderScroll::follow(self.side.labels(), pos, self.tab_first, tabs_room());
         self.last_page_started = None;
         if self.worker.is_some() {
             self.worker = None;
@@ -2033,6 +2149,9 @@ impl Interceptor {
             }
             Ev::OscBad => self.osc.table.bad(),
             Ev::Port(e) => self.ports.apply(e, now_ms),
+            Ev::Sensor(run, t, v) => self.apply_sensor(run, t, v),
+            Ev::Lan(e) => self.apply_lan(e),
+            e @ (Ev::Ping(..) | Ev::PingEnd(_) | Ev::PingErr(..) | Ev::Link { .. }) => self.apply_net(e),
         }
     }
 
@@ -2054,6 +2173,8 @@ impl Interceptor {
             PAGE_IR if self.log_page() => (self.ir_log.len(), (body_rows() - 1) as usize),
             PAGE_MIDI => (self.midi.log.len(), (body_rows() - 3) as usize),
             PAGE_USB => (self.usb_rows().len(), (body_rows() - 1) as usize),
+            PAGE_LAN if self.lan.accepted && !self.lan.detail && self.lan.pscan.edit.is_none() => (self.lan.devices.len(), (body_rows() - 1) as usize),
+            PAGE_LAN => (0, 0),
             p => self.ports.dims(p).map_or((0, 0), |(len, vis, _)| (len, vis)),
         }
     }
@@ -2215,6 +2336,15 @@ impl Interceptor {
                 self.midi.held = [0; 128];
             }
             PAGE_ETH => self.eth.hist.clear(),
+            PAGE_PING => self.ping_restart_if_running(),
+            PAGE_LINK => self.link.samples.clear(),
+            PAGE_LAN if !self.lan.scanning => self.lan.devices.clear(),
+            PAGE_SENSOR => {
+                self.sensor_stop();
+                self.sensor.samples.clear();
+                self.sensor.count = 0;
+                self.sensor.file = None;
+            }
             PAGE_SER => self.ports.serial.log.clear(),
             _ => {}
         }
@@ -2357,7 +2487,7 @@ fn rssi_meter(c: &mut Canvas, ctx: &Ctx, x: i32, y: i32, rssi: Option<i16>) {
 
 impl Interceptor {
     fn draw_tabs(&self, c: &mut Canvas, ctx: &Ctx, p: &Pal) {
-        tabs_strip(self.page, self.tab_first).draw_strip(c, ctx.fs, ctx.tm);
+        tabs_strip(self.side, self.pos(), self.tab_first).draw_strip(c, ctx.fs, ctx.tm);
         if self.paused {
             // Two thin bars in the free 4 px at the right end of the strip.
             ui::fill_rect(c, Rect::new(grid::sw() - 10, grid::BAR_H + 6, 1, 8), p.ink);
@@ -2728,7 +2858,7 @@ impl LauncherApp for Interceptor {
     }
 
     fn title(&self) -> String {
-        "Interceptor".into()
+        self.side.title().into()
     }
 
     fn help(&self) -> Vec<(String, String)> {
@@ -2738,7 +2868,12 @@ impl LauncherApp for Interceptor {
             PAGE_ETH => vec![k("Return", "Next interface")],
             PAGE_OSC => vec![k("Return", "Next port"), k("V", "Log / table")],
             PAGE_DEV => vec![k("Return", "Open / close a node")],
-            PAGE_WIFI => vec![k("Return", "Scan again")],
+            PAGE_WIFI => vec![k("Return", "Scan again"), k("V", "List / channel load")],
+            PAGE_SENSOR => vec![k("Return", "Start / stop logging"), k("S", "Next sensor"), k("T", "Next interval"), k("G", "Open the CSV in Graph")],
+            PAGE_LAN if !self.lan.accepted => vec![k("Return", "Accept and scan")],
+            PAGE_LAN if self.lan.detail => vec![k("Return", "Check ports / stop"), k("E", "Next port set / type a range"), k("P", "Ping this device"), k("Esc", "Stop / back")],
+            PAGE_LAN => vec![k("Return", "Open the device"), k("R", "Scan again"), k("P", "Ping this device"), k("Esc", "Stop the scan")],
+            PAGE_PING => vec![k("Return", "Start / stop"), k("R", "Ping the router"), k("D", "Ping a DNS server"), k("I", "Ping 1.1.1.1"), k("N", "Number of pings")],
             PAGE_GROVE => vec![k("Return", "5V on / off")],
             PAGE_SER => vec![k("Return", "Open the port / send the line"), k("P", "Next port (closed)"), k("B", "Next speed (closed)"), k("E", "Next line ending (closed)"), k("H", "Text / hex (closed)")],
             PAGE_I2C => vec![k("Return", "Next bus"), k("R", "Scan again")],
@@ -2754,6 +2889,14 @@ impl LauncherApp for Interceptor {
         let mut v = match self.page {
             PAGE_OSC => vec![MenuItem::new("view", "OSC: log / table"), MenuItem::new("port", "OSC: next port")],
             PAGE_DEV => vec![MenuItem::new("dev_toggle", "Device: expand / collapse (Return)"), MenuItem::new("dev_collapse", "Device: collapse all")],
+            PAGE_SENSOR => vec![MenuItem::new("sensor_go", if self.sensor.running { "Sensor: stop (Return)" } else { "Sensor: start (Return)" }), MenuItem::new("sensor_graph", "Sensor: open CSV in Graph (G)")],
+            PAGE_LAN => vec![MenuItem::new("lan_scan", "LAN: scan again (R)"), MenuItem::new("lan_ping", "LAN: ping this device (P)")],
+            PAGE_PING => vec![MenuItem::new("ping_go", if self.ping.running { "Ping: stop (Return)" } else { "Ping: start (Return)" }), MenuItem::new("ping_router", "Ping: router"), MenuItem::new("ping_dns", "Ping: DNS server"), MenuItem::new("ping_net", "Ping: 1.1.1.1")],
+            PAGE_WIFI => {
+                let mut m = self.ports.menu(PAGE_WIFI);
+                m.push(MenuItem::new("wifi_view", "Wi-Fi: list / channel load (V)"));
+                m
+            }
             p => self.ports.menu(p),
         };
         if let Some((pkg, _)) = self.ports.missing_package(self.page) {
@@ -2807,13 +2950,26 @@ impl LauncherApp for Interceptor {
         match id {
             "pause" => self.paused = !self.paused,
             "clear" => self.clear(),
-            "next" => self.set_page(self.page + 1),
+            "next" => self.step_tab(1),
             "view" => {
                 self.osc.table_view = !self.osc.table_view;
                 self.set_page(PAGE_OSC);
                 self.reset_cursor();
             }
             "mask" => self.mask = !self.mask,
+            "wifi_view" => self.wifi_chan = !self.wifi_chan,
+            "lan_scan" => self.lan_start(ctx),
+            "lan_ping" => self.lan_ping(),
+            "ping_go" => self.ping_toggle(),
+            "sensor_go" => self.sensor_toggle(ctx),
+            "sensor_graph" => return self.sensor_open_in_graph(),
+            "ping_router" => self.ping_set_target(Target::Router),
+            "ping_dns" => {
+                if !self.ping.dns.is_empty() {
+                    self.ping_set_target(Target::Dns(0));
+                }
+            }
+            "ping_net" => self.ping_set_target(Target::Internet),
             "dev_toggle" => {
                 self.dev_key(Keycode::Return);
             }
@@ -2844,6 +3000,9 @@ impl LauncherApp for Interceptor {
     }
 
     fn text(&mut self, text: &str, _ctx: &Ctx) -> AppAction {
+        if self.page == PAGE_LAN {
+            self.lan_text(text);
+        }
         if self.page == PAGE_SER && self.ports.serial.is_open() {
             self.ports.serial.input.extend(text.chars().filter(|c| !c.is_control()));
         }
@@ -2872,16 +3031,21 @@ impl LauncherApp for Interceptor {
                 _ => return AppAction::None,
             }
         }
+        if p == PAGE_LAN {
+            if let Some(a) = self.lan_key(key, ctx) {
+                return a;
+            }
+        }
         match arrow_alias(key) {
             Keycode::Escape => return AppAction::Quit,
             // Tab / Shift+Tab: next / previous tab (Left / Right do the same).
-            Keycode::Tab if mods.intersects(Mod::LSHIFTMOD | Mod::RSHIFTMOD) => self.set_page(p + NP - 1),
-            Keycode::Tab => self.set_page(p + 1),
+            Keycode::Tab if mods.intersects(Mod::LSHIFTMOD | Mod::RSHIFTMOD) => self.step_tab(-1),
+            Keycode::Tab => self.step_tab(1),
             k @ (Keycode::Up | Keycode::Down | Keycode::PageUp | Keycode::PageDown | Keycode::Home | Keycode::End | Keycode::Return) if p == PAGE_DEV => {
                 self.dev_key(k);
             }
-            Keycode::Left => self.set_page(p + NP - 1),
-            Keycode::Right => self.set_page(p + 1),
+            Keycode::Left => self.step_tab(-1),
+            Keycode::Right => self.step_tab(1),
             Keycode::Up => self.move_cursor(-1),
             Keycode::Down => self.move_cursor(1),
             Keycode::PageUp => self.move_cursor(-(self.dims().1 as isize).max(1)),
@@ -2891,6 +3055,34 @@ impl LauncherApp for Interceptor {
             Keycode::M => self.mask = !self.mask,
             Keycode::Space => self.paused = !self.paused,
             Keycode::Return if p == PAGE_ETH => self.eth.next_iface(),
+            Keycode::Return if p == PAGE_PING => self.ping_toggle(),
+            Keycode::R if p == PAGE_PING => self.ping_set_target(Target::Router),
+            Keycode::I if p == PAGE_PING => self.ping_set_target(Target::Internet),
+            Keycode::D if p == PAGE_PING => {
+                if !self.ping.dns.is_empty() {
+                    let next = match self.ping.target {
+                        Target::Dns(i) => (i + 1) % self.ping.dns.len(),
+                        _ => 0,
+                    };
+                    self.ping_set_target(Target::Dns(next));
+                }
+            }
+            Keycode::N if p == PAGE_PING => {
+                self.ping.count_idx = (self.ping.count_idx + 1) % PING_COUNTS.len();
+                self.ping_restart_if_running();
+            }
+            Keycode::V if p == PAGE_WIFI => self.wifi_chan = !self.wifi_chan,
+            Keycode::Return if p == PAGE_SENSOR => self.sensor_toggle(ctx),
+            Keycode::G if p == PAGE_SENSOR => return self.sensor_open_in_graph(),
+            Keycode::S if p == PAGE_SENSOR => {
+                let n = self.sensor_sources().len().max(1);
+                self.sensor.src_idx = (self.sensor.src_idx + 1) % n;
+                self.sensor_stop();
+            }
+            Keycode::T if p == PAGE_SENSOR => {
+                self.sensor.every_idx = (self.sensor.every_idx + 1) % SENSOR_EVERY.len();
+                self.sensor_stop();
+            }
             k if self.ports.key(p, k, ctx) => {
                 if self.ports.restart {
                     self.ports.restart = false;
@@ -2920,15 +3112,16 @@ impl LauncherApp for Interceptor {
                 let (pkg, why) = self.ports.missing_package(self.page).unwrap();
                 return AppAction::Install(crate::launcher::installer::InstallReq::apt(&[pkg], why));
             }
-            if let Some(h) = tabs_strip(self.page, self.tab_first).hit(x, y, ctx.tm) {
+            if let Some(h) = tabs_strip(self.side, self.pos(), self.tab_first).hit(x, y, ctx.tm) {
                 self.sb_drag = false;
-                let to = match h {
-                    widgets::FolderHit::Tab(i) => i,
-                    widgets::FolderHit::Prev => self.page + NP - 1,
-                    widgets::FolderHit::Next => self.page + 1,
-                };
-                if to % NP != self.page {
-                    self.set_page(to);
+                match h {
+                    widgets::FolderHit::Tab(i) => {
+                        if let Some(&to) = self.side.pages().get(i) {
+                            self.set_page(to);
+                        }
+                    }
+                    widgets::FolderHit::Prev => self.step_tab(-1),
+                    widgets::FolderHit::Next => self.step_tab(1),
                 }
                 return AppAction::None;
             }
@@ -3005,6 +3198,14 @@ impl LauncherApp for Interceptor {
             }
         }
         self.ensure_worker();
+        self.lan_ensure(ctx);
+        if self.lan.swept.is_some() {
+            self.lan_after_sweep(ctx);
+            dirty = true;
+        }
+        let known = self.ping.net_known;
+        self.ensure_net(ctx);
+        dirty |= known != self.ping.net_known;
         dirty |= self.ports.tick(self.page, self.paused, ctx);
         if self.ports.restart {
             self.ports.restart = false;
@@ -3028,6 +3229,11 @@ impl LauncherApp for Interceptor {
             let ms = self.now_ms();
             self.osc.feed_packet(ms, "192.168.3.7:9001", &mock_osc_packet(self.osc.mock_n));
             dirty = true;
+        }
+        if self.mock && !crate::rt::frozen() && !self.paused {
+            dirty |= self.mock_net_tick(now);
+            dirty |= self.lan_mock_tick(now, ctx);
+            dirty |= self.mock_sensor_tick(now);
         }
         if self.mock && !crate::rt::frozen() && !self.paused && now.duration_since(self.last_mock) >= Duration::from_millis(700) {
             self.last_mock = now;
@@ -3100,7 +3306,12 @@ impl LauncherApp for Interceptor {
             PAGE_DEV => self.draw_dev(c, ctx, &p),
             PAGE_MIDI => self.draw_midi(c, ctx, &p),
             PAGE_USB => self.draw_usb(c, ctx, &p),
+            PAGE_WIFI if self.wifi_chan => self.draw_wifi_channels(c, ctx, &p),
             PAGE_WIFI => self.draw_wifi(c, ctx, &p),
+            PAGE_PING => self.draw_ping(c, ctx, &p),
+            PAGE_LINK => self.draw_link(c, ctx, &p),
+            PAGE_SENSOR => self.draw_sensor(c, ctx, &p),
+            PAGE_LAN => self.draw_lan(c, ctx, &p),
             PAGE_GROVE => self.draw_grove(c, ctx, &p),
             PAGE_SER => self.draw_serial(c, ctx, &p),
             PAGE_I2C => self.draw_i2c(c, ctx, &p),
@@ -3108,7 +3319,7 @@ impl LauncherApp for Interceptor {
             _ => self.draw_w1(c, ctx, &p),
         }
         match self.page {
-            PAGE_ETH => frame_sides(c, &p, body_frame(ETH_COL_W)),
+            PAGE_ETH | PAGE_PING | PAGE_SENSOR => frame_sides(c, &p, body_frame(ETH_COL_W)),
             PAGE_DEV => {}
             _ => frame_sides(c, &p, body_frame(list_w())),
         }
@@ -3349,6 +3560,39 @@ mod tests {
     }
 
     #[test]
+    fn the_two_sides_split_every_page_once() {
+        let mut all: Vec<usize> = Side::Wireless.pages().iter().chain(Side::Hardware.pages()).copied().collect();
+        all.sort();
+        assert_eq!(all, (0..NP).collect::<Vec<_>>());
+        for side in [Side::Wireless, Side::Hardware] {
+            assert_eq!(side.pages().len(), side.labels().len());
+            for (i, &p) in side.pages().iter().enumerate() {
+                assert_eq!(side.labels()[i], TABS[p], "{side:?} tab {i} names its page");
+            }
+        }
+    }
+
+    #[test]
+    fn a_side_cycles_only_its_own_tabs() {
+        let mut w = Interceptor::with_side(true, Side::Wireless);
+        let mut h = Interceptor::with_side(true, Side::Hardware);
+        assert_eq!((w.title().as_str(), h.title().as_str()), ("Interceptor", "Devices"));
+        assert_eq!((w.page, h.page), (PAGE_ETH, PAGE_DEV));
+        for _ in 0..Side::Wireless.pages().len() {
+            assert!(Side::Wireless.pages().contains(&w.page));
+            w.step_tab(1);
+        }
+        assert_eq!(w.page, PAGE_ETH);
+        h.step_tab(-1);
+        assert_eq!(h.page, PAGE_MIDI);
+        // A page of the other side is not reachable.
+        h.set_page(PAGE_WIFI);
+        assert_eq!(h.page, PAGE_MIDI);
+        w.set_page(PAGE_USB);
+        assert_eq!(w.page, PAGE_ETH);
+    }
+
+    #[test]
     fn name_fits_the_registry() {
         assert_eq!("Interceptor".len(), 11);
     }
@@ -3457,7 +3701,7 @@ mod tests {
             let sys = crate::system::mock::MockBackend::new();
             let ctx = Ctx { fs: &fs, tm: &tm, sys: &sys, now: chrono::Local::now() };
             a.key(Keycode::Right, Mod::NOMOD, false, &ctx);
-            assert_eq!(a.page, PAGE_ETH, "Device is the last page: Right wraps");
+            assert_eq!(a.page, PAGE_PING, "Right goes to the next tab");
             a.key(Keycode::Left, Mod::NOMOD, false, &ctx);
             assert_eq!(a.page, PAGE_DEV);
         }
@@ -3597,7 +3841,7 @@ mod tests {
                 let ink = Color::from_rgb565(tm.get_color("foreground").to_rgb565());
                 let ink3 = (ink.r, ink.g, ink.b);
                 let sb = Color::from_rgb565(tm.get_color("select_bg").to_rgb565());
-                let strip = tabs_strip(app.page, app.tab_first);
+                let strip = tabs_strip(app.side, app.pos(), app.tab_first);
                 let act = (0..w as i32).find(|&x| strip.hit(x, 30, &tm) == Some(widgets::FolderHit::Tab(page))).expect("active tab shown") as usize;
                 let idle = (0..w as i32).find(|&x| matches!(strip.hit(x, 30, &tm), Some(widgets::FolderHit::Tab(i)) if i != page)).unwrap() as usize;
                 if !table {
@@ -3658,13 +3902,13 @@ mod mouse_tests {
             for i in 1..NP {
                 a.pointer(down(next_x, grid::BAR_H + 10, 1), ctx);
                 assert_eq!(a.page, i);
-                let s = tabs_strip(a.page, a.tab_first);
+                let s = tabs_strip(a.side, a.pos(), a.tab_first);
                 assert!((0..320).any(|x| s.hit(x, grid::BAR_H + 10, ctx.tm) == Some(widgets::FolderHit::Tab(i))), "page {i} is in view");
             }
             // The left arrow goes back; a click on a shown tab switches to it.
             a.pointer(down(4 + 3, grid::BAR_H + 10, 1), ctx);
             assert_eq!(a.page, NP - 2);
-            let s = tabs_strip(a.page, a.tab_first);
+            let s = tabs_strip(a.side, a.pos(), a.tab_first);
             let x = (0..320).find(|&x| s.hit(x, grid::BAR_H + 10, ctx.tm) == Some(widgets::FolderHit::Tab(NP - 1))).unwrap();
             a.pointer(down(x, grid::BAR_H + 10, 1), ctx);
             assert_eq!(a.page, NP - 1);

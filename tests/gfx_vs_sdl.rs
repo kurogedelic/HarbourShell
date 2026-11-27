@@ -522,7 +522,8 @@ fn read_pixels_formats_match() {
 fn rect_and_point_semantics_match_sdl() {
     let before = count(&CASES);
     let mut rng = Rng(0x2ec7_0000_0000_0007);
-    let big = [i32::MIN, i32::MAX, 0, 1, -1, 1_000_000_000, -1_000_000_000];
+    // i32::MIN itself overflows inside the sdl2 crate in debug builds (it negates), so the reference cannot be asked.
+    let big = [i32::MIN + 1, i32::MAX, 0, 1, -1, 1_000_000_000, -1_000_000_000];
     let pick = |rng: &mut Rng| if rng.next() % 5 == 0 { big[rng.next() as usize % big.len()] } else { rng.range(-30, 30) };
     for _ in 0..20000 {
         let (x, y, w, h) = (pick(&mut rng), pick(&mut rng), pick(&mut rng).unsigned_abs() % 60, pick(&mut rng).unsigned_abs() % 60);

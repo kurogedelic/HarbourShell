@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::keys::{Keycode, Mod};
-use crate::gfx::Rect;
+use crate::gfx::{Color, Rect};
 use crate::gfx::Canvas;
 
 use crate::chrome;
@@ -31,6 +31,8 @@ use crate::theme::ThemeManager;
 use crate::ui;
 
 /// Screen-off choices in seconds (same list as the official launcher).
+/// What screen sleep does: the backlight goes off, or the screen only turns black.
+pub const SLEEP_MODES: [&str; 2] = ["Backlight off", "Black screen"];
 pub const DARK_TIMES: [i64; 5] = [0, 10, 30, 60, 300];
 /// Lock-screen-off choices in seconds (0 = same as Screen off).
 pub const LOCK_DARK_TIMES: [i64; 6] = [0, 5, 8, 15, 30, 60];
@@ -740,6 +742,7 @@ impl Settings {
                     row("Language", Val::Text(i18n::LANG_NAMES[self.cfg_int("harbour_lang", 0).clamp(0, 1) as usize].to_string())),
                     row("Brightness", Val::Slider(self.brightness_pct())),
                     row("Screen off", Val::Text(dark_label(dark))),
+                    row("Sleep", Val::Text(SLEEP_MODES[self.cfg_int("harbour_sleep_mode", 0).clamp(0, 1) as usize].to_string())),
                     row("Japanese dictionary", Val::Text(if ime_dict_installed() { "Installed" } else { "Not installed" }.into())),
                 ]
             }
@@ -754,6 +757,7 @@ impl Settings {
                 row("Lock screen off", Val::Text(lock_label(self.cfg_int("harbour_lock_dark", 8)))),
                 row("Show date", Val::Toggle(self.cfg_int("harbour_lock_date", 1) == 1)),
                 row("Show battery", Val::Toggle(self.cfg_int("harbour_lock_battery", 1) == 1)),
+                row("Show update notice", Val::Toggle(self.cfg_int("harbour_lock_update", 1) == 1)),
             ],
             Page::Audio => {
                 let (p, m) = self.sys.volume().unwrap_or((0, false));
@@ -1024,7 +1028,7 @@ impl Settings {
                 self.set_lang(v);
                 Event::ThemeChanged
             }
-            "dark_time" => {
+            "dark_time" | "harbour_sleep_mode" => {
                 self.cfg_set(key, v);
                 Event::ScreenChanged
             }
@@ -1157,7 +1161,7 @@ impl Settings {
                 let (p, _) = self.sys.volume().unwrap_or((0, false));
                 self.set_volume_pct((p as i32 + dir * 5).clamp(0, 100) as u8);
             }
-            (Page::Audio, 1 | 2) | (Page::Theme, 1) | (Page::Lock, 3 | 4) | (Page::Agent, 0) | (Page::System, 12) => return self.activate(),
+            (Page::Audio, 1 | 2) | (Page::Theme, 1) | (Page::Lock, 3..=5) | (Page::Agent, 0) | (Page::System, 12) => return self.activate(),
             (Page::Agent, 1) => return self.cycle_agent_provider(dir),
             (Page::Network, 0 | 1) | (Page::Bluetooth, 0) | (Page::ExtPort, _) => return self.activate(),
             (page, row) => {
@@ -1225,7 +1229,7 @@ impl Settings {
                 }
             }
             (page, row) if choice_spec(&page, row).is_some() => self.open_popup(),
-            (Page::Display, 3) => {
+            (Page::Display, 4) => {
                 if !ime_dict_installed() {
                     return Event::Install(crate::launcher::installer::InstallReq::ime_dict());
                 }
@@ -1236,8 +1240,8 @@ impl Settings {
                 self.flush_cfg();
                 return Event::ThemeChanged;
             }
-            (Page::Lock, row @ (3 | 4)) => {
-                let key = if row == 3 { "harbour_lock_date" } else { "harbour_lock_battery" };
+            (Page::Lock, row @ (3..=5)) => {
+                let key = ["harbour_lock_date", "harbour_lock_battery", "harbour_lock_update"][row - 3];
                 let on = self.cfg_int(key, 1) == 1;
                 self.cfg_set(key, (!on) as i64);
             }
@@ -1784,6 +1788,7 @@ fn choice_spec(page: &Page, row: usize) -> Option<ChoiceSpec> {
     match (page, row) {
         (Page::Display, 0) => spec("harbour_lang", index(2), names(&i18n::LANG_NAMES), 0),
         (Page::Display, 2) => spec("dark_time", DARK_TIMES.to_vec(), DARK_TIMES.iter().map(|v| dark_label(*v)).collect(), 30),
+        (Page::Display, 3) => spec("harbour_sleep_mode", index(2), names(&SLEEP_MODES), 0),
         (Page::Theme, 0) => spec("harbour_theme", index(THEMES.len()), THEMES.iter().map(|t| t.0.to_string()).collect(), 0),
         (Page::Theme, 2) => spec("harbour_statusbar", index(BAR_STYLES.len()), names(&BAR_STYLES), 0),
         (Page::Lock, 0) => spec("harbour_lock_style", index(LOCK_STYLES.len()), names(&LOCK_STYLES), 0),
@@ -2238,10 +2243,22 @@ fn draw_sidebar_w(c: &mut Canvas, fs: &FontSystem, tm: &ThemeManager, area: &Rec
         }
         let fg = if sel && focused { tm.get_color("select_fg") } else { ink };
         draw_icon(c, r.x() + 4, y + (SIDE_ROW_H - 12) / 2, i, fg);
-        widgets::draw_row_text(c, fs, tm, r, r.x() + 20, &chrome::fit_text(fs, i18n::tr_side(name), sb_w - 6 - 18), sel && focused, ink);
+        // The row under the cursor shows a ▶ on its right: Right (or Return) opens that page.
+        let arrow = if sel && focused { 8 } else { 0 };
+        widgets::draw_row_text(c, fs, tm, r, r.x() + 20, &chrome::fit_text(fs, i18n::tr_side(name), sb_w - 6 - 18 - arrow), sel && focused, ink);
+        if arrow > 0 {
+            draw_open_arrow(c, r.x() + r.width() as i32 - 7, y + (SIDE_ROW_H - 9) / 2, fg);
+        }
         if let Some(h) = reg.as_deref_mut() {
             h.push((Rect::new(area.x(), if top == 0 { y } else { y - 1 }, sb_w as u32, SIDE_ROW_H as u32), Hit::Sidebar(i)));
         }
+    }
+}
+
+/// A 4 x 9 pointer triangle: "Right opens this" (the font has no ▶).
+fn draw_open_arrow(c: &mut Canvas, x: i32, y: i32, col: Color) {
+    for i in 0..5 {
+        ui::fill_rect(c, Rect::new(x + i, y + i, 1, (9 - 2 * i) as u32), col);
     }
 }
 
@@ -3156,15 +3173,15 @@ mod tests {
         let (mut s, _, _) = settings();
         let labels = |s: &Settings| s.rows().into_iter().map(|r| r.label).collect::<Vec<_>>();
         goto(&mut s, Page::Display);
-        assert_eq!(labels(&s), ["Language", "Brightness", "Screen off", "Japanese dictionary"]);
+        assert_eq!(labels(&s), ["Language", "Brightness", "Screen off", "Sleep", "Japanese dictionary"]);
         press(&mut s, Keycode::Escape);
         goto(&mut s, Page::Theme);
         assert_eq!(labels(&s), ["Theme", "Invert", "Status bar"]);
         press(&mut s, Keycode::Escape);
         goto(&mut s, Page::Lock);
-        assert_eq!(labels(&s), ["Style", "Auto lock", "Lock screen off", "Show date", "Show battery"]);
+        assert_eq!(labels(&s), ["Style", "Auto lock", "Lock screen off", "Show date", "Show battery", "Show update notice"]);
         // Every pop-up row offers its current value; Left adjusts exactly the slider and pop-up rows.
-        for (page, rows) in [(Page::Display, 3), (Page::Theme, 3), (Page::Lock, 5)] {
+        for (page, rows) in [(Page::Display, 4), (Page::Theme, 3), (Page::Lock, 6)] {
             for r in 0..rows {
                 if let Some(spec) = choice_spec(&page, r) {
                     assert_eq!(spec.values.len(), spec.labels.len());

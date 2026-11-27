@@ -49,20 +49,25 @@ impl Style {
 }
 
 /// What the lock screen shows, read from the config each frame.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Opts {
     pub style: Style,
     pub date: bool,
     /// `Some((percent, charging))` when the battery is shown.
     pub battery: Option<(Option<u8>, bool)>,
+    /// A newer Harbour Shell version that is already known (never fetched from here); None when there is none
+    /// or when `harbour_lock_update` / `harbour_update_check` is off.
+    pub update: Option<String>,
 }
 
 impl Opts {
-    pub fn from_config(cfg: &Config, battery: Option<u8>, charging: bool) -> Self {
+    /// `newer` is the already-known newer version (`update::available()`); nothing is fetched here.
+    pub fn from_config(cfg: &Config, battery: Option<u8>, charging: bool, newer: Option<String>) -> Self {
         Opts {
             style: Style::from_index(cfg.get_int("harbour_lock_style", 0)),
             date: cfg.get_int("harbour_lock_date", 1) == 1,
             battery: (cfg.get_int("harbour_lock_battery", 1) == 1).then_some((battery, charging)),
+            update: if cfg.get_int("harbour_lock_update", 1) == 1 && cfg.get_int("harbour_update_check", 1) != 0 { newer } else { None },
         }
     }
 }
@@ -259,6 +264,27 @@ fn battery_chip(c: &mut Canvas, assets: &mut AssetStore, fs: &FontSystem, ink: &
     }
 }
 
+/// The update notice: "Update 0.3.1 available" (`short`: "Update 0.3.1"), "アップデート 0.3.1 あり" (short: "更新 0.3.1").
+fn update_text(version: &str, short: bool) -> String {
+    match (i18n::get() == Lang::Ja, short) {
+        (false, false) => format!("Update {version} available"),
+        (false, true) => format!("Update {version}"),
+        (true, false) => format!("アップデート {version} あり"),
+        (true, true) => format!("更新 {version}"),
+    }
+}
+
+/// The update chip at (x, y): the long wording when it fits in `room` px, else the short one (None if neither does).
+fn update_chip(c: &mut Canvas, fs: &FontSystem, ink: &Inks, x: i32, y: i32, room: i32, version: &str) {
+    for short in [false, true] {
+        let t = update_text(version, short);
+        if fs.measure_text(&t) + 8 <= room {
+            chip(c, fs, ink, x, y, &t, false);
+            return;
+        }
+    }
+}
+
 /// The weekday and the date in one line ("Thu 19 Nov 2026", "11月19日(木)").
 fn date_line(now: DateTime<Local>) -> String {
     let wd = now.weekday().num_days_from_sunday() as usize;
@@ -267,6 +293,11 @@ fn date_line(now: DateTime<Local>) -> String {
     } else {
         format!("{} {} {} {}", DAYS_SHORT[wd], now.day(), MONTHS[now.month0() as usize], now.year())
     }
+}
+
+/// The x where the unlock chip starts (it is right-aligned at RIGHT).
+fn unlock_left(fs: &FontSystem) -> i32 {
+    RIGHT - (4 + 9 + 5 + fs.measure_text(i18n::tr("Scroll up to unlock")) + 5)
 }
 
 /// The unlock chip, right-aligned at `right`: a padlock and the hint on an ink plate. As the user
@@ -357,6 +388,10 @@ fn draw_wall(c: &mut Canvas, assets: &mut AssetStore, fs: &FontSystem, tm: &Them
     }
     if let Some((pct, charging)) = opts.battery {
         battery_chip(c, assets, fs, ink, x0, y, pct, charging);
+        y += CHIP_H + 2;
+    }
+    if let Some(v) = &opts.update {
+        update_chip(c, fs, ink, x0, y, RIGHT - x0, v);
     }
     unlock_chip(c, fs, ink, RIGHT, ROW_B, unlock);
 }
@@ -391,6 +426,10 @@ fn draw_world(c: &mut Canvas, assets: &mut AssetStore, fs: &FontSystem, tm: &The
     }
     if let Some((pct, charging)) = opts.battery {
         battery_chip(c, assets, fs, ink, RIGHT - battery_w(fs, pct), WORLD_ROW_A, pct, charging);
+    }
+    if let Some(v) = &opts.update {
+        // Left of the unlock chip, right of the clock plate.
+        update_chip(c, fs, ink, left, ROW_B, unlock_left(fs) - 4 - left, v);
     }
     unlock_chip(c, fs, ink, RIGHT, ROW_B, unlock);
 }
@@ -450,6 +489,11 @@ fn draw_ascii(c: &mut Canvas, fs: &FontSystem, tm: &ThemeManager, ink: &Inks, no
         let t = format!("{} {}{}", i18n::tr("Battery"), pct.map(|p| format!("{p}%")).unwrap_or_else(|| "-".into()), if charging { "+" } else { "" });
         put(c, ASCII_COLS - 3 - cells(&t), 9, &t, ink.face);
     }
+    // Row 8: the update notice, centred (the clock is rows 1-7).
+    if let Some(v) = &opts.update {
+        let t = update_text(v, false);
+        put(c, 1 + inner.saturating_sub(cells(&t)) / 2, 8, &t, ink.faint);
+    }
     // Row 10: the unlock gauge and its hint, centred.
     let n = 16;
     let k = (n as f32 * unlock.clamp(0.0, 1.0)).round() as usize;
@@ -486,6 +530,9 @@ fn draw_seg(c: &mut Canvas, assets: &mut AssetStore, fs: &FontSystem, ink: &Inks
     }
     if let Some((pct, charging)) = opts.battery {
         battery_chip(c, assets, fs, ink, RIGHT - battery_w(fs, pct), ROW_A, pct, charging);
+    }
+    if let Some(v) = &opts.update {
+        update_chip(c, fs, ink, 4, ROW_B, unlock_left(fs) - 4 - 4, v);
     }
     unlock_chip(c, fs, ink, RIGHT, ROW_B, unlock);
 }
@@ -527,17 +574,39 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("lock-opts-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let mut cfg = Config::load(dir.join("config.json"));
-        let o = Opts::from_config(&cfg, Some(76), false);
-        assert_eq!(o, Opts { style: Style::Wall, date: true, battery: Some((Some(76), false)) }, "defaults: wall clock, date and battery shown");
+        let o = Opts::from_config(&cfg, Some(76), false, None);
+        assert_eq!(o, Opts { style: Style::Wall, date: true, battery: Some((Some(76), false)), update: None }, "defaults: wall clock, date and battery shown");
         assert_eq!(auto_lock_secs(&cfg), 0, "auto lock is off by default");
         cfg.set_int("harbour_lock_style", 3);
         cfg.set_int("harbour_lock_date", 0);
         cfg.set_int("harbour_lock_battery", 0);
         cfg.set_int("harbour_lock_auto", 300);
-        let o = Opts::from_config(&cfg, Some(76), true);
-        assert_eq!(o, Opts { style: Style::Seg, date: false, battery: None });
+        let o = Opts::from_config(&cfg, Some(76), true, None);
+        assert_eq!(o, Opts { style: Style::Seg, date: false, battery: None, update: None });
         assert_eq!(auto_lock_secs(&cfg), 300);
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn the_update_notice_follows_the_switches_and_the_known_version() {
+        let dir = std::env::temp_dir().join(format!("lock-upd-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut cfg = Config::load(dir.join("config.json"));
+        let v = || Some("0.3.1".to_string());
+        assert_eq!(Opts::from_config(&cfg, None, false, v()).update, v(), "shown by default when a newer version is known");
+        assert_eq!(Opts::from_config(&cfg, None, false, None).update, None, "nothing known, nothing shown");
+        cfg.set_int("harbour_lock_update", 0);
+        assert_eq!(Opts::from_config(&cfg, None, false, v()).update, None, "its own switch hides it");
+        cfg.set_int("harbour_lock_update", 1);
+        cfg.set_int("harbour_update_check", 0);
+        assert_eq!(Opts::from_config(&cfg, None, false, v()).update, None, "\"Check for new versions\" off hides it too");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn the_update_notice_wording() {
+        assert_eq!(update_text("0.3.1", false), "Update 0.3.1 available");
+        assert_eq!(update_text("0.3.1", true), "Update 0.3.1");
     }
 
     #[test]

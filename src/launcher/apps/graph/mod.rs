@@ -16,6 +16,7 @@
 //! [`render`] (formulas to a raster, a little each frame) and [`tones`] (raster to theme colours).
 
 pub mod doc;
+pub use doc::csv_to_graph;
 pub mod expr;
 pub mod presets;
 pub mod render;
@@ -605,9 +606,18 @@ impl Graph {
 
     fn load_file(&mut self, path: &Path) -> Result<(), String> {
         let text = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
+        // A CSV (a Hardware sensor log) opens as a plot through its numbers; saving asks for a
+        // new `.graph` name, the CSV itself is never overwritten.
+        let is_csv = path.extension().map_or(false, |e| e.eq_ignore_ascii_case("csv"));
+        let text = if is_csv {
+            let title = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+            csv_to_graph(&text, &title).map_err(|e| tr_s(&e))?
+        } else {
+            text
+        };
         let (d, t) = Doc::from_text(&text).map_err(|e| tr_s(&e))?;
         self.replace(d, t);
-        self.path = Some(path.to_path_buf());
+        self.path = if is_csv { None } else { Some(path.to_path_buf()) };
         self.dirty = false;
         Ok(())
     }

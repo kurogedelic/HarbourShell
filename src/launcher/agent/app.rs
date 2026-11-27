@@ -317,6 +317,17 @@ impl AgentApp {
 
     // ------------------------------------------------------------ push-to-talk voice
 
+    /// Settings of the active Muse provider, else the first one configured.
+    fn muse_settings(&self) -> Option<muse::MuseSettings> {
+        let p = self
+            .agent_cfg
+            .providers
+            .get(&self.provider_name)
+            .filter(|p| p.kind == "muse")
+            .or_else(|| self.agent_cfg.providers.values().find(|p| p.kind == "muse"))?;
+        muse::MuseSettings::from_cfg(p).ok()
+    }
+
     /// The Muse provider's voice settings, or why voice cannot be used (plain words).
     fn muse_voice_settings(&self) -> Result<muse::MuseSettings, String> {
         let (name, p) = self
@@ -1036,6 +1047,7 @@ impl LauncherApp for AgentApp {
             MenuItem::new("new", "New Chat"),
             MenuItem::new("provider", "Provider..."),
             MenuItem::new("tools", "Show Tools"),
+            MenuItem::new("muse_test", "Test Muse connection"),
             MenuItem::new("auto", if self.auto_run { "Auto-run Tools: On" } else { "Auto-run Tools: Off" }),
             MenuItem::new("clear", "Clear History"),
         ]
@@ -1058,6 +1070,15 @@ impl LauncherApp for AgentApp {
                 let mut p = ListPicker::new("Provider:", rows);
                 p.sel = self.agent_cfg.names().iter().position(|n| *n == self.provider_name).unwrap_or(0);
                 self.picker = Some(p);
+            }
+            "muse_test" => {
+                let ja = crate::launcher::i18n::get() == crate::launcher::i18n::Lang::Ja;
+                let text = match self.muse_settings() {
+                    Some(s) => muse::diagnosis_text(&muse::diagnose(&s), ja),
+                    None if ja => "Museのプロバイダが設定されていません(docs/MUSE.md)".into(),
+                    None => "No Muse provider is set up (docs/MUSE.md)".to_string(),
+                };
+                self.notice(&text);
             }
             "tools" => {
                 let names: Vec<&str> = tools::specs().iter().map(|t| t.name).collect();

@@ -6,9 +6,11 @@
 //! with [`mock::MockBackend`].
 
 pub mod config;
+pub mod lan;
 pub mod linux;
 pub mod mock;
 pub mod parse;
+pub mod sleep;
 pub mod telemetry;
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -100,6 +102,14 @@ pub trait Backend: Send + Sync {
     /// Blocking: call from a worker thread.
     fn wifi_connect(&self, ssid: &str, password: Option<&str>) -> R<()>;
     fn eth_ip(&self) -> Option<String>;
+    /// The connected interface's IPv4 subnet (None when offline). Cheap: two `ip` calls.
+    fn lan_info(&self) -> Option<lan::LanInfo> {
+        None
+    }
+    /// The neighbour (ARP) table: who this device has talked to lately. Passive, cheap.
+    fn neighbors(&self) -> Vec<lan::Neighbor> {
+        Vec::new()
+    }
 
     fn bt_powered(&self) -> bool;
     fn bt_set_power(&self, on: bool) -> R<()>;

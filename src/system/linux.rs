@@ -138,6 +138,34 @@ fn run(prog: &str, args: &[&str], timeout: Duration) -> R<String> {
 
 const SHORT: Duration = Duration::from_secs(4);
 
+/// The Cardputer Zero has only the bq27220 gauge (no charger node, no `online` flag): its `status` is
+/// "Charging" / "Discharging" / "Not charging" (also shown when full on USB), derived from the current sign.
+/// Be generous: "Charging", or a clearly positive current (> 20 mA, in µA), or external power online while
+/// the battery is not yet full.
+fn is_charging(status: &str, current_ua: Option<i64>, external_online: bool) -> bool {
+    let s = status.trim();
+    if s.eq_ignore_ascii_case("charging") {
+        return true;
+    }
+    if s.eq_ignore_ascii_case("discharging") || s.eq_ignore_ascii_case("full") {
+        return false;
+    }
+    current_ua.is_some_and(|c| c > 20_000) || (external_online && s.eq_ignore_ascii_case("not charging") && current_ua.is_none())
+}
+
+impl LinuxBackend {
+    /// Some power_supply node of type Mains / USB* reports `online` = 1.
+    fn external_power(&self) -> bool {
+        let Ok(rd) = std::fs::read_dir(self.p("sys/class/power_supply")) else { return false };
+        rd.flatten().any(|e| {
+            let d = e.path();
+            let ty = std::fs::read_to_string(d.join("type")).unwrap_or_default();
+            let ty = ty.trim();
+            (ty == "Mains" || ty.starts_with("USB")) && std::fs::read_to_string(d.join("online")).is_ok_and(|v| v.trim() == "1")
+        })
+    }
+}
+
 impl Backend for LinuxBackend {
     fn battery(&self) -> Battery {
         let Some(dir) = self.first_dir("sys/class/power_supply", "capacity") else {
@@ -147,7 +175,7 @@ impl Backend for LinuxBackend {
         let status = rd("status").unwrap_or_default();
         Battery {
             percent: rd("capacity").and_then(|s| s.parse::<u8>().ok()).map(|p| p.min(100)),
-            charging: status == "Charging",
+            charging: is_charging(&status, rd("current_now").or_else(|| rd("current_instant")).and_then(|s| s.parse::<i64>().ok()), self.external_power()),
             voltage_mv: rd("voltage_now").and_then(|s| s.parse::<u64>().ok()).map(|uv| (uv / 1000) as u32),
             status,
         }
@@ -291,6 +319,20 @@ impl Backend for LinuxBackend {
     fn eth_ip(&self) -> Option<String> {
         let out = run("nmcli", &["-g", "IP4.ADDRESS", "dev", "show", "eth0"], SHORT).ok()?;
         out.lines().next().map(|l| l.split('/').next().unwrap_or("").to_string()).filter(|s| !s.is_empty())
+    }
+
+    fn lan_info(&self) -> Option<super::lan::LanInfo> {
+        let route = run("ip", &["-4", "route", "show", "default"], SHORT).unwrap_or_default();
+        let addrs = run("ip", &["-4", "-o", "addr", "show"], SHORT).ok()?;
+        super::lan::pick_lan(&route, &addrs)
+    }
+
+    fn neighbors(&self) -> Vec<super::lan::Neighbor> {
+        let v = run("ip", &["-4", "neigh", "show"], SHORT).map(|t| super::lan::parse_ip_neigh(&t)).unwrap_or_default();
+        if v.is_empty() {
+            return std::fs::read_to_string("/proc/net/arp").map(|t| super::lan::parse_proc_arp(&t)).unwrap_or_default();
+        }
+        v
     }
 
     fn bt_powered(&self) -> bool {
@@ -510,6 +552,17 @@ mod tests {
         w("sys/class/thermal/thermal_zone0/temp", "46200\n");
         let b = LinuxBackend::with_root(root.clone());
         (root, b)
+    }
+
+    #[test]
+    fn charging_detection() {
+        assert!(is_charging("Charging", None, false));
+        assert!(!is_charging("Discharging", Some(50_000), true));
+        assert!(!is_charging("Full", None, true));
+        assert!(!is_charging("Not charging", Some(0), false), "the device at 100%: 0 mA");
+        assert!(is_charging("Not charging", Some(120_000), false), "current flowing in");
+        assert!(is_charging("Not charging", None, true), "USB online, no gauge current");
+        assert!(!is_charging("Unknown", Some(-80_000), false));
     }
 
     #[test]
