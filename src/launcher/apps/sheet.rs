@@ -775,8 +775,10 @@ impl LauncherApp for SheetApp {
         let t = printable(text);
         if let Some(e) = &mut self.edit {
             e.insert(&t);
-        } else if t.chars().next().map_or(false, |c| c.is_ascii_digit() || "=+-.(".contains(c)) {
+        } else if t.chars().next().map_or(false, |c| c.is_ascii_digit() || "=+-.(".contains(c)) || !t.is_ascii() {
             // Letters stay navigation (F/X/Z/C are arrows); numbers and formulas start an edit.
+            // So does text from the input method (kana, kanji): a conversion committed on a cell
+            // that is not being edited yet must not be dropped.
             self.begin_edit(Some(&t));
         }
         AppAction::None
@@ -1048,6 +1050,24 @@ mod tests {
             Some(o) => a.finish(o),
             None => AppAction::None,
         }
+    }
+
+    #[test]
+    fn text_from_the_input_method_on_a_selected_cell_starts_an_edit() {
+        use crate::font::FontSystem;
+        use crate::system::mock::MockBackend;
+        use crate::theme::{Theme, ThemeManager};
+        let fs = FontSystem::new();
+        let tm = ThemeManager::new(Theme::load_from_yaml("assets/themes/theme-paper.yaml").unwrap());
+        let sys = MockBackend::new();
+        let ctx = Ctx { fs: &fs, tm: &tm, sys: &sys, now: chrono::Local::now() };
+        let mut a = SheetApp::open(std::env::temp_dir().join("harbour_sheet_ime_nonexistent.csv"));
+        a.text("漢字", &ctx);
+        assert_eq!(a.edit.as_ref().map(|e| e.text.clone()).as_deref(), Some("漢字"));
+        a.key(Keycode::Return, Mod::NOMOD, false, &ctx);
+        assert_eq!(a.sheet.display("A1"), "漢字");
+        a.text("f", &ctx);
+        assert!(a.edit.is_none(), "plain letters stay navigation");
     }
 
     #[test]
