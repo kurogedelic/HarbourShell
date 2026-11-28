@@ -249,6 +249,23 @@ pub fn status_icon(c: &mut Canvas, assets: &mut AssetStore, icon: Icon, frame: i
     let _ = assets.blit_tinted_src(c, "statusbar/atlas_fg", src, dst, fg);
 }
 
+/// The anchor mark. Its ring and the top of the stem sit one pixel higher than the 12 px picture
+/// says (the strip has 2 px above it and 1 below): the picture is drawn in two parts with the
+/// stem stretched by one pixel between them.
+fn draw_anchor(c: &mut Canvas, assets: &mut AssetStore, x: i32, y: i32, fg: crate::gfx::Color, tint: crate::gfx::Color) {
+    const SPLIT: i32 = 5; // picture rows 0..5 are the ring and stem, the cross bar is row 5
+    let s = statusbar::SIZE;
+    let top = Icon::Anchor as i32 * s;
+    for (sy, rows, dy) in [(top, SPLIT, y - 1), (top + SPLIT, s - SPLIT, y + SPLIT)] {
+        let src = Rect::new(0, sy, s as u32, rows as u32);
+        let dst = Rect::new(x, dy, s as u32, rows as u32);
+        let _ = assets.blit_tinted_src(c, "statusbar/atlas_tint", src, dst, tint);
+        let _ = assets.blit_tinted_src(c, "statusbar/atlas_fg", src, dst, fg);
+    }
+    // The stem pixels in the stretched row (columns 5 and 6 of the picture).
+    ui::fill_rect(c, Rect::new(x + 5, y + SPLIT - 1, 2, 1), fg);
+}
+
 /// Wi-Fi: frame 0 = radio off, then no signal / 1 / 2 / 3 bars from the signal strength (0..=100).
 pub fn draw_wifi(c: &mut Canvas, assets: &mut AssetStore, x: i32, y: i32, signal: Option<u8>, radio: bool, ink: crate::gfx::Color, dim: crate::gfx::Color) {
     use statusbar::wifi_frame as f;
@@ -303,7 +320,7 @@ pub fn draw_menu_bar(c: &mut Canvas, assets: &mut AssetStore, fs: &FontSystem, t
     c.set_draw_color(paper);
     let _ = c.fill_rect(Rect::new(0, 0, screen_w(), BAR_H as u32));
     ui::line(c, 0, BAR_H - 1, screen_w() as i32 - 1, BAR_H - 1, ink);
-    status_icon(c, assets, Icon::Anchor, 0, 7, 2, ink, dim);
+    draw_anchor(c, assets, 7, 2, ink, dim);
     let x = 22;
 
     if st.bare {

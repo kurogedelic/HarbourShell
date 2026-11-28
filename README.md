@@ -23,6 +23,7 @@ Back to the official launcher at any time: `harbourctl official`.
 ## More
 
 - [Wiki](https://github.com/kurogedelic/HarbourShell/wiki): keys, apps, settings, Japanese input, troubleshooting
+- [Guide with pictures](docs/GUIDE.md) ([日本語](docs/GUIDE.ja.md)): keys, Settings, Japanese input, Sheet, Interceptor, Devices
 - [Building from source](docs/HARBOUR-SHELL.md)
 
 ## License

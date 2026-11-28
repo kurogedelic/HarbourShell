@@ -850,6 +850,10 @@ impl LauncherApp for HarbourTalk {
     }
 
     fn text(&mut self, text: &str, ctx: &Ctx) -> AppAction {
+        // F / X / Z / C are the arrow keys in the lists: their typed letter must not start a post.
+        if matches!(self.view, View::Rooms | View::Timeline) && matches!(text, "f" | "x" | "z" | "c" | "F" | "X" | "Z" | "C") {
+            return AppAction::None;
+        }
         match self.view {
             // Typing in the list of rooms writes in the room picked there.
             View::Rooms if !text.trim().is_empty() && !self.rooms.is_empty() => {
@@ -1318,6 +1322,24 @@ mod tests {
         a.text(&"あ".repeat(150), &ctx);
         a.text(&"い".repeat(150), &ctx);
         assert_eq!(a.draft.len(), net::MAX_TEXT);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn f_and_x_move_in_the_timeline_and_do_not_start_a_post() {
+        let (fs, tm, sys) = ctx_parts();
+        let ctx = Ctx { fs: &fs, tm: &tm, sys: &sys, now: chrono::Local::now() };
+        let (mut a, dir) = app("fx");
+        a.settings.name = "kuro".into();
+        let none = Mod::empty();
+        a.key(Keycode::X, none, false, &ctx);
+        a.text("x", &ctx);
+        assert_eq!((a.sel, a.view), (1, View::Timeline));
+        a.key(Keycode::F, none, false, &ctx);
+        a.text("f", &ctx);
+        assert_eq!((a.sel, a.view), (0, View::Timeline));
+        a.text("hello", &ctx);
+        assert_eq!(a.view, View::Write, "other typing still starts a post");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

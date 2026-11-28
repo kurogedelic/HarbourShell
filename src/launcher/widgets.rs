@@ -354,7 +354,7 @@ pub fn folder_strip_text_y() -> i32 {
 
 /// Text origin of an idle folder tab's label in a strip from `top` whose rule is the row `last`.
 fn folder_idle_text_y(top: i32, last: i32) -> i32 {
-    text_origin(top + 5, last - (top + 5))
+    text_origin(top + 5, last - (top + 5)) + 2
 }
 
 /// The room a full-width folder strip offers (margins on both sides).

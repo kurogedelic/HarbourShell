@@ -79,7 +79,7 @@ pub const JA: &[(&str, &str)] = &[
     ("Brightness", "明るさ"),
     ("Screen off", "画面オフ"),
     ("Sleep", "スリープ"),
-    ("Backlight off", "バックライトを消す"),
+    ("Backlight off", "ライトを消す"),
     ("Black screen", "黒い画面"),
     ("Lock screen off", "ロック画面オフ"),
     ("Theme", "テーマ"),
